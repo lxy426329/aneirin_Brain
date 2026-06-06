@@ -22,12 +22,12 @@ COPY config.example.yaml ./config.yaml
 
 # Persistent mount point: bucket data
 # 持久化挂载点：记忆数据
-VOLUME ["/app/buckets"]
+VOLUME ["/app/aneirin_Brain/buckets"]
 
 # Default to streamable-http for container (remote access)
 # 容器场景默认用 streamable-http
 ENV OMBRE_TRANSPORT=streamable-http
-ENV OMBRE_BUCKETS_DIR=/app/buckets
+ENV OMBRE_BUCKETS_DIR=/app/aneirin_Brain/buckets
 
 EXPOSE 8000
 
