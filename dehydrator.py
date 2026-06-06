@@ -241,7 +241,7 @@ class Dehydrator:
     # API only (no local fallback)
     # 仅通过 API 脱水（无本地回退）
     # ---------------------------------------------------------
-    async def dehydrate(self, content: str, metadata: dict = None) -> str:
+    async def dehydrate(self, content: str, metadata: dict = None, brief: bool = False) -> str:
         """
         Dehydrate/compress memory content.
         Returns formatted summary string ready for Claude context injection.
@@ -249,6 +249,11 @@ class Dehydrator:
         对记忆内容做脱水压缩。
         返回格式化的摘要字符串，可直接注入 Claude 上下文。
         使用 SQLite 缓存避免重复调用 API。
+        
+        Args:
+            content: 原始内容
+            metadata: 桶元数据
+            brief: 是否返回简洁格式（仅元数据头 + summary）
         """
         if not content or not content.strip():
             return "（空记忆 / empty memory）"
@@ -256,13 +261,13 @@ class Dehydrator:
         # --- Content is short enough, no compression needed ---
         # --- 内容已经很短，不需要压缩 ---
         if count_tokens_approx(content) < 100:
-            return self._format_output(content, metadata)
+            return self._format_output(content, metadata, brief=brief)
 
         # --- Check cache first ---
         # --- 先查缓存 ---
         cached = self._get_cached_summary(content)
         if cached:
-            return self._format_output(cached, metadata)
+            return self._format_output(cached, metadata, brief=brief)
 
         # --- API dehydration (no local fallback) ---
         # --- API 脱水（无本地降级）---
@@ -272,7 +277,7 @@ class Dehydrator:
         result = await self._api_dehydrate(content)
         # --- Cache the result ---
         self._set_cached_summary(content, result)
-        return self._format_output(result, metadata)
+        return self._format_output(result, metadata, brief=brief)
 
     # ---------------------------------------------------------
     # Merge: blend new content into existing bucket
@@ -356,10 +361,15 @@ class Dehydrator:
     # Wraps dehydrated result with bucket name, tags, emotion coords
     # 把脱水结果包装成带桶名、标签、情感坐标的可读文本
     # ---------------------------------------------------------
-    def _format_output(self, content: str, metadata: dict = None) -> str:
+    def _format_output(self, content: str, metadata: dict = None, brief: bool = False) -> str:
         """
         Format dehydrated result into context-injectable text.
         将脱水结果格式化为可注入上下文的文本。
+        
+        Args:
+            content: 脱水后的内容（可能是 JSON 或纯文本）
+            metadata: 桶元数据
+            brief: 是否返回简洁格式（仅元数据头 + summary）
         """
         header = ""
         if metadata and isinstance(metadata, dict):
@@ -385,8 +395,40 @@ class Dehydrator:
                 header += " [已消化]"
             header += "\n"
         
+        # Remove wikilinks for display
         content = re.sub(r'\[\[([^\]]+)\]\]', r'\1', content)
+        
+        # If brief mode, try to extract summary from JSON content
+        # brief 模式下，尝试从 JSON 中提取 summary
+        if brief:
+            summary = self._extract_summary(content)
+            if summary:
+                return f"{header}→ {summary}"
+        
         return f"{header}{content}"
+    
+    def _extract_summary(self, content: str) -> str | None:
+        """
+        Extract summary field from JSON content.
+        从 JSON 内容中提取 summary 字段。
+        
+        Args:
+            content: 可能是 JSON 格式的内容
+            
+        Returns:
+            summary 字符串，如果解析失败则返回 None
+        """
+        try:
+            cleaned = content.strip()
+            # Handle potential markdown code block wrapping
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+            result = json.loads(cleaned)
+            if isinstance(result, dict) and "summary" in result:
+                return result["summary"]
+        except (json.JSONDecodeError, IndexError, ValueError):
+            pass
+        return None
 
     # ---------------------------------------------------------
     # Auto-tagging: analyze content for domain + emotion + tags

@@ -32,7 +32,7 @@ services:
     volumes:
       # 改成你的 Obsidian Vault 路径，或保持 ./buckets 用本地目录
       # Change to your Obsidian Vault path, or keep ./buckets for local storage
-      - ./buckets:/data
+      - /e/obsidian/aneirin_thought
       # (Optional) Mount custom config to override model / API settings:
       # （可选）挂载自定义配置，覆盖模型和 API 设置：
       # - ./config.yaml:/app/config.yaml
