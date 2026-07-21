@@ -6143,7 +6143,7 @@ async def dashboard(request):
 @mcp.custom_route("/dashboard.js", methods=["GET"])
 async def dashboard_js(request):
     """Serve the dashboard JavaScript file."""
-    from starlette.responses import PlainTextResponse
+    from starlette.responses import Response
     import os
     import time
     js_path = os.path.join(os.path.dirname(__file__), "dashboard.js")
@@ -6155,11 +6155,10 @@ async def dashboard_js(request):
             "Pragma": "no-cache",
             "Expires": "0",
             "ETag": str(time.time()),
-            "Content-Type": "application/javascript",
         }
-        return PlainTextResponse(content, headers=headers)
+        return Response(content, media_type="application/javascript", headers=headers)
     except FileNotFoundError:
-        return PlainTextResponse("console.error('dashboard.js not found');", status_code=404)
+        return Response("console.error('dashboard.js not found');", media_type="application/javascript", status_code=404)
 
 
 @mcp.custom_route("/api/config", methods=["GET"])
