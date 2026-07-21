@@ -48,8 +48,8 @@ def _call_endpoint(base_url, path):
                 print(output)
     except (urllib.error.URLError, OSError):
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Session breath hook error: {e}")
 
 
 if __name__ == "__main__":

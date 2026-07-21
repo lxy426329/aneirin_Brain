@@ -68,9 +68,9 @@ decay:
 # 你可以把 embedding 独立配置；若 api_key 留空，复用脱水配置的 API key 和 base_url
 embedding:
   enabled: true                   # Enable embedding / 启用向量化
-  model: "gemini-embedding-001"   # Embedding model / 向量化模型
-  # base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-  # api_key: ""                  
+  model: "text-embedding-ada-002" # Embedding model / 向量化模型（DeepSeek 兼容）
+  base_url: "https://api.deepseek.com/v1"  # 复用 DeepSeek API
+  # api_key: ""                  # 留空复用 dehydration 的 api_key
 
 # --- Scoring weights / 检索权重参数 ---
 # total = topic(×4) + emotion(×2) + time(×1.5) + importance(×1)
@@ -94,3 +94,29 @@ wikilink:
   auto_top_k: 4
   min_keyword_len: 3
   exclude_keywords: []
+
+# --- Emotion configuration / 情绪配置 ---
+# Base emotion list for synonym merging
+# 基础情绪词表，用于同义词归并
+emotions:
+  base_list:
+    - 开心
+    - 难过
+    - 愤怒
+    - 焦虑
+    - 平静
+    - 兴奋
+    - 委屈
+    - 感动
+    - 失落
+    - 期待
+    - 恐惧
+    - 惊喜
+    - 愧疚
+    - 骄傲
+    - 嫉妒
+    - 羡慕
+    - 悲伤
+    - 快乐
+    - 抑郁
+    - 孤独

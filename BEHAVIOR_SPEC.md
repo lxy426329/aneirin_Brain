@@ -23,12 +23,129 @@
 
 | 模块 | 核心职责 |
 |------|---------|
-| `server.py` | 注册 MCP 工具（`breath/hold/grow/trace/pulse/dream`）；路由 Dashboard HTTP 请求；`_merge_or_create()` 合并逻辑中枢 |
-| `bucket_manager.py` | 桶 CRUD；多维搜索（fuzzy + embedding 双通道）；`touch()` 激活刷新；`_time_ripple()` 时间波纹 |
+| `server.py` | 注册 MCP 工具（`breath/hold/grow/trace/pulse/dream/identity_*/pattern_*`）；路由 Dashboard HTTP 请求；`_merge_or_create()` 合并逻辑中枢 |
+| `identity_manager.py` | Identity 层 CRUD；身份档案管理（姓名、别名、基本信息、性格特征、关系） |
+| `pattern_manager.py` | Pattern 层 CRUD；行为模式管理（规律描述、来源事件、置信度） |
+| `bucket_manager.py` | Event 层 CRUD；桶 CRUD；多维搜索（fuzzy + embedding 双通道）；`touch()` 激活刷新；`_time_ripple()` 时间波纹 |
+| `emotion_manager.py` | 情绪标签同义词归并；调用 DeepSeek API 进行情绪标准化 |
 | `dehydrator.py` | `analyze()` 自动打标；`merge()` 内容融合；`digest()` 日记拆分；`dehydrate()` 内容压缩 |
 | `embedding_engine.py` | `generate_and_store()` 生成向量并存 SQLite；`search_similar()` 余弦相似度检索 |
 | `decay_engine.py` | `calculate_score()` 衰减分计算；`run_decay_cycle()` 周期扫描归档；后台定时循环 |
-| `utils.py` | 配置加载；路径安全校验；ID 生成；token 估算 |
+
+---
+
+## 一.5 三层记忆架构 / Three-Layer Memory Architecture
+
+> v2.0 新增架构规范
+
+### Identity 层（身份层）
+
+**存储路径**: `buckets/identity/`
+
+**字段定义**:
+```yaml
+id: string          # 唯一标识符
+name: string        # 姓名/标识名
+type: "identity"    # 固定值
+aliases: []         # 别名数组
+basic_info: {}       # 基本信息键值对（如：{"年龄": "28", "职业": "程序员"}）
+core_traits: []     # 性格关键词数组（如：["乐观", "细心", "幽默"]）
+relationships: []   # 与其他 identity 的关系描述数组
+created: ISO8601    # 创建时间
+last_active: ISO8601 # 最后活跃时间
+```
+
+**行为特性**:
+- 不参与权重衰减，`calculate_score()` 返回 999.0
+- 不参与浮现排序，`breath()` 时自动全量加载
+- 每次 `breath(type="identity")` 返回全部 identity
+
+**MCP 工具**:
+- `identity_create` — 创建身份档案
+- `identity_update` — 更新身份档案
+- `identity_get` — 获取身份档案详情
+- `identity_list` — 列出所有身份档案
+- `identity_delete` — 删除身份档案
+- `identity_add_relationship` — 添加关系描述
+
+---
+
+### Pattern 层（模式层）
+
+**存储路径**: `buckets/pattern/`
+
+**字段定义**:
+```yaml
+id: string          # 唯一标识符
+name: string        # 模式名称
+type: "pattern"     # 固定值
+summary: string     # 规律描述
+source_events: []   # 来源事件的 bucket_id 数组
+applicable_scenes: [] # 适用场景标签数组
+confidence: float   # 置信度 0~1，被验证次数越多越高
+tags: []            # 标签数组
+created: ISO8601    # 创建时间
+last_active: ISO8601 # 最后活跃时间
+activation_count: int # 被激活次数
+```
+
+**行为特性**:
+- 相对稳定，不主动衰减
+- `confidence` 可手动调整（通过 `pattern_confirm` 增加 +0.1）
+- `breath(type="pattern")` 按当前对话上下文匹配相关 pattern
+- 不全量加载，按匹配度筛选
+
+**MCP 工具**:
+- `pattern_create` — 创建行为模式
+- `pattern_update` — 更新行为模式
+- `pattern_get` — 获取模式详情
+- `pattern_list` — 列出所有行为模式
+- `pattern_delete` — 删除行为模式
+- `pattern_confirm` — 确认模式（置信度 +0.1）
+
+---
+
+### Event 层（事件层）
+
+**存储路径**: `buckets/dynamic/`（原 dynamic 目录）
+
+**字段定义**:
+```yaml
+id: string              # 唯一标识符
+name: string            # 记忆名称
+type: "event"           # 固定值（原 dynamic 自动转为 event）
+domain: []              # 主题域数组
+tags: []                # 标签数组
+emotions: [             # 多维情绪数组（v2.0 新增）
+  {"label": "委屈", "intensity": 0.8},
+  {"label": "心软", "intensity": 0.6}
+]
+dominant_emotion: string # 主导情绪标签（用于快速检索）
+importance: 1-10         # 重要性
+created: ISO8601        # 创建时间
+last_active: ISO8601    # 最后活跃时间
+activation_count: int    # 被激活次数
+resolved: bool          # 是否已解决
+digested: bool          # 是否已消化
+pinned: bool            # 是否钉选
+```
+
+**向后兼容**:
+- 旧格式 `valence`/`arousal` 在读取时自动转换为 `emotions` 格式
+- 映射规则：`valence > 0.5` → 正面情绪，`valence < 0.5` → 负面情绪
+- `arousal` 映射为 `intensity`
+
+---
+
+### breath 工具 type 参数
+
+| type 值 | 行为 |
+|---------|------|
+| 不传/空 | 浮现未解决的 event，按权重排序 |
+| `"identity"` | 返回全部 identity 档案（全量加载） |
+| `"pattern"` | 按 query 上下文匹配 pattern |
+| `"event"` | 仅浮现 event 类型桶 |
+| `"feel"` | 返回全部 feel 桶（按创建时间降序） |
 
 ---
 

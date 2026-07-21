@@ -1,11 +1,11 @@
 # ============================================================
-# Test 2: LLM Quality Baseline — needs GEMINI_API_KEY
-# 测试 2：LLM 质量基准 —— 需要 GEMINI_API_KEY
+# Test 2: LLM Quality Baseline — needs deepseek_api_key
+# 测试 2：LLM 质量基准 —— 需要 deepseek_api_key
 #
 # Verifies LLM auto-tagging returns reasonable results:
 #   - domain is a non-empty list of strings
-#   - valence ∈ [0, 1]
-#   - arousal ∈ [0, 1]
+#   - emotions is a non-empty list of {"label": str, "intensity": float}
+#   - dominant_emotion is a string
 #   - tags is a list
 #   - suggested_name is a string
 #   - domain matches content semantics (loose check)
@@ -14,10 +14,18 @@
 import os
 import pytest
 
-# Skip all tests if no API key
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+def _has_api_key():
+    return os.environ.get("deepseek_api_key") or os.environ.get("OMBRE_API_KEY")
+
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("OMBRE_API_KEY"),
-    reason="OMBRE_API_KEY not set — skipping LLM quality tests"
+    not _has_api_key(),
+    reason="deepseek_api_key or OMBRE_API_KEY not set — skipping LLM quality tests"
 )
 
 
@@ -69,8 +77,8 @@ class TestLLMQuality:
         # Structure checks
         assert isinstance(result, dict)
         assert "domain" in result
-        assert "valence" in result
-        assert "arousal" in result
+        assert "emotions" in result
+        assert "dominant_emotion" in result
         assert "tags" in result
 
         # Domain is non-empty list of strings
@@ -78,14 +86,19 @@ class TestLLMQuality:
         assert len(result["domain"]) >= 1
         assert all(isinstance(d, str) for d in result["domain"])
 
-        # Valence and arousal in range
-        assert 0.0 <= result["valence"] <= 1.0, f"valence {result['valence']} out of range"
-        assert 0.0 <= result["arousal"] <= 1.0, f"arousal {result['arousal']} out of range"
+        # Emotions is a non-empty list of emotion dicts
+        assert isinstance(result["emotions"], list)
+        assert len(result["emotions"]) >= 1
+        for emotion in result["emotions"]:
+            assert isinstance(emotion, dict)
+            assert "label" in emotion
+            assert isinstance(emotion["label"], str)
+            assert "intensity" in emotion
+            assert 0.0 <= emotion["intensity"] <= 1.0
 
-        # Valence roughly matches expected range (with tolerance)
-        lo, hi = valence_range
-        assert lo - 0.15 <= result["valence"] <= hi + 0.15, \
-            f"valence {result['valence']} not in expected range ({lo}, {hi}) for: {content[:30]}..."
+        # Dominant emotion is a non-empty string
+        assert isinstance(result["dominant_emotion"], str)
+        assert len(result["dominant_emotion"]) > 0
 
         # Tags is a list
         assert isinstance(result["tags"], list)
@@ -95,7 +108,6 @@ class TestLLMQuality:
         """Check that domain has at least some semantic relevance."""
         result = await dehydrator.analyze("我家的橘猫小橘今天又偷吃了桌上的鱼")
         domains = set(result["domain"])
-        # Should contain something life/pet related
         life_related = {"生活", "宠物", "家庭", "日常", "动物"}
         assert domains & life_related, f"Expected life-related domain, got {domains}"
 
@@ -104,8 +116,8 @@ class TestLLMQuality:
         """Empty content should raise or return defaults gracefully."""
         try:
             result = await dehydrator.analyze("。")
-            # If it doesn't raise, should still return valid structure
             assert isinstance(result, dict)
-            assert 0.0 <= result["valence"] <= 1.0
+            assert "emotions" in result
+            assert isinstance(result["emotions"], list)
         except Exception:
-            pass  # Raising is also acceptable
+            pass

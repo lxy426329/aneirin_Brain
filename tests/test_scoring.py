@@ -321,7 +321,7 @@ class TestDatasetIntegrity:
             t = b["metadata"].get("type", "dynamic")
             types[t] = types.get(t, 0) + 1
 
-        assert types.get("dynamic", 0) >= 30
+        assert types.get("event", 0) >= 30
         assert types.get("permanent", 0) >= 3
         assert types.get("feel", 0) >= 3
 

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ombre Brain</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js?v=4.4.8"></script>
 <style>
   :root {
     --bg: #FDFCF0;
@@ -18,6 +19,7 @@
     --text-light: #B0A590;
     --accent: #2F4F4F;
     --accent-light: #3D6363;
+    --accent-hover: #254040;
     --accent-glow: rgba(47, 79, 79, 0.12);
     --positive: #4A7C59;
     --negative: #8B4A4A;
@@ -64,6 +66,9 @@
     color: var(--text-dim);
     font-weight: 300;
     letter-spacing: 0.3px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
   }
   .search-bar {
     margin-left: auto;
@@ -154,7 +159,7 @@
   .bucket-list { display: flex; flex-direction: column; gap: 8px; }
   .bucket-row {
     display: grid;
-    grid-template-columns: 32px 200px 100px 80px 60px 100px 1fr;
+    grid-template-columns: 32px 160px 80px 80px 1fr 60px;
     gap: 12px;
     padding: 14px 20px;
     border-radius: 16px;
@@ -178,6 +183,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     color: var(--text);
+  }
+  .bucket-row .type {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
   .bucket-row .domain {
     color: var(--text-dim);
@@ -205,6 +216,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  
 
   .v-bar {
     width: 44px;
@@ -404,19 +416,93 @@
   #network-canvas {
     width: 100%;
     height: calc(100vh - 180px);
-    background: var(--bg);
+    background: linear-gradient(135deg, #FDFCF0 0%, #F5F3E8 100%);
     border-radius: 20px;
     border: 1px solid var(--border);
     box-shadow: inset 4px 4px 10px var(--shadow-dark-subtle), inset -4px -4px 10px var(--shadow-light);
+    cursor: grab;
+  }
+  #network-canvas:active {
+    cursor: grabbing;
   }
   .network-legend {
     display: flex;
-    gap: 20px;
+    gap: 16px;
     margin-bottom: 16px;
     font-size: 12px;
     color: var(--text-dim);
+    flex-wrap: wrap;
   }
-  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-item { 
+    display: flex; 
+    align-items: center; 
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--surface);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    box-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+  }
+  .legend-line {
+    width: 20px;
+    height: 3px;
+    border-radius: 2px;
+  }
+  .network-controls {
+    position: absolute;
+    bottom: 80px;
+    right: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .network-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.2s;
+  }
+  .network-btn:hover {
+    background: var(--accent);
+    color: white;
+  }
+  
+  /* Identity and Pattern specific styles */
+  .identity-card {
+    background: linear-gradient(145deg, #E8F4F4, #D0E8E8);
+    border-color: #2F4F4F30;
+  }
+  .pattern-card {
+    background: linear-gradient(145deg, #F4F0E8, #E8E0D0);
+    border-color: #9A7B4F30;
+  }
+  .emotion-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .emotion-tag {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--surface);
+    color: var(--accent);
+  }
+  .emotion-tag.high { background: #FFE4E4; color: #8B4A4A; }
+  .emotion-tag.low { background: #E4FFE4; color: #4A7C59; }
   .legend-dot {
     width: 10px;
     height: 10px;
@@ -433,82 +519,6 @@
     font-weight: 300;
   }
 
-  .breath-controls {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 24px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .breath-controls input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 10px 14px;
-    border-radius: 12px;
-    font-family: inherit;
-    font-size: 13px;
-    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
-  }
-  .breath-controls input:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-glow), inset 2px 2px 4px var(--shadow-dark-subtle);
-  }
-  .breath-controls button {
-    background: linear-gradient(145deg, var(--accent-light), var(--accent));
-    color: #F0EDE4;
-    border: none;
-    padding: 12px 26px;
-    border-radius: 24px;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 6px 6px 12px rgba(40, 65, 65, 0.25), -4px -4px 10px var(--shadow-light), inset 0 1px 0 rgba(255,255,255,0.1);
-    position: relative;
-    overflow: hidden;
-  }
-  .breath-controls button::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 24px;
-    background: linear-gradient(145deg, rgba(255,255,255,0.08), transparent);
-    pointer-events: none;
-  }
-  .breath-controls button:hover {
-    box-shadow: 8px 8px 16px rgba(40, 65, 65, 0.3), -5px -5px 12px var(--shadow-light);
-    transform: translateY(-2px);
-  }
-  .breath-controls button:active {
-    transform: translateY(0);
-    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.2), inset -2px -2px 4px rgba(255,255,255,0.05);
-  }
-  .breath-controls label {
-    font-size: 12px;
-    color: var(--text-dim);
-    font-weight: 500;
-  }
-  .breath-info {
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-bottom: 20px;
-    line-height: 1.8;
-    padding: 16px 20px;
-    background: var(--surface);
-    border-radius: 16px;
-    border: 1px solid var(--border);
-  }
-  .breath-info code {
-    background: var(--accent-glow);
-    padding: 2px 8px;
-    border-radius: 6px;
-    color: var(--accent);
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 11px;
-  }
   .score-row {
     display: grid;
     grid-template-columns: 32px 180px 1fr 60px;
@@ -550,31 +560,27 @@
   .score-pass { color: var(--positive); }
   .score-fail { color: var(--text-light); }
 
-  .breath-flow {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 24px;
-    padding: 16px 20px;
+  .memory-item {
     background: var(--surface);
+    border-radius: 10px;
+    padding: 12px;
     border: 1px solid var(--border);
-    border-radius: 20px;
-    font-size: 12px;
-    overflow-x: auto;
-    box-shadow: 4px 4px 10px var(--shadow-dark-subtle), -4px -4px 10px var(--shadow-light);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
-  .flow-step {
-    padding: 10px 14px;
-    border-radius: 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    white-space: nowrap;
-    text-align: center;
-    min-width: 90px;
-    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
+  .memory-item:hover {
+    border-color: var(--accent);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
-  .flow-step.active { border-color: var(--accent); color: var(--accent); }
-  .flow-arrow { color: var(--text-light); font-size: 16px; }
+  .memory-item.pinned {
+    border-color: #FFD70040;
+  }
+  .memory-item.pinned:hover {
+    border-color: #FFD700;
+  }
 
   @media (max-width: 768px) {
     .header { padding: 20px; flex-wrap: wrap; }
@@ -597,6 +603,31 @@
     .config-row label { width: 100%; }
     .breath-flow { display: none; }
   }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow-y: auto;
+  }
+
+  .modal-content {
+    background: var(--surface-solid);
+    border: 1px solid var(--border-strong);
+    border-radius: 24px;
+    padding: 32px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+    max-width: 90vw;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+  }
 </style>
 </head>
 <body>
@@ -604,6 +635,7 @@
 <div class="header">
   <h1>◐ Ombre Brain</h1>
   <span class="stats" id="stats">loading...</span>
+  <div id="ai-status-badge" style="margin-left:8px;padding:4px 10px;border-radius:12px;font-size:11px;background:rgba(160,140,110,0.1);color:var(--text-dim);border:1px solid var(--border);">AI: 检测中</div>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="搜索记忆…" />
   </div>
@@ -612,11 +644,14 @@
 
 <div class="tabs">
   <div class="tab active" data-tab="list">记忆桶</div>
-  <div class="tab" data-tab="breath">Breath 模拟</div>
+  <div class="tab" data-tab="directory">记忆目录</div>
+  <div class="tab" data-tab="experience">年轮</div>
+  <div class="tab" data-tab="anchor">锚点</div>
+  <div class="tab" data-tab="identity">名册</div>
+  <div class="tab" data-tab="timeline">时间链</div>
+  <div class="tab" data-tab="candlestick">烛台</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
-  <div class="tab" data-tab="import">导入</div>
-  <div class="tab" data-tab="settings">设置</div>
 </div>
 
 <div class="content" id="list-view">
@@ -626,140 +661,305 @@
   </div>
 </div>
 
-<div class="content" id="breath-view" style="display:none">
-  <div class="breath-flow" id="breath-flow">
-    <div class="flow-step" id="fs-input">① 输入<br><small>query / valence / arousal</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-candidates">② 候选池<br><small id="fs-cand-n">— 桶</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-scoring">③ 四维评分<br><small>topic×4 + emotion×2 + time×2.5 + imp×1</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-threshold">④ 阈值过滤<br><small id="fs-thresh-n">≥50 → — 通过</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-sort">⑤ 降序排列<br><small>返回 top N</small></div>
+<div class="content" id="directory-view" style="display:none;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <div>
+      <h2 style="margin:0;font-size:22px;">记忆目录</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin:4px 0 0 0;">快速了解记忆库整体结构，按类型分类展示关键记忆条目和数据分析</p>
+    </div>
+    <button onclick="loadDirectory(true)" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.background='var(--border)'" onmouseout="this.style.background='var(--surface)'">
+      刷新
+    </button>
   </div>
+  
+  <div id="directory-stats" style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:24px;"></div>
+  
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
+    <div style="background:var(--surface);border-radius:16px;padding:24px;border:1px solid var(--border);">
+      <h3 style="margin:0 0 20px 0;font-size:15px;color:var(--text);font-weight:600;">类型分布</h3>
+      <div style="position:relative;height:280px;width:100%;">
+        <canvas id="directory-type-chart"></canvas>
+      </div>
+    </div>
+    <div style="background:var(--surface);border-radius:16px;padding:24px;border:1px solid var(--border);">
+      <h3 style="margin:0 0 20px 0;font-size:15px;color:var(--text);font-weight:600;">重要度分布</h3>
+      <div style="position:relative;height:280px;width:100%;">
+        <canvas id="directory-importance-chart"></canvas>
+      </div>
+    </div>
+  </div>
+  
+  <div style="background:var(--surface);border-radius:16px;padding:24px;border:1px solid var(--border);margin-bottom:24px;">
+    <h3 style="margin:0 0 20px 0;font-size:15px;color:var(--text);font-weight:600;">重要度维度分析</h3>
+    <div style="position:relative;height:320px;width:100%;">
+      <canvas id="directory-importance-radar"></canvas>
+    </div>
+  </div>
+  
+  <div style="background:var(--surface);border-radius:12px;padding:16px;border:1px solid var(--border);margin-bottom:24px;">
+    <h3 style="margin:0 0 12px 0;font-size:13px;color:var(--text-dim);font-weight:500;">活跃热力图</h3>
+    <div id="directory-heatmap" style="overflow-x:auto;"></div>
+  </div>
+  
+  <div id="directory-content" style="min-height:200px;"></div>
+  
+  <div id="directory-empty" class="loading" style="display:none;text-align:center;padding:40px;color:var(--text-dim);">暂无记忆数据</div>
+</div>
 
-  <div class="breath-controls">
-    <label>Query</label>
-    <input type="text" id="breath-query" placeholder="关键词…" style="width:220px" />
-    <label>Valence</label>
-    <input type="number" id="breath-valence" placeholder="0~1" min="0" max="1" step="0.1" style="width:80px" />
-    <label>Arousal</label>
-    <input type="number" id="breath-arousal" placeholder="0~1" min="0" max="1" step="0.1" style="width:80px" />
-    <button onclick="runBreathDebug()">模拟 Breath</button>
+<div class="content" id="experience-view" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+      <h2>年轮</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">从事件中消化得到的经验，用于记忆补充和智能决策</p>
+    </div>
+    <button class="btn-primary" onclick="showExperienceEditor()">+ 添加经验</button>
   </div>
+  
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+    <div id="experience-stats" style="display:flex;gap:16px;"></div>
+    <div style="display:flex;gap:6px;">
+      <button onclick="filterExperiences('')" class="exp-filter-btn active" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">全部</button>
+      <button onclick="filterExperiences('user')" class="exp-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">用户经验</button>
+      <button onclick="filterExperiences('agent')" class="exp-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">智能体经验</button>
+    </div>
+  </div>
+  
+  <div id="experience-list"></div>
+  
+  <div id="experience-empty" class="loading" style="display:none;">暂无经验记录</div>
+</div>
 
-  <div class="breath-info" id="breath-info" style="display:none"></div>
-  <div id="breath-results">
-    <div class="loading">输入 query 后点击「模拟 Breath」查看评分链路</div>
+<div class="content" id="timeline-view" style="display:none">
+  <h2>时间链</h2>
+  <p style="color:var(--text-dim);font-size:13px;margin-bottom:20px;">通过 AI 梳理事情发展流程，自动分析事件因果关系和时间顺序</p>
+  
+  <div style="display:flex;gap:12px;margin-bottom:24px;">
+    <input type="text" id="timeline-query" placeholder="输入关键词搜索相关事件（如：项目、会议等）" 
+      style="flex:1;padding:10px;border-radius:12px;border:1px solid var(--border);font-size:13px;" />
+    <button class="btn-primary" onclick="generateTimeline()">生成时间链</button>
   </div>
+  
+  <div id="timeline-loading" style="display:none;text-align:center;padding:40px;">
+    <div style="color:var(--text-dim);">AI 正在梳理事件流程...</div>
+  </div>
+  
+  <div id="timeline-result" style="display:none;">
+    <div style="background:var(--surface);border-radius:16px;padding:24px;margin-bottom:20px;cursor:pointer;" onclick="toggleTimelineAll()">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div>
+          <h3 id="timeline-title" style="margin:0 0 12px 0;font-size:20px;"></h3>
+          <p id="timeline-summary" style="color:var(--text-secondary);line-height:1.6;"></p>
+        </div>
+        <div id="timeline-all-arrow" style="font-size:20px;color:var(--text-dim);transition:transform 0.2s;flex-shrink:0;margin-left:16px;">▼</div>
+      </div>
+    </div>
+    
+    <div id="timeline-phases" style="display:none;">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+        <button onclick="toggleTimelineAll();event.stopPropagation();" style="padding:6px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);font-size:12px;cursor:pointer;">收起全部</button>
+      </div>
+    </div>
+  </div>
+  
+  <div id="timeline-empty" style="text-align:center;padding:60px;color:var(--text-dim);">
+    <div>暂无时间链数据</div>
+    <div style="font-size:12px;margin-top:8px;">输入关键词并点击"生成时间链"开始分析</div>
+  </div>
+</div>
+
+<div class="content" id="candlestick-view" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+      <h2>烛台</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">智能体对事件的感想和反思，记录内心的感悟</p>
+    </div>
+    <button class="btn-primary" onclick="showCandlestickEditor()">+ 记录感想</button>
+  </div>
+  
+  <div id="candlestick-stats" style="margin-bottom:24px;"></div>
+  
+  <div id="candlestick-list"></div>
+  
+  <div id="candlestick-empty" class="loading" style="display:none;">暂无烛台记录</div>
+</div>
+
+
+
+<div class="content" id="anchor-view" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+      <h2>锚点</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">记录高情绪瞬间，用于快速定位重要记忆</p>
+    </div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-secondary" onclick="autoCreateAnchors()">自动检测</button>
+      <button class="btn-primary" onclick="showAnchorEditor()">+ 添加锚点</button>
+    </div>
+  </div>
+  
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+    <div id="anchor-stats" style="display:flex;gap:16px;"></div>
+    <div style="display:flex;gap:6px;">
+      <button onclick="filterAnchors('', this)" class="anchor-filter-btn active" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">全部</button>
+      <button onclick="filterAnchors('high', this)" class="anchor-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">高情绪</button>
+      <button onclick="filterAnchors('medium', this)" class="anchor-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">中情绪</button>
+    </div>
+  </div>
+  
+  <div id="anchor-list"></div>
+  
+  <div id="anchor-empty" class="loading" style="display:none;">暂无锚点记录</div>
 </div>
 
 <div class="content" id="network-view" style="display:none">
   <div class="network-legend">
-    <div class="legend-item"><span class="legend-dot" style="background:#2F4F4F"></span> dynamic</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#2F4F4F"></span> event</div>
     <div class="legend-item"><span class="legend-dot" style="background:#9A7B4F"></span> permanent</div>
     <div class="legend-item"><span class="legend-dot" style="background:#8B6A6A"></span> feel</div>
-    <div class="legend-item"><span class="legend-dot" style="background:#B0A590"></span> archived</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#4A7C59"></span> identity</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#6A6A8B"></span> pattern</div>
+    <div style="border-left:1px solid var(--border);margin:0 16px;"></div>
+    <div class="legend-item"><span class="legend-line" style="background:#2196F3;"></span> 同一事件</div>
+    <div class="legend-item"><span class="legend-line" style="background:#4CAF50;"></span> 相关内容</div>
+    <div class="legend-item"><span class="legend-line" style="background:#FF9800;"></span> 父子关系</div>
+    <div class="legend-item"><span class="legend-line" style="background:#9C27B0;"></span> 语义相似</div>
+    <div class="legend-item"><span class="legend-line" style="background:#E91E63;"></span> 共享标签</div>
+    <div style="margin-left:auto;font-size:11px;color:var(--text-dim);">
+      💡 滚轮缩放 | 拖拽节点移动 | 点击查看详情
+    </div>
   </div>
-  <canvas id="network-canvas"></canvas>
+  <div style="position:relative;">
+    <canvas id="network-canvas"></canvas>
+    <div class="network-controls">
+      <button class="network-btn" onclick="networkZoomIn()" title="放大">+</button>
+      <button class="network-btn" onclick="networkZoomOut()" title="缩小">−</button>
+      <button class="network-btn" onclick="networkReset()" title="重置视图">↺</button>
+    </div>
+  </div>
 </div>
 
-<div class="content" id="import-view" style="display:none">
-  <div style="max-width:720px;margin:0 auto;">
-    <h3>历史对话导入</h3>
-    <p style="color:var(--text-dim);font-size:13px;">支持 Claude JSON、ChatGPT 导出、DeepSeek、Markdown、纯文本格式</p>
-
-    <div id="import-upload-zone" style="border:2px dashed var(--border);border-radius:16px;padding:40px;text-align:center;cursor:pointer;margin:20px 0;transition:border-color .2s;">
-      <div style="font-size:32px;margin-bottom:8px;">📁</div>
-      <div>拖拽文件到此处，或 <span style="color:var(--accent);text-decoration:underline;">点击选择</span></div>
-      <input type="file" id="import-file-input" accept=".json,.txt,.md,.jsonl" style="display:none" />
+<!-- Identity Management View -->
+<div class="content" id="identity-view" style="display:none">
+  <div style="max-width:800px;margin:0 auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+      <h2>名册</h2>
+      <button class="btn-primary" onclick="showIdentityEditor()">+ 创建身份</button>
     </div>
+    
+    <div id="identity-list" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;"></div>
+    
+    <div id="identity-empty" class="loading" style="display:none;">暂无身份档案</div>
+  </div>
+</div>
 
-    <div style="margin:12px 0;">
-      <label><input type="checkbox" id="import-preserve-raw" /> 保留原文模式（特殊情境/暗号/仪式性内容不摘要）</label>
+<!-- Identity Editor Modal -->
+<div id="identity-editor-modal" class="modal-overlay" style="display:none;">
+  <div style="background:var(--surface-solid);border-radius:24px;padding:32px;max-width:520px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,0.15);margin-top:40px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="identity-editor-title">创建身份档案</h3>
+      <button onclick="closeIdentityEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
     </div>
-
-    <div id="import-progress" style="display:none;margin:20px 0;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-        <span id="import-status-text">准备中…</span>
-        <span id="import-progress-text">0/0</span>
+    
+    <input type="hidden" id="identity-editor-id" />
+    
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>姓名 *</label>
+      <input type="text" id="identity-editor-name" placeholder="请输入姓名" />
+    </div>
+    
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>别名</label>
+      <input type="text" id="identity-editor-aliases" placeholder="逗号分隔，如：小张, 三哥" />
+    </div>
+    
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div class="config-row">
+        <label>性别</label>
+        <select id="identity-editor-gender" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);">
+          <option value="">请选择</option>
+          <option value="男">男</option>
+          <option value="女">女</option>
+          <option value="其他">其他</option>
+        </select>
       </div>
-      <div style="background:var(--surface);border-radius:8px;height:12px;overflow:hidden;">
-        <div id="import-progress-bar" style="height:100%;background:var(--accent);border-radius:8px;transition:width .3s;width:0%;"></div>
-      </div>
-      <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;color:var(--text-dim);">
-        <span>API调用: <b id="import-api-calls">0</b></span>
-        <span>新建: <b id="import-created">0</b></span>
-        <span>合并: <b id="import-merged">0</b></span>
-        <span>原文: <b id="import-raw">0</b></span>
-      </div>
-      <div style="margin-top:12px;">
-        <button id="import-pause-btn" onclick="pauseImport()" style="display:none;">⏸ 暂停</button>
+      <div class="config-row">
+        <label>年龄</label>
+        <input type="number" id="identity-editor-age" placeholder="年龄" min="0" max="150" />
       </div>
     </div>
-
-    <div id="import-errors" style="display:none;margin:12px 0;padding:12px;background:var(--surface);border-radius:8px;font-size:12px;color:var(--negative);max-height:120px;overflow-y:auto;"></div>
-
-    <div id="import-results-section" style="margin:20px 0;">
-      <h3>已导入记忆 <button onclick="loadImportResults()" style="font-size:12px;padding:2px 10px;">刷新</button></h3>
-      <div id="import-results-list" style="max-height:500px;overflow-y:auto;"></div>
+    
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>职业</label>
+      <input type="text" id="identity-editor-occupation" placeholder="如：软件工程师" />
     </div>
-
-    <hr style="border-color:var(--border);margin:24px 0;" />
-
-    <h3>高频模式检测</h3>
-    <button onclick="detectPatterns()">🔍 检测高频模式</button>
-    <div id="import-patterns" style="margin-top:16px;"></div>
+    
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>性格特征</label>
+      <input type="text" id="identity-editor-traits" placeholder="逗号分隔，如：乐观, 细心, 幽默" />
+    </div>
+    
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>兴趣爱好</label>
+      <input type="text" id="identity-editor-interests" placeholder="逗号分隔，如：阅读, 跑步, 摄影" />
+    </div>
+    
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">基本信息（自定义字段）</label>
+      <div id="identity-basic-info-list">
+        <div style="display:flex;gap:8px;margin-bottom:6px;">
+          <input type="text" placeholder="键" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);" class="basic-info-key" />
+          <input type="text" placeholder="值" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);" class="basic-info-value" />
+          <button onclick="addBasicInfoRow()" style="padding:8px 12px;border:none;background:var(--accent);color:white;border-radius:8px;cursor:pointer;">+</button>
+        </div>
+      </div>
+    </div>
+    
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">人际关系</label>
+      <textarea id="identity-editor-relationships" rows="3" placeholder="每行一条关系描述，如：与李四是大学同学" style="width:100%;padding:10px;border-radius:12px;border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+    
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">关联名册（选择已有名册建立关系）</label>
+      <div id="identity-related-list" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:12px;padding:8px;background:var(--surface);"></div>
+    </div>
+    
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">备注</label>
+      <textarea id="identity-editor-content" rows="4" placeholder="其他备注信息" style="width:100%;padding:10px;border-radius:12px;border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+    
+    <div style="display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn-secondary" onclick="closeIdentityEditor()">取消</button>
+      <button class="btn-primary" onclick="saveIdentity()">保存</button>
+    </div>
+    
+    <div id="identity-editor-msg" style="margin-top:12px;font-size:13px;"></div>
   </div>
 </div>
 
 <div class="content" id="config-view" style="display:none">
   <div style="max-width:640px;margin:0 auto;">
     <div class="config-section">
-      <h3>脱水 / 打标 API</h3>
-      <div class="config-row">
-        <label>Model</label>
-        <input type="text" id="cfg-dehy-model" placeholder="gemini-2.5-flash-lite" />
-      </div>
-      <div class="config-row">
-        <label>Base URL</label>
-        <input type="text" id="cfg-dehy-url" placeholder="https://..." />
-      </div>
+      <h3>AI 配置</h3>
       <div class="config-row">
         <label>API Key</label>
-        <input type="password" id="cfg-dehy-key" placeholder="当前: 加载中…" />
+        <input type="password" id="cfg-dehy-key" placeholder="输入你的 API Key" />
       </div>
-      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空不改。不会持久化到 yaml（请用环境变量）</div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">输入你的 API Key，已设置时显示掩码</div>
       <div class="config-row">
-        <label>Max Tokens</label>
-        <input type="number" id="cfg-dehy-maxtokens" min="128" max="8192" />
+        <label>Base URL</label>
+        <input type="text" id="cfg-dehy-url" placeholder="https://api.deepseek.com/v1" />
       </div>
-      <div class="config-row">
-        <label>Temperature</label>
-        <input type="number" id="cfg-dehy-temp" min="0" max="2" step="0.05" />
-      </div>
-    </div>
-
-    <div class="config-section">
-      <h3>向量化 Embedding</h3>
-      <div class="config-row">
-        <label>启用</label>
-        <select id="cfg-emb-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
-      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空使用默认 DeepSeek API</div>
       <div class="config-row">
         <label>Model</label>
-        <input type="text" id="cfg-emb-model" placeholder="gemini-embedding-001" />
+        <input type="text" id="cfg-dehy-model" placeholder="deepseek-chat" />
       </div>
-    </div>
-
-    <div class="config-section">
-      <h3>其他参数</h3>
-      <div class="config-row">
-        <label>合并阈值</label>
-        <input type="number" id="cfg-merge" min="0" max="100" />
+      <div style="margin-top:12px;padding-left:122px;">
+        <button onclick="testAIConnection()" id="btn-ai-test" style="padding:8px 20px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer;">测试AI连接</button>
+        <span id="ai-status" style="margin-left:12px;font-size:12px;color:var(--text-light);"></span>
       </div>
-      <div style="margin-top:-4px;padding-left:122px;font-size:11px;color:var(--text-light);">0-100，越高越难合并相似桶</div>
     </div>
 
     <div style="display:flex;gap:12px;margin-top:8px;">
@@ -769,73 +969,75 @@
     <div id="config-status" style="margin-top:16px;font-size:13px;"></div>
 
     <div class="config-section" style="margin-top:28px;">
-      <h3>系统信息</h3>
-      <div id="config-readonly" style="font-size:13px;color:var(--text-dim);line-height:1.8;">加载中…</div>
-    </div>
-  </div>
-</div>
-
-<div class="detail-panel" id="detail-panel">
-  <button class="close-btn" onclick="closeDetail()">✕</button>
-  <div id="detail-content"></div>
-</div>
-
-<!-- Settings Tab View -->
-<div class="content" id="settings-view" style="display:none">
-  <div style="max-width:580px;margin:0 auto;">
-
-    <div class="config-section">
-      <h3>服务状态</h3>
-      <div id="settings-status" style="font-size:13px;color:var(--text-dim);line-height:2;">加载中…</div>
-      <button onclick="loadSettingsStatus()" style="margin-top:8px;font-size:12px;padding:4px 12px;">刷新状态</button>
-    </div>
-
-    <div class="config-section">
       <h3>修改密码</h3>
       <div id="settings-env-notice" style="display:none;font-size:12px;color:var(--warning);margin-bottom:10px;">
         ⚠ 当前使用环境变量 OMBRE_DASHBOARD_PASSWORD，请直接修改环境变量。
       </div>
-      <div id="settings-pwd-form">
-        <div class="config-row">
-          <label>当前密码</label>
-          <input type="password" id="settings-current-pwd" placeholder="当前密码" />
-        </div>
-        <div class="config-row">
-          <label>新密码</label>
-          <input type="password" id="settings-new-pwd" placeholder="新密码（至少6位）" />
-        </div>
-        <div class="config-row">
-          <label>确认新密码</label>
-          <input type="password" id="settings-new-pwd2" placeholder="再次输入新密码" />
-        </div>
-        <button class="btn-primary" onclick="changePassword()" style="margin-top:4px;">修改密码</button>
-        <div id="settings-pwd-msg" style="margin-top:10px;font-size:13px;"></div>
-      </div>
-    </div>
-
-    <div class="config-section">
-      <h3>宿主机记忆桶目录 (Docker)</h3>
-      <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;">
-        设置 docker-compose 中 <code>${OMBRE_HOST_VAULT_DIR:-./buckets}:/data</code> 的宿主机路径。
-        留空则使用项目内 <code>./buckets</code>。
-        <span style="color:var(--warning);">⚠ 修改后需在宿主机执行 <code>docker compose down && docker compose up -d</code> 才会生效。</span>
+      <div class="config-row">
+        <label>当前密码</label>
+        <input type="password" id="settings-current-pwd" placeholder="当前密码" />
       </div>
       <div class="config-row">
-        <label>路径</label>
-        <input type="text" id="settings-host-vault" placeholder="例如 /Users/you/Obsidian/Ombre Brain" style="flex:1;" />
+        <label>新密码</label>
+        <input type="password" id="settings-new-pwd" placeholder="新密码（至少6位）" />
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-        <button class="btn-primary" onclick="saveHostVault()">保存到 .env</button>
-        <button onclick="loadHostVault()" style="font-size:12px;padding:4px 12px;">重新加载</button>
-        <span id="settings-host-vault-msg" style="font-size:12px;"></span>
+      <div class="config-row">
+        <label>确认新密码</label>
+        <input type="password" id="settings-new-pwd2" placeholder="再次输入新密码" />
+      </div>
+      <button class="btn-primary" onclick="changePassword()" style="margin-top:4px;">修改密码</button>
+      <div id="settings-pwd-msg" style="margin-top:10px;font-size:13px;"></div>
+    </div>
+
+    <div class="config-section" style="margin-top:28px;">
+      <h3>数据导出/导入</h3>
+      <div style="font-size:12px;color:var(--text-light);margin-bottom:16px;">
+        导出大脑数据（buckets/ 目录和数据库）为 zip 文件，或从 zip 文件恢复数据。
+      </div>
+      
+      <div style="margin-bottom:20px;padding:16px;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
+        <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px;">📤 导出</div>
+        
+        <button onclick="doExportBrain('')" class="btn-primary" style="width:100%;margin-bottom:8px;">
+          一键导出（自动命名）
+        </button>
+        
+        <div style="display:flex;gap:10px;">
+          <input type="text" id="export-path" placeholder="自定义导出路径（可选）" 
+            style="flex:1;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:13px;" />
+          <button onclick="doExportBrain(document.getElementById('export-path').value)" class="btn-secondary">
+            导出到指定路径
+          </button>
+        </div>
+        
+        <div id="export-status" style="margin-top:10px;font-size:13px;"></div>
+      </div>
+      
+      <div style="padding:16px;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
+        <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px;">📥 导入</div>
+        
+        <div style="display:flex;gap:10px;margin-bottom:10px;">
+          <input type="text" id="import-path" placeholder="zip 文件路径" 
+            style="flex:1;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:13px;" />
+          <button onclick="doImportBrain()" class="btn-secondary">
+            导入
+          </button>
+        </div>
+        
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="import-overwrite" />
+          <label for="import-overwrite" style="font-size:12px;color:var(--text-dim);">覆盖现有数据</label>
+          <span style="font-size:11px;color:var(--text-light);">(不勾选则跳过已有文件)</span>
+        </div>
+        
+        <div id="import-status" style="margin-top:10px;font-size:13px;"></div>
       </div>
     </div>
 
-    <div class="config-section">
-      <h3>账号操作</h3>
-      <button onclick="doLogout()" style="color:var(--negative);border-color:var(--negative);">退出登录</button>
+    <div class="config-section" style="margin-top:28px;">
+      <h3>系统信息</h3>
+      <div id="config-readonly" style="font-size:13px;color:var(--text-dim);line-height:1.8;">加载中…</div>
     </div>
-
   </div>
 </div>
 
@@ -863,790 +1065,233 @@
   </div>
 </div>
 
-<script>
-// ========================================
-// Auth system / 认证系统
-// ========================================
-async function checkAuth() {
-  try {
-    const resp = await fetch('/auth/status');
-    const data = await resp.json();
-    if (data.setup_needed) {
-      document.getElementById('auth-subtitle').textContent = '首次设置';
-      document.getElementById('auth-setup-form').style.display = 'block';
-    } else if (data.authenticated) {
-      document.getElementById('auth-overlay').style.display = 'none';
-    } else {
-      document.getElementById('auth-subtitle').textContent = '请输入访问密码';
-      document.getElementById('auth-login-form').style.display = 'block';
-    }
-  } catch {
-    document.getElementById('auth-overlay').style.display = 'none';
-  }
-}
+<div class="detail-panel" id="detail-panel">
+  <button class="close-btn" onclick="closeDetail()">✕</button>
+  <div id="detail-content"></div>
+</div>
 
-function showAuthError(msg) {
-  const el = document.getElementById('auth-error');
-  el.textContent = msg;
-  el.style.display = 'block';
-}
+<div class="modal-overlay" id="experience-modal" style="display:none;">
+  <div class="modal-content" style="width:500px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="exp-modal-title">添加经验</h3>
+      <button onclick="closeExperienceEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">✕</button>
+    </div>
+    
+    <input type="hidden" id="exp-edit-id" />
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">标题</label>
+      <input type="text" id="exp-title" placeholder="输入经验标题" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+    </div>
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">经验类型</label>
+      <select id="exp-type" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;">
+        <option value="user">用户经验</option>
+        <option value="agent">智能体经验</option>
+      </select>
+    </div>
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">来源事件（可选）</label>
+      <input type="text" id="exp-source" placeholder="关联的事件或来源" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+    </div>
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">标签（逗号分隔）</label>
+      <input type="text" id="exp-tags" placeholder="如：健康, 习惯, 工作" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+    </div>
+    
+    <div style="margin-bottom:20px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">经验内容</label>
+      <textarea id="exp-content" rows="6" placeholder="详细描述从事件中学到的经验..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;"></textarea>
+    </div>
+    
+    <div style="display:flex;gap:10px;">
+      <button onclick="closeExperienceEditor()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;">取消</button>
+      <button onclick="saveExperience()" class="btn-primary" style="flex:1;">保存</button>
+    </div>
+  </div>
+</div>
 
-async function doSetup() {
-  const p1 = document.getElementById('auth-setup-pwd').value;
-  const p2 = document.getElementById('auth-setup-pwd2').value;
-  if (p1.length < 6) return showAuthError('密码至少6位');
-  if (p1 !== p2) return showAuthError('两次密码不一致');
-  const resp = await fetch('/auth/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: p1}) });
-  if (resp.ok) {
-    document.getElementById('auth-overlay').style.display = 'none';
-  } else {
-    const d = await resp.json();
-    showAuthError(d.detail || '设置失败');
-  }
-}
-
-async function doLogin() {
-  const pwd = document.getElementById('auth-login-pwd').value;
-  const resp = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pwd}) });
-  if (resp.ok) {
-    document.getElementById('auth-overlay').style.display = 'none';
-  } else {
-    const d = await resp.json();
-    showAuthError(d.detail || '密码错误');
-  }
-}
-
-async function doLogout() {
-  await fetch('/auth/logout', { method: 'POST' });
-  document.getElementById('auth-setup-form').style.display = 'none';
-  document.getElementById('auth-login-form').style.display = 'none';
-  document.getElementById('auth-login-form').style.display = 'block';
-  document.getElementById('auth-subtitle').textContent = '请输入访问密码';
-  document.getElementById('auth-error').style.display = 'none';
-  document.getElementById('auth-overlay').style.display = 'flex';
-}
-
-async function changePassword() {
-  const currentPwd = document.getElementById('settings-current-pwd').value;
-  const newPwd = document.getElementById('settings-new-pwd').value;
-  const newPwd2 = document.getElementById('settings-new-pwd2').value;
-  const msgEl = document.getElementById('settings-pwd-msg');
-  if (newPwd.length < 6) { msgEl.style.color = 'var(--negative)'; msgEl.textContent = '新密码至少6位'; return; }
-  if (newPwd !== newPwd2) { msgEl.style.color = 'var(--negative)'; msgEl.textContent = '两次密码不一致'; return; }
-  const resp = await authFetch('/auth/change-password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({current: currentPwd, new: newPwd}) });
-  if (!resp) return;
-  if (resp.ok) {
-    msgEl.style.color = 'var(--accent)'; msgEl.textContent = '密码修改成功';
-    document.getElementById('settings-current-pwd').value = '';
-    document.getElementById('settings-new-pwd').value = '';
-    document.getElementById('settings-new-pwd2').value = '';
-  } else {
-    const d = await resp.json();
-    msgEl.style.color = 'var(--negative)'; msgEl.textContent = d.detail || '修改失败';
-  }
-}
-
-async function loadSettingsStatus() {
-  const el = document.getElementById('settings-status');
-  try {
-    const resp = await authFetch('/api/status');
-    if (!resp) return;
-    const d = await resp.json();
-    const noticeEl = document.getElementById('settings-env-notice');
-    if (d.using_env_password) noticeEl.style.display = 'block';
-    else noticeEl.style.display = 'none';
-    el.innerHTML = `
-      <b>版本</b>：${d.version}<br>
-      <b>Bucket 总数</b>：${(d.buckets?.total ?? 0)} （永久:${d.buckets?.permanent ?? 0} / 动态:${d.buckets?.dynamic ?? 0} / 归档:${d.buckets?.archive ?? 0}）<br>
-      <b>衰减引擎</b>：${d.decay_engine}<br>
-      <b>向量搜索</b>：${d.embedding_enabled ? '已启用' : '未启用'}<br>
-    `;
-  } catch(e) {
-    el.textContent = '加载失败: ' + e;
-  }
-  // Also refresh the host-vault input whenever the settings tab is loaded.
-  loadHostVault();
-}
-
-async function loadHostVault() {
-  const input = document.getElementById('settings-host-vault');
-  const msg = document.getElementById('settings-host-vault-msg');
-  if (!input) return;
-  msg.textContent = '';
-  msg.style.color = 'var(--text-dim)';
-  try {
-    const resp = await authFetch('/api/host-vault');
-    if (!resp) return;
-    const d = await resp.json();
-    input.value = d.value || '';
-    if (d.source === 'env') {
-      msg.textContent = '当前由进程环境变量提供（修改 .env 不会立即覆盖）';
-      msg.style.color = 'var(--warning)';
-    } else if (d.source === 'file') {
-      msg.textContent = '当前来自 ' + (d.env_file || '.env');
-    } else {
-      msg.textContent = '尚未设置（默认使用 ./buckets）';
-    }
-  } catch(e) {
-    msg.style.color = 'var(--negative)';
-    msg.textContent = '加载失败: ' + e;
-  }
-}
-
-async function saveHostVault() {
-  const input = document.getElementById('settings-host-vault');
-  const msg = document.getElementById('settings-host-vault-msg');
-  if (!input) return;
-  const value = input.value.trim();
-  msg.textContent = '保存中…';
-  msg.style.color = 'var(--text-dim)';
-  try {
-    const resp = await authFetch('/api/host-vault', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({value})
-    });
-    if (!resp) return;
-    const d = await resp.json();
-    if (resp.ok) {
-      msg.style.color = 'var(--accent)';
-      msg.textContent = '已保存 → ' + (d.env_file || '.env') + '（需重启容器生效）';
-    } else {
-      msg.style.color = 'var(--negative)';
-      msg.textContent = d.error || '保存失败';
-    }
-  } catch(e) {
-    msg.style.color = 'var(--negative)';
-    msg.textContent = '保存失败: ' + e;
-  }
-}
-
-// authFetch: wraps fetch, shows auth overlay on 401
-async function authFetch(url, options) {
-  const resp = await fetch(url, options);
-  if (resp.status === 401) {
-    doLogout();
-    return null;
-  }
-  return resp;
-}
-
-// ========================================
-
-const BASE = location.origin;
-let allBuckets = [];
-let currentFilter = 'all';
-
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const target = tab.dataset.tab;
-    document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
-    document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
-    document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
-    document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
-    document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
-    document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
-    if (target === 'network') loadNetwork();
-    if (target === 'config') loadConfig();
-    if (target === 'import') { pollImportStatus(); loadImportResults(); }
-    if (target === 'settings') loadSettingsStatus();
-  });
-});
-
-let searchTimer;
-document.getElementById('search-input').addEventListener('input', (e) => {
-  clearTimeout(searchTimer);
-  const q = e.target.value.trim();
-  searchTimer = setTimeout(() => {
-    if (q) searchBuckets(q);
-    else renderBuckets(allBuckets);
-  }, 300);
-});
-
-async function loadBuckets() {
-  try {
-    const res = await fetch(BASE + '/api/buckets');
-    const data = await res.json();
-    if (!res.ok || !Array.isArray(data)) {
-      throw new Error((data && data.error) ? data.error : `HTTP ${res.status}`);
-    }
-    allBuckets = data;
-    updateStats();
-    buildFilters();
-    renderBuckets(allBuckets);
-  } catch (e) {
-    document.getElementById('bucket-list').innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
-  }
-}
-
-function updateStats() {
-  const total = allBuckets.length;
-  const pinned = allBuckets.filter(b => b.pinned).length;
-  const feels = allBuckets.filter(b => b.type === 'feel').length;
-  const resolved = allBuckets.filter(b => b.resolved).length;
-  const digested = allBuckets.filter(b => b.digested).length;
-  document.getElementById('stats').textContent =
-    total + ' 桶 · ' + pinned + ' 钉选 · ' + feels + ' feel · ' + resolved + ' 已解决 · ' + digested + ' 已消化';
-}
-
-function buildFilters() {
-  const domains = new Set();
-  allBuckets.forEach(b => (b.domain || []).forEach(d => domains.add(d)));
-  const filters = document.getElementById('filters');
-  const types = [
-    { key: 'all', label: '全部' },
-    { key: 'pinned', label: '📌 钉选' },
-    { key: 'feel', label: '🫧 Feel' },
-    { key: 'unresolved', label: '⚡ 未解决' },
-    { key: 'digested', label: '🌿 已消化' },
-    { key: 'archived', label: '📦 归档' },
-  ];
-  filters.innerHTML = types.map(function(t) {
-    return '<button class="filter-btn ' + (t.key === 'all' ? 'active' : '') + '" data-filter="' + t.key + '">' + t.label + '</button>';
-  }).join('') + Array.from(domains).slice(0, 10).map(function(d) {
-    return '<button class="filter-btn" data-filter="domain:' + d + '">' + d + '</button>';
-  }).join('');
-
-  filters.addEventListener('click', function(e) {
-    var btn = e.target.closest('.filter-btn');
-    if (!btn) return;
-    filters.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
-    btn.classList.add('active');
-    currentFilter = btn.dataset.filter;
-    renderBuckets(filterBuckets(allBuckets));
-  });
-}
-
-function filterBuckets(buckets) {
-  if (currentFilter === 'all') return buckets;
-  if (currentFilter === 'pinned') return buckets.filter(function(b) { return b.pinned; });
-  if (currentFilter === 'feel') return buckets.filter(function(b) { return b.type === 'feel'; });
-  if (currentFilter === 'unresolved') return buckets.filter(function(b) { return !b.resolved && b.type !== 'permanent' && !b.pinned; });
-  if (currentFilter === 'digested') return buckets.filter(function(b) { return b.digested; });
-  if (currentFilter === 'archived') return buckets.filter(function(b) { return b.type === 'archived' || b.score < 0.3; });
-  if (currentFilter.startsWith('domain:')) {
-    var d = currentFilter.slice(7);
-    return buckets.filter(function(b) { return (b.domain || []).includes(d); });
-  }
-  return buckets;
-}
-
-function renderBuckets(buckets) {
-  var list = document.getElementById('bucket-list');
-  if (!buckets.length) {
-    list.innerHTML = '<div class="loading">没有记忆桶</div>';
-    return;
-  }
-  list.innerHTML = buckets.map(function(b) {
-    var icon = b.pinned ? '📌' : b.type === 'feel' ? '🫧' : b.digested ? '🌿' : b.resolved ? '💤' : '💭';
-    var vPos = Math.round(b.valence * 100);
-    var modelV = b.model_valence != null ? ' → V' + b.model_valence.toFixed(1) : '';
-    var timeAgo = formatTimeAgo(b.last_active || b.created);
-    return '<div class="bucket-row" onclick="showDetail(\'' + b.id + '\')">' +
-      '<span class="icon">' + icon + '</span>' +
-      '<span class="name" title="' + esc(b.name) + '">' + esc(b.name) + '</span>' +
-      '<span class="domain">' + (b.domain || []).join(', ') + '</span>' +
-      '<span class="emotion"><span class="v-bar"><span class="v-dot" style="left:' + vPos + '%"></span></span>' + modelV + '</span>' +
-      '<span class="score">' + b.score.toFixed(2) + '</span>' +
-      '<span class="time">' + timeAgo + '</span>' +
-      '<span class="preview">' + esc(b.content_preview) + '</span>' +
-    '</div>';
-  }).join('');
-}
-
-async function searchBuckets(query) {
-  try {
-    var res = await fetch(BASE + '/api/search?q=' + encodeURIComponent(query));
-    var results = await res.json();
-    renderBuckets(results);
-  } catch (e) {
-    console.error('Search failed:', e);
-  }
-}
-
-async function showDetail(id) {
-  var panel = document.getElementById('detail-panel');
-  var content = document.getElementById('detail-content');
-  content.innerHTML = '<div class="loading">加载中…</div>';
-  panel.classList.add('open');
-
-  try {
-    var res = await fetch(BASE + '/api/bucket/' + id);
-    var b = await res.json();
-    var meta = b.metadata || {};
-    content.innerHTML =
-      '<h2>' + esc(meta.name || id) + '</h2>' +
-      '<div class="detail-meta">' +
-        '<div class="field"><label>ID</label>' + id + '</div>' +
-        '<div class="field"><label>类型</label>' + (meta.type || 'dynamic') + '</div>' +
-        '<div class="field"><label>域</label>' + (meta.domain || []).join(', ') + '</div>' +
-        '<div class="field"><label>标签</label>' + (meta.tags || []).join(', ') + '</div>' +
-        '<div class="field"><label>事件效价</label>V' + (meta.valence || 0.5).toFixed(2) + '</div>' +
-        '<div class="field"><label>唤醒度</label>A' + (meta.arousal || 0.3).toFixed(2) + '</div>' +
-        '<div class="field"><label>模型视角</label>' + (meta.model_valence != null ? 'V' + meta.model_valence.toFixed(2) : '—') + '</div>' +
-        '<div class="field"><label>重要度</label>' + (meta.importance || 5) + '/10</div>' +
-        '<div class="field"><label>权重分</label>' + b.score.toFixed(4) + '</div>' +
-        '<div class="field"><label>激活次数</label>' + (meta.activation_count || 1) + '</div>' +
-        '<div class="field"><label>已解决</label>' + (meta.resolved ? '✓' : '—') + '</div>' +
-        '<div class="field"><label>已消化</label>' + (meta.digested ? '✓' : '—') + '</div>' +
-        '<div class="field"><label>钉选</label>' + (meta.pinned ? '✓' : '—') + '</div>' +
-        '<div class="field"><label>创建</label>' + (meta.created || '—') + '</div>' +
-        '<div class="field"><label>最后活跃</label>' + (meta.last_active || '—') + '</div>' +
-      '</div>' +
-      '<div class="detail-content">' + esc(b.content) + '</div>';
-  } catch (e) {
-    content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
-  }
-}
-
-function closeDetail() {
-  document.getElementById('detail-panel').classList.remove('open');
-}
-
-var networkData = null;
-async function loadNetwork() {
-  var canvas = document.getElementById('network-canvas');
-  var ctx = canvas.getContext('2d');
-  canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-  var W = canvas.offsetWidth, H = canvas.offsetHeight;
-
-  ctx.fillStyle = '#FDFCF0';
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#8A8070';
-  ctx.font = '14px Inter, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('加载记忆网络…', W/2, H/2);
-
-  try {
-    var res = await fetch(BASE + '/api/network');
-    networkData = await res.json();
-    drawNetwork(ctx, W, H, networkData);
-  } catch(e) {
-    ctx.fillText('加载失败: ' + e.message, W/2, H/2 + 24);
-  }
-}
-
-function drawNetwork(ctx, W, H, data) {
-  var nodes = data.nodes, edges = data.edges;
-  if (!nodes.length) {
-    ctx.fillStyle = '#8A8070';
-    ctx.fillText('没有记忆桶', W/2, H/2);
-    return;
-  }
-
-  var positions = {};
-  var cx = W / 2, cy = H / 2;
-  nodes.forEach(function(n, i) {
-    var angle = (i / nodes.length) * Math.PI * 2;
-    var r = Math.min(W, H) * 0.35;
-    positions[n.id] = {
-      x: cx + Math.cos(angle) * r + (Math.random() - 0.5) * 50,
-      y: cy + Math.sin(angle) * r + (Math.random() - 0.5) * 50,
-    };
-  });
-
-  var edgeMap = {};
-  edges.forEach(function(e) {
-    if (!edgeMap[e.source]) edgeMap[e.source] = [];
-    if (!edgeMap[e.target]) edgeMap[e.target] = [];
-    edgeMap[e.source].push(e.target);
-    edgeMap[e.target].push(e.source);
-  });
-
-  for (var iter = 0; iter < 80; iter++) {
-    for (var i = 0; i < nodes.length; i++) {
-      for (var j = i + 1; j < nodes.length; j++) {
-        var a = positions[nodes[i].id], b = positions[nodes[j].id];
-        var dx = b.x - a.x, dy = b.y - a.y;
-        var dist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
-        var force = 800 / (dist * dist);
-        dx = (dx / dist) * force;
-        dy = (dy / dist) * force;
-        a.x -= dx; a.y -= dy;
-        b.x += dx; b.y += dy;
-      }
-    }
-    edges.forEach(function(e) {
-      var a = positions[e.source], b = positions[e.target];
-      if (!a || !b) return;
-      var dx = b.x - a.x, dy = b.y - a.y;
-      var dist = Math.sqrt(dx*dx + dy*dy);
-      var force = (dist - 100) * 0.01 * (e.similarity || 0.5);
-      dx = (dx / Math.max(1,dist)) * force;
-      dy = (dy / Math.max(1,dist)) * force;
-      a.x += dx; a.y += dy;
-      b.x -= dx; b.y -= dy;
-    });
-    nodes.forEach(function(n) {
-      var p = positions[n.id];
-      p.x += (cx - p.x) * 0.01;
-      p.y += (cy - p.y) * 0.01;
-    });
-  }
-
-  ctx.fillStyle = '#FDFCF0';
-  ctx.fillRect(0, 0, W, H);
-
-  edges.forEach(function(e) {
-    var a = positions[e.source], b = positions[e.target];
-    if (!a || !b) return;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.strokeStyle = 'rgba(47, 79, 79, ' + (e.similarity * 0.35) + ')';
-    ctx.lineWidth = Math.max(0.5, e.similarity * 2);
-    ctx.stroke();
-  });
-
-  var colors = { dynamic: '#2F4F4F', permanent: '#9A7B4F', feel: '#8B6A6A', archived: '#B0A590' };
-  nodes.forEach(function(n) {
-    var p = positions[n.id];
-    var r = Math.max(4, Math.min(14, n.score * 0.8));
-    var color = colors[n.type] || '#2F4F4F';
-
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
-    ctx.fillStyle = color + '15';
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = n.resolved ? color + '70' : color;
-    ctx.fill();
-
-    if (n.pinned) {
-      ctx.strokeStyle = '#9A7B4F';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    var name = n.name.length > 10 ? n.name.slice(0, 10) + '…' : n.name;
-    ctx.fillStyle = '#3A3530';
-    ctx.font = '11px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(name, p.x, p.y + r + 14);
-  });
-}
-
-function esc(s) {
-  if (!s) return '';
-  var d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-function formatTimeAgo(iso) {
-  if (!iso) return '—';
-  var d = new Date(iso);
-  var now = new Date();
-  var hours = Math.floor((now - d) / 3600000);
-  if (hours < 1) return '刚刚';
-  if (hours < 24) return hours + 'h前';
-  var days = Math.floor(hours / 24);
-  if (days < 30) return days + 'd前';
-  return Math.floor(days/30) + 'mo前';
-}
-
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeDetail();
-  if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
-    e.preventDefault();
-    document.getElementById('search-input').focus();
-  }
-});
-
-async function runBreathDebug() {
-  var query = document.getElementById('breath-query').value.trim();
-  var valence = document.getElementById('breath-valence').value;
-  var arousal = document.getElementById('breath-arousal').value;
-  var results = document.getElementById('breath-results');
-  var info = document.getElementById('breath-info');
-
-  results.innerHTML = '<div class="loading">计算中…</div>';
-
-  var url = BASE + '/api/breath-debug?q=' + encodeURIComponent(query);
-  if (valence) url += '&valence=' + valence;
-  if (arousal) url += '&arousal=' + arousal;
-
-  try {
-    var res = await fetch(url);
-    var data = await res.json();
-
-    document.getElementById('fs-input').classList.add('active');
-    document.getElementById('fs-cand-n').textContent = data.total_candidates + ' 桶';
-    document.getElementById('fs-candidates').classList.add('active');
-    document.getElementById('fs-scoring').classList.add('active');
-    document.getElementById('fs-thresh-n').textContent = '≥' + data.threshold + ' → ' + data.passed_count + ' 通过';
-    document.getElementById('fs-threshold').classList.add('active');
-    document.getElementById('fs-sort').classList.add('active');
-
-    var w = data.weights;
-    info.style.display = '';
-    info.innerHTML =
-      '<strong>权重配置</strong>&nbsp;' +
-      'topic=<code>' + w.topic + '</code> emotion=<code>' + w.emotion + '</code> ' +
-      'time=<code>' + w.time + '</code> importance=<code>' + w.importance + '</code>' +
-      ' &nbsp;|&nbsp; 阈值=<code>' + data.threshold + '</code>' +
-      ' &nbsp;|&nbsp; 候选=<code>' + data.total_candidates + '</code> 桶' +
-      ' → 通过=<code>' + data.passed_count + '</code> 桶' +
-      (query ? '' : ' &nbsp;|&nbsp; <em>未输入 query，topic 分数全为 0</em>');
-
-    if (!data.results.length) {
-      results.innerHTML = '<div class="loading">无结果</div>';
-      return;
-    }
-
-    var barColors = {
-      topic: '#2F4F4F',
-      emotion: '#8B6A6A',
-      time: '#9A7B4F',
-      importance: '#4A7C59',
-    };
-
-    results.innerHTML = data.results.map(function(r, i) {
-      var s = r.scores;
-      var passed = r.passed_threshold;
-      var icon = r.pinned ? '📌' : r.resolved ? '💤' : r.type === 'feel' ? '🫧' : '💭';
-      var bars = Object.entries(s).map(function(entry) {
-        var key = entry[0], val = entry[1];
-        var pct = Math.round(val * 100);
-        var wt = r.weights[key];
-        return '<div class="score-bar-group">' +
-          '<div class="score-bar-label"><span>' + key + '×' + wt + '</span><span>' + val.toFixed(2) + '</span></div>' +
-          '<div class="score-bar-track">' +
-            '<div class="score-bar-fill" style="width:' + pct + '%;background:' + barColors[key] + '"></div>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-
-      return '<div class="score-row" title="' + esc(r.name) + '">' +
-        '<span class="rank">' + (i < 9 ? '0' : '') + (i + 1) + '</span>' +
-        '<span class="name">' + icon + ' ' + esc(r.name) + '</span>' +
-        '<div class="score-bars">' + bars + '</div>' +
-        '<span class="score-final ' + (passed ? 'score-pass' : 'score-fail') + '">' + r.normalized.toFixed(1) + (r.resolved ? '<small>×0.3</small>' : '') + '</span>' +
-      '</div>';
-    }).join('');
-  } catch (e) {
-    results.innerHTML = '<div class="loading">请求失败: ' + e.message + '</div>';
-  }
-}
-
-document.getElementById('breath-query').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') runBreathDebug();
-});
-
-async function loadConfig() {
-  try {
-    var res = await fetch(BASE + '/api/config');
-    var cfg = await res.json();
-    document.getElementById('cfg-dehy-model').value = cfg.dehydration.model || '';
-    document.getElementById('cfg-dehy-url').value = cfg.dehydration.base_url || '';
-    document.getElementById('cfg-dehy-key').placeholder = '当前: ' + (cfg.dehydration.api_key_masked || '未设置');
-    document.getElementById('cfg-dehy-key').value = '';
-    document.getElementById('cfg-dehy-maxtokens').value = cfg.dehydration.max_tokens || 1024;
-    document.getElementById('cfg-dehy-temp').value = cfg.dehydration.temperature || 0.1;
-    document.getElementById('cfg-emb-enabled').value = cfg.embedding.enabled ? 'true' : 'false';
-    document.getElementById('cfg-emb-model').value = cfg.embedding.model || '';
-    document.getElementById('cfg-merge').value = cfg.merge_threshold || 75;
-    document.getElementById('config-readonly').innerHTML =
-      'Transport: <strong>' + cfg.transport + '</strong><br>Buckets dir: <strong>' + cfg.buckets_dir + '</strong>';
-  } catch (e) {
-    document.getElementById('config-status').innerHTML =
-      '<span style="color:var(--negative)">加载失败: ' + e.message + '</span>';
-  }
-}
-
-async function saveConfig(persist) {
-  var body = {
-    dehydration: {
-      model: document.getElementById('cfg-dehy-model').value,
-      base_url: document.getElementById('cfg-dehy-url').value,
-      max_tokens: parseInt(document.getElementById('cfg-dehy-maxtokens').value) || 1024,
-      temperature: parseFloat(document.getElementById('cfg-dehy-temp').value) || 0.1,
-    },
-    embedding: {
-      enabled: document.getElementById('cfg-emb-enabled').value === 'true',
-      model: document.getElementById('cfg-emb-model').value,
-    },
-    merge_threshold: parseInt(document.getElementById('cfg-merge').value) || 75,
-    persist: persist,
-  };
-  var keyVal = document.getElementById('cfg-dehy-key').value;
-  if (keyVal) body.dehydration.api_key = keyVal;
-
-  var status = document.getElementById('config-status');
-  try {
-    var res = await fetch(BASE + '/api/config', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    var result = await res.json();
-    if (result.ok) {
-      status.innerHTML = '<span style="color:var(--positive)">✓ 已更新: ' + result.updated.join(', ') + '</span>';
-      loadConfig();
-    } else {
-      status.innerHTML = '<span style="color:var(--negative)">✗ ' + (result.error || '未知错误') + '</span>';
-    }
-  } catch (e) {
-    status.innerHTML = '<span style="color:var(--negative)">✗ 请求失败: ' + e.message + '</span>';
-  }
-}
-
-checkAuth().then(() => loadBuckets());
-
-// --- Import functions ---
-const uploadZone = document.getElementById('import-upload-zone');
-const fileInput = document.getElementById('import-file-input');
-
-uploadZone.addEventListener('click', () => fileInput.click());
-uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.style.borderColor = 'var(--accent)'; });
-uploadZone.addEventListener('dragleave', () => { uploadZone.style.borderColor = 'var(--border)'; });
-uploadZone.addEventListener('drop', e => {
-  e.preventDefault();
-  uploadZone.style.borderColor = 'var(--border)';
-  if (e.dataTransfer.files.length) startImport(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => { if (fileInput.files.length) startImport(fileInput.files[0]); });
-
-async function startImport(file) {
-  const preserveRaw = document.getElementById('import-preserve-raw').checked;
-  const fd = new FormData();
-  fd.append('file', file);
-  try {
-    const res = await fetch(BASE + '/api/import/upload?preserve_raw=' + (preserveRaw ? '1' : '0'), { method: 'POST', body: fd });
-    const data = await res.json();
-    if (data.error) { alert('导入失败: ' + data.error); return; }
-    document.getElementById('import-progress').style.display = '';
-    document.getElementById('import-pause-btn').style.display = '';
-    pollImportStatus();
-  } catch (e) { alert('上传失败: ' + e.message); }
-}
-
-let importPollTimer;
-async function pollImportStatus() {
-  clearInterval(importPollTimer);
-  try {
-    const res = await fetch(BASE + '/api/import/status');
-    const s = await res.json();
-    updateImportUI(s);
-    if (s.status === 'running') {
-      importPollTimer = setInterval(async () => {
-        try {
-          const r2 = await fetch(BASE + '/api/import/status');
-          updateImportUI(await r2.json());
-        } catch(e) {}
-      }, 2000);
-    }
-  } catch(e) {}
-}
-
-function updateImportUI(s) {
-  const prog = document.getElementById('import-progress');
-  if (s.status === 'idle') { prog.style.display = 'none'; return; }
-  prog.style.display = '';
-  const pct = s.total_chunks ? Math.round(s.processed / s.total_chunks * 100) : 0;
-  document.getElementById('import-progress-bar').style.width = pct + '%';
-  document.getElementById('import-progress-text').textContent = s.processed + '/' + s.total_chunks;
-  document.getElementById('import-api-calls').textContent = s.api_calls;
-  document.getElementById('import-created').textContent = s.memories_created;
-  document.getElementById('import-merged').textContent = s.memories_merged;
-  document.getElementById('import-raw').textContent = s.memories_raw;
-  const statusMap = { running: '⏳ 导入中…', paused: '⏸ 已暂停', completed: '✅ 完成', error: '❌ 出错' };
-  document.getElementById('import-status-text').textContent = statusMap[s.status] || s.status;
-  document.getElementById('import-pause-btn').style.display = s.status === 'running' ? '' : 'none';
-  if (s.status !== 'running') clearInterval(importPollTimer);
-  if (s.status === 'completed') loadImportResults();
-  const errDiv = document.getElementById('import-errors');
-  if (s.errors && s.errors.length) {
-    errDiv.style.display = '';
-    errDiv.textContent = s.errors.join('\n');
-  } else { errDiv.style.display = 'none'; }
-}
-
-async function pauseImport() {
-  try { await fetch(BASE + '/api/import/pause', { method: 'POST' }); } catch(e) {}
-}
-
-async function loadImportResults() {
-  const container = document.getElementById('import-results-list');
-  container.innerHTML = '<div class="loading">加载中…</div>';
-  try {
-    const res = await fetch(BASE + '/api/import/results?limit=30');
-    const data = await res.json();
-    if (!data.buckets || !data.buckets.length) {
-      container.innerHTML = '<p style="color:var(--text-dim)">暂无记忆桶</p>';
-      return;
-    }
-    container.innerHTML = data.buckets.map(b => `
-      <div id="ir-${b.id}" style="background:var(--surface);border-radius:12px;padding:14px;margin:8px 0;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <b>${b.name || b.id}</b>
-          <span style="font-size:11px;color:var(--text-dim);">${b.type} | ${(b.domain||[]).join(',')} | imp:${b.importance}</span>
-        </div>
-        <p style="font-size:13px;margin:6px 0;white-space:pre-wrap;">${b.content}</p>
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">${(b.tags||[]).map(t=>'#'+t).join(' ')}</div>
-        <div style="display:flex;gap:8px;">
-          <button onclick="reviewAction('${b.id}','pin')" title="固定为永久记忆">📌 固定</button>
-          <button onclick="reviewAction('${b.id}','important')" title="标为重要">⭐ 重要</button>
-          <button onclick="reviewAction('${b.id}','noise')" title="标为噪声并resolve">🗑 噪声</button>
-          <button onclick="if(confirm('确定删除？'))reviewAction('${b.id}','delete')" title="彻底删除" style="color:var(--negative);">✕ 删除</button>
+<div class="modal-overlay" id="anchor-modal" style="display:none;">
+  <div class="modal-content" style="width:560px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="anchor-modal-title">添加锚点</h3>
+      <button onclick="closeAnchorEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">✕</button>
+    </div>
+    
+    <input type="hidden" id="anchor-edit-id" />
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">关联记忆桶 <span style="color:var(--negative);">*</span></label>
+      <div style="position:relative;">
+        <input type="text" id="anchor-bucket-search" placeholder="搜索记忆桶名称或ID..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+        <input type="hidden" id="anchor-bucket-id" />
+      </div>
+      <div id="anchor-bucket-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface-solid);border:1px solid var(--border);border-radius:0 0 10px 10px;max-height:200px;overflow-y:auto;z-index:10;border-top:none;"></div>
+      <div id="anchor-bucket-selected" style="display:none;margin-top:8px;padding:8px 12px;background:var(--accent-glow);border-radius:8px;font-size:13px;color:var(--accent);"></div>
+    </div>
+    
+    <div style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <label style="font-size:13px;color:var(--text-dim);">情绪输入方式</label>
+        <div style="display:flex;gap:4px;">
+          <button onclick="toggleEmotionMode('tags')" id="emotion-mode-tags" class="btn-mode-active" style="padding:4px 12px;border-radius:16px;font-size:12px;border:none;background:var(--accent);color:white;cursor:pointer;">标签选择</button>
+          <button onclick="toggleEmotionMode('slider')" id="emotion-mode-slider" class="btn-mode-inactive" style="padding:4px 12px;border-radius:16px;font-size:12px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);cursor:pointer;">数值调整</button>
         </div>
       </div>
-    `).join('');
-  } catch(e) { container.innerHTML = '<p style="color:var(--negative)">加载失败: ' + e.message + '</p>'; }
-}
-
-async function detectPatterns() {
-  const container = document.getElementById('import-patterns');
-  container.innerHTML = '<div class="loading">检测中…</div>';
-  try {
-    const res = await fetch(BASE + '/api/import/patterns');
-    const data = await res.json();
-    if (!data.patterns || !data.patterns.length) { container.innerHTML = '<p style="color:var(--text-dim)">未检测到高频模式</p>'; return; }
-    container.innerHTML = data.patterns.map(p => `
-      <div style="background:var(--surface);border-radius:12px;padding:14px;margin:8px 0;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <b>${p.pattern_name}</b>
-          <span style="font-size:12px;color:var(--text-dim);">出现 ${p.count} 次</span>
+    </div>
+    
+    <div id="emotion-mode-tags-panel" style="margin-bottom:14px;">
+      <div id="anchor-emotion-tags" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+      <div style="font-size:11px;color:var(--text-light);">点击选择情绪标签（可多选）</div>
+    </div>
+    
+    <div id="emotion-mode-slider-panel" style="margin-bottom:14px;display:none;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+        <div>
+          <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">情绪强度</label>
+          <input type="range" id="anchor-intensity" min="0" max="1" step="0.01" value="0.7" style="width:100%;" />
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-top:4px;">
+            <span>弱</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" id="anchor-intensity-input" min="0" max="1" step="0.01" value="0.7" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;" />
+            </div>
+            <span>强</span>
+          </div>
         </div>
-        <p style="font-size:13px;margin:6px 0;">${p.pattern_content}</p>
-        <div style="display:flex;gap:8px;">
-          <button onclick="reviewAction('${p.bucket_ids[0]}','pin')">📌 固定</button>
-          <button onclick="reviewAction('${p.bucket_ids[0]}','important')">⭐ 重要</button>
-          <button onclick="batchReview('${JSON.stringify(p.bucket_ids).replace(/'/g, "\\'").replace(/"/g, '&quot;')}','noise')">🗑 噪声</button>
+        <div>
+          <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">效价 (Valence)</label>
+          <input type="range" id="anchor-valence" min="0" max="1" step="0.01" value="0.5" style="width:100%;" />
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-top:4px;">
+            <span>负面</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" id="anchor-valence-input" min="0" max="1" step="0.01" value="0.5" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;" />
+            </div>
+            <span>正面</span>
+          </div>
         </div>
       </div>
-    `).join('');
-  } catch(e) { container.innerHTML = '<p style="color:var(--negative)">检测失败: ' + e.message + '</p>'; }
-}
+      
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">唤醒度 (Arousal)</label>
+        <input type="range" id="anchor-arousal" min="0" max="1" step="0.01" value="0.5" style="width:100%;" />
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-top:4px;">
+          <span>平静</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="number" id="anchor-arousal-input" min="0" max="1" step="0.01" value="0.5" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;" />
+          </div>
+          <span>激动</span>
+        </div>
+      </div>
+      
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">情绪坐标图</label>
+        <div style="background:var(--surface);border-radius:12px;padding:16px;border:1px solid var(--border);">
+          <div style="position:relative;width:100%;height:200px;background:linear-gradient(to top, #E5393515 0%, #E5393505 50%, #4CAF5005 50%, #4CAF5015 100%);border-radius:8px;cursor:crosshair;" onclick="handleEmotionMapClick(event)">
+            <div style="position:absolute;left:0;bottom:0;width:100%;height:1px;background:var(--border);"></div>
+            <div style="position:absolute;left:0;bottom:0;width:1px;height:100%;background:var(--border);"></div>
+            <div style="position:absolute;left:0;bottom:0;font-size:10px;color:var(--text-light);padding:2px;">负面</div>
+            <div style="position:absolute;right:0;bottom:0;font-size:10px;color:var(--text-light);padding:2px;">正面</div>
+            <div style="position:absolute;left:0;top:0;font-size:10px;color:var(--text-light);padding:2px;">平静</div>
+            <div style="position:absolute;right:0;top:0;font-size:10px;color:var(--text-light);padding:2px;">激动</div>
+            
+            <div style="position:absolute;left:12.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:25%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:37.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:50%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:62.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:75%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:87.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
+            
+            <div style="position:absolute;left:0;bottom:12.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:0;bottom:25%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:0;bottom:37.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:0;bottom:50%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:0;bottom:62.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:0;bottom:75%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            <div style="position:absolute;left:0;bottom:87.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
+            
+            <div style="position:absolute;left:10%;bottom:20%;font-size:9px;color:var(--text-light);">悲伤</div>
+            <div style="position:absolute;left:8%;bottom:60%;font-size:9px;color:var(--text-light);">平静</div>
+            <div style="position:absolute;left:10%;bottom:85%;font-size:9px;color:var(--text-light);">恐惧</div>
+            <div style="position:absolute;left:40%;bottom:85%;font-size:9px;color:var(--text-light);">愤怒</div>
+            <div style="position:absolute;left:70%;bottom:85%;font-size:9px;color:var(--text-light);">期待</div>
+            <div style="position:absolute;left:88%;bottom:60%;font-size:9px;color:var(--text-light);">喜悦</div>
+            <div style="position:absolute;left:88%;bottom:20%;font-size:9px;color:var(--text-light);">惊讶</div>
+            <div style="position:absolute;left:50%;bottom:8%;font-size:9px;color:var(--text-light);">厌恶</div>
+            
+            <div id="anchor-emotion-dot" style="position:absolute;width:16px;height:16px;border-radius:50%;background:var(--accent);border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.2);transform:translate(-50%, -50%);transition:all 0.2s;top:50%;left:50%;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div style="margin-bottom:20px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">事件摘要 <span style="color:var(--negative);">*</span></label>
+      <textarea id="anchor-summary" rows="4" placeholder="描述这个高情绪事件的内容..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;"></textarea>
+    </div>
+    
+    <div style="display:flex;gap:10px;">
+      <button onclick="closeAnchorEditor()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;">取消</button>
+      <button onclick="saveAnchor()" class="btn-primary" style="flex:1;">保存</button>
+    </div>
+  </div>
+</div>
 
-async function reviewAction(bid, action) {
-  try {
-    await fetch(BASE + '/api/import/review', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ decisions: [{ bucket_id: bid, action }] })
-    });
-    // Remove card from UI
-    const card = document.getElementById('ir-' + bid);
-    if (card) card.style.display = 'none';
-  } catch(e) {}
-}
+<div class="modal-overlay" id="candlestick-modal" style="display:none;">
+  <div class="modal-content" style="width:600px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="candlestick-modal-title">记录感想</h3>
+      <button onclick="closeCandlestickEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">✕</button>
+    </div>
+    
+    <input type="hidden" id="candlestick-edit-id" />
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">标题（可选）</label>
+      <input type="text" id="candlestick-title" placeholder="为这条感想添加一个标题" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+    </div>
+    
+    <div style="margin-bottom:14px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">关联记忆桶（可选）</label>
+      <input type="text" id="candlestick-bucket-id" placeholder="输入记忆桶 ID 或留空" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+      <div style="font-size:12px;color:var(--text-light);margin-top:4px;">填写记忆桶 ID 可以建立与具体记忆的关联</div>
+    </div>
+    
+    <div style="margin-bottom:20px;">
+      <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">感悟内容</label>
+      <textarea id="candlestick-content" rows="8" placeholder="写下你对这件事的看法和感悟...&#10;&#10;可以包含：&#10;- 时间和事件描述&#10;- 你的感受和想法&#10;- 学到的经验教训&#10;- 未来的行动方向" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;"></textarea>
+    </div>
+    
+    <div style="display:flex;gap:10px;">
+      <button onclick="closeCandlestickEditor()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;">取消</button>
+      <button onclick="saveCandlestick()" class="btn-primary" style="flex:1;">保存</button>
+    </div>
+  </div>
+</div>
 
-async function batchReview(idsJson, action) {
-  try {
-    const ids = JSON.parse(idsJson);
-    await fetch(BASE + '/api/import/review', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ decisions: ids.map(id => ({ bucket_id: id, action })) })
-    });
-    detectPatterns();
-  } catch(e) {}
-}
-</script>
+<script src="dashboard.js"></script>
+
+<div id="global-ai-btn" onclick="toggleAIChat()" style="position:fixed;bottom:30px;right:30px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-light));color:white;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 24px rgba(47,79,79,0.35);transition:all 0.3s;z-index:1000;">🤖</div>
+
+<div id="global-ai-chat" style="position:fixed;bottom:100px;right:30px;width:380px;background:var(--surface);border-radius:16px;border:1px solid var(--border);box-shadow:0 12px 48px rgba(0,0,0,0.15);display:none;flex-direction:column;z-index:999;">
+  <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-size:14px;font-weight:600;color:var(--text);">AI管家</div>
+    <button onclick="toggleAIChat();event.stopPropagation();" style="background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer;">×</button>
+  </div>
+  <div id="global-ai-messages" style="height:300px;overflow-y:auto;padding:14px;">
+    <div style="text-align:center;color:var(--text-light);font-size:12px;padding:20px;">
+      <div style="font-size:28px;margin-bottom:8px;">🤖</div>
+      <p>我是AI管家，随时为您服务</p>
+      <p style="margin-top:6px;font-size:11px;">按 / 键快速打开</p>
+    </div>
+  </div>
+  <div style="padding:12px;border-top:1px solid var(--border);display:flex;gap:8px;">
+    <input type="text" id="global-ai-input" placeholder="输入命令..." style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:white;font-size:13px;outline:none;" />
+    <button onclick="sendGlobalAIChat()" id="global-ai-send" style="padding:10px 16px;border-radius:10px;border:none;background:var(--accent);color:white;font-size:13px;cursor:pointer;">发送</button>
+  </div>
+</div>
 </body>
 </html>

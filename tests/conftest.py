@@ -16,6 +16,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# --- Load .env file / 加载 .env 文件 ---
+# Same logic as server.py — reads environment variables from .env
+# 与 server.py 相同的逻辑，从 .env 读取环境变量
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ[key.strip()] = value.strip()
+
 # Ensure project root importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -39,11 +51,12 @@ def test_config(tmp_path):
         "wikilink": {"enabled": False},
         # Spec-correct weights (post B-05/B-06/B-07 fix)
         "scoring_weights": {
-            "topic_relevance": 4.0,
-            "emotion_resonance": 2.0,
-            "time_proximity": 1.5,   # spec: 1.5 (was 2.5 in buggy code)
-            "importance": 1.0,
-            "content_weight": 1.0,   # spec: 1.0 (was 3.0 in buggy code)
+            "emotion_arousal": 3.0,
+            "explicit_priority": 2.0,
+            "vector_similarity": 4.0,
+            "topic_relevance": 5.0,
+            "time_proximity": 1.5,
+            "content_weight": 1.0,
         },
         "decay": {
             "lambda": 0.05,
@@ -52,14 +65,14 @@ def test_config(tmp_path):
             "emotion_weights": {"base": 1.0, "arousal_boost": 0.8},
         },
         "dehydration": {
-            "api_key": os.environ.get("OMBRE_API_KEY", "test-key"),
-            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "model": "gemini-2.5-flash-lite",
+            "api_key": os.environ.get("deepseek_api_key", os.environ.get("OMBRE_API_KEY", "test-key")),
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-chat",
         },
         "embedding": {
-            "api_key": os.environ.get("OMBRE_API_KEY", ""),
-            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "model": "gemini-embedding-001",
+            "api_key": os.environ.get("deepseek_api_key", os.environ.get("OMBRE_API_KEY", "")),
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-embed",
             "enabled": False,
         },
     }

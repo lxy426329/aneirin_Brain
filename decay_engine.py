@@ -5,6 +5,12 @@
 # Simulates human forgetting curve; auto-decays inactive memories and archives them.
 # 模拟人类遗忘曲线，自动衰减不活跃记忆并归档。
 #
+# Three-stage decay based on Ebbinghaus forgetting curve:
+# 基于艾宾浩斯遗忘曲线的三阶段衰减：
+#   Stage 1 (0-7 days): Full content - 完整内容描述
+#   Stage 2 (7-30 days): Summarized content - 总结性描述（AI生成）
+#   Stage 3 (30+ days): Digested - 已消化（知识内化）
+#
 # Core formula (improved Ebbinghaus + emotion coordinates):
 # 核心公式（改进版艾宾浩斯遗忘曲线 + 情感坐标）：
 #   Score = Importance × (activation_count^0.3) × e^(-λ×days) × emotion_weight
@@ -22,7 +28,7 @@
 import math
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("ombre_brain.decay")
 
@@ -84,22 +90,42 @@ class DecayEngine:
         hours = days_since * 24.0
         return 1.0 + 1.0 * math.exp(-hours / 36.0)
 
+    def _calc_emotion_arousal(self, metadata: dict) -> float:
+        """
+        Calculate emotion arousal score (0.0~1.0 continuous).
+        计算情绪唤醒度得分，用于衰减计算中的基础权重。
+        """
+        try:
+            emotion_metrics = metadata.get("emotion_metrics", {})
+            if isinstance(emotion_metrics, dict) and "arousal" in emotion_metrics:
+                return max(0.0, min(1.0, float(emotion_metrics.get("arousal", 0.3))))
+            
+            if "emotions" in metadata and metadata["emotions"]:
+                emotions = metadata["emotions"]
+                max_intensity = max(float(e.get("intensity", 0.0)) for e in emotions)
+                return max(0.0, min(1.0, max_intensity))
+            
+            arousal = float(metadata.get("arousal", 0.3))
+            return max(0.0, min(1.0, arousal))
+        except (ValueError, TypeError):
+            return 0.3
+
     def calculate_score(self, metadata: dict) -> float:
         """
         Calculate current activity score for a memory bucket.
         计算一个记忆桶的当前活跃度得分。
 
-        New model: short-term vs long-term weight separation.
-        新模型：短期/长期权重分离。
-        - Short-term (≤3 days): time_weight dominates, emotion amplifies
-        - Long-term (>3 days): emotion_weight dominates, time decays to floor
-        短期（≤3天）：时间权重主导，情感放大
-        长期（>3天）：情感权重主导，时间衰减到底线
+        New model: continuous multi-dimensional scoring system.
+        新模型：连续多维评分系统。
+        - Emotion_Arousal (0.0~1.0): 情绪唤醒度，越高衰减越慢
+        - Explicit_Priority (0/1): 显式优先级（钉选），已在前置判断中处理
+        - Activation_Count: 激活次数，越多衰减越慢
+        - Time_Decay: 时间衰减
         """
         if not isinstance(metadata, dict):
             return 0.0
 
-        # --- Pinned/protected buckets: never decay, importance locked to 10 ---
+        # --- Pinned/protected buckets: never decay ---
         if metadata.get("pinned") or metadata.get("protected"):
             return 999.0
 
@@ -111,52 +137,101 @@ class DecayEngine:
         if metadata.get("type") == "feel":
             return 50.0
 
-        importance = max(1, min(10, int(metadata.get("importance", 5))))
+        # --- Experience (年轮) buckets: reinforcement-based decay ---
+        # 经验桶：基于强化频次和时间衰减的动态权重计算
+        if metadata.get("type") == "experience":
+            emotion_arousal = self._calc_emotion_arousal(metadata)
+            base_weight = 1.0 + emotion_arousal * 9.0
+            hit_count = max(0, int(metadata.get("hit_count", 0)))
+            
+            last_hit_str = metadata.get("last_hit", metadata.get("created", ""))
+            try:
+                last_hit = datetime.fromisoformat(str(last_hit_str))
+                if last_hit.tzinfo is None:
+                    last_hit = last_hit.replace(tzinfo=timezone.utc)
+                days_since_hit = max(0.0, (datetime.now(timezone.utc) - last_hit).total_seconds() / 86400)
+            except (ValueError, TypeError):
+                days_since_hit = 0
+            
+            exp_decay_lambda = 0.02
+            
+            if hit_count > 0:
+                reinforcement_factor = 1 + math.log(hit_count)
+            else:
+                reinforcement_factor = 1.0
+            
+            time_decay = math.exp(-exp_decay_lambda * days_since_hit)
+            
+            score = base_weight * reinforcement_factor * time_decay
+            
+            return round(max(1.0, score), 4)
+
+        # --- Pattern buckets: never decay normally, but superseded patterns get low score ---
+        if metadata.get("type") == "pattern":
+            if metadata.get("superseded_by") is not None:
+                return 0.1
+            return 999.0
+
+        # --- Continuous base weight: 1.0 + emotion_arousal * 9.0 (maps 0.0~1.0 to 1~10) ---
+        emotion_arousal = self._calc_emotion_arousal(metadata)
+        base_weight = 1.0 + emotion_arousal * 9.0
         activation_count = max(1.0, float(metadata.get("activation_count", 1)))
 
         # --- Days since last activation ---
         last_active_str = metadata.get("last_active", metadata.get("created", ""))
         try:
             last_active = datetime.fromisoformat(str(last_active_str))
-            days_since = max(0.0, (datetime.now() - last_active).total_seconds() / 86400)
+            if last_active.tzinfo is None:
+                last_active = last_active.replace(tzinfo=timezone.utc)
+            days_since = max(0.0, (datetime.now(timezone.utc) - last_active).total_seconds() / 86400)
         except (ValueError, TypeError):
             days_since = 30
 
-        # --- Emotion weight ---
+        # --- Identity (名册) buckets: slower decay, very high base weight ---
+        # 名册人物：衰减较慢，基础权重很高（保证刚创建时得分 >= 50）
+        if metadata.get("type") == "identity":
+            if metadata.get("pinned") or metadata.get("protected"):
+                return 999.0
+            identity_decay_lambda = self.decay_lambda * 0.3
+            identity_base_weight = 51.0
+            return (
+                identity_base_weight
+                * (activation_count ** 0.3)
+                * math.exp(-identity_decay_lambda * days_since)
+            )
+
+        # --- Emotion weight with intensity ---
+        # 情绪权重 = 基础值 + 唤醒度 * 唤醒度加成 * 情绪波动强度
         try:
-            arousal = max(0.0, min(1.0, float(metadata.get("arousal", 0.3))))
+            arousal = emotion_arousal
+            valence = max(0.0, min(1.0, float(metadata.get("valence", 0.5))))
         except (ValueError, TypeError):
             arousal = 0.3
-        emotion_weight = self.emotion_base + arousal * self.arousal_boost
+            valence = 0.5
+        
+        emotion_intensity = arousal * (1.0 + abs(valence - 0.5))
+        emotion_weight = self.emotion_base + arousal * self.arousal_boost * emotion_intensity
 
         # --- Time weight ---
         time_weight = self._calc_time_weight(days_since)
 
         # --- Short-term vs Long-term weight separation ---
-        # 短期（≤3天）：time_weight 占 70%，emotion 占 30%
-        # 长期（>3天）：emotion 占 70%，time_weight 占 30%
         if days_since <= 3.0:
-            # Short-term: time dominates, emotion amplifies
             combined_weight = time_weight * 0.7 + emotion_weight * 0.3
         else:
-            # Long-term: emotion dominates, time provides baseline
             combined_weight = emotion_weight * 0.7 + time_weight * 0.3
 
         # --- Base score ---
         base_score = (
-            importance
+            base_weight
             * (activation_count ** 0.3)
             * math.exp(-self.decay_lambda * days_since)
             * combined_weight
         )
 
         # --- Weight pool modifiers ---
-        # resolved + digested (has feel) → accelerated fade: ×0.02
-        # resolved only → ×0.05
-        # 已处理+已消化（写过feel）→ 加速淡化：×0.02
-        # 仅已处理 → ×0.05
         resolved = metadata.get("resolved", False)
-        digested = metadata.get("digested", False)  # set when feel is written for this memory
+        digested = metadata.get("digested", False)
         if resolved and digested:
             resolved_factor = 0.02
         elif resolved:
@@ -173,11 +248,40 @@ class DecayEngine:
     # Scan all dynamic buckets → score → archive those below threshold
     # 扫描所有动态桶 → 算分 → 低于阈值的归档
     # ---------------------------------------------------------
+    def calculate_decay_stage(self, metadata: dict) -> int:
+        """
+        Calculate decay stage based on Ebbinghaus forgetting curve:
+        根据艾宾浩斯遗忘曲线计算衰减阶段：
+        Stage 1 (0-7 days): Full content - 完整内容描述
+        Stage 2 (7-30 days): Summarized content - 总结性描述（AI生成）
+        Stage 3 (30+ days): Digested - 已消化（知识内化）
+        
+        Returns: 1, 2, or 3
+        """
+        if not isinstance(metadata, dict):
+            return 1
+        
+        last_active_str = metadata.get("last_active", metadata.get("created", ""))
+        try:
+            last_active = datetime.fromisoformat(str(last_active_str))
+            if last_active.tzinfo is None:
+                last_active = last_active.replace(tzinfo=timezone.utc)
+            days_since = max(0.0, (datetime.now(timezone.utc) - last_active).total_seconds() / 86400)
+        except (ValueError, TypeError):
+            days_since = 0
+        
+        if days_since < 7:
+            return 1
+        elif days_since < 30:
+            return 2
+        else:
+            return 3
+
     async def run_decay_cycle(self) -> dict:
         """
         Execute one decay cycle: iterate dynamic buckets, archive those
-        scoring below threshold.
-        执行一轮衰减：遍历动态桶，归档得分低于阈值的桶。
+        scoring below threshold, and manage three-stage decay.
+        执行一轮衰减：遍历动态桶，归档得分低于阈值的桶，管理三阶段衰减。
 
         Returns stats: {"checked": N, "archived": N, "lowest_score": X}
         """
@@ -190,29 +294,64 @@ class DecayEngine:
         checked = 0
         archived = 0
         auto_resolved = 0
+        stage_1_to_2 = 0
+        stage_2_to_3 = 0
         lowest_score = float("inf")
 
         for bucket in buckets:
             meta = bucket.get("metadata", {})
 
             # Skip permanent / pinned / protected / feel buckets
-            # 跳过固化桶、钉选/保护桶和 feel 桶
+            # 跳过固化桶、钉选/保护桶、feel桶
+            # identity类型参与衰减，但衰减较慢（30天完全消退）
+            # experience类型参与衰减，基于强化频次和时间衰减
             if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
                 continue
 
             checked += 1
 
-            # --- Auto-resolve: imp≤4 + >30 days old + not resolved → auto resolve ---
-            # --- 自动结案：重要度≤4 + 超过30天 + 未解决 → 自动 resolve ---
+            current_stage = meta.get("decay_stage", 1)
+            new_stage = self.calculate_decay_stage(meta)
+
+            # --- Stage transition: 1 → 2 (7 days) ---
+            # --- 阶段转换：完整内容 → 总结性描述 ---
+            if current_stage == 1 and new_stage == 2:
+                try:
+                    await self.bucket_mgr.update(bucket["id"], decay_stage=2)
+                    stage_1_to_2 += 1
+                    logger.info(
+                        f"Decay stage 1→2 / 衰减阶段1→2: "
+                        f"{meta.get('name', bucket['id'])}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Stage 1→2 transition failed / 阶段1→2转换失败: {e}")
+
+            # --- Stage transition: 2 → 3 (30 days) ---
+            # --- 阶段转换：总结性描述 → 已消化 ---
+            elif current_stage == 2 and new_stage == 3:
+                try:
+                    await self.bucket_mgr.update(bucket["id"], decay_stage=3, digested=True)
+                    stage_2_to_3 += 1
+                    logger.info(
+                        f"Decay stage 2→3 / 衰减阶段2→3 (digested): "
+                        f"{meta.get('name', bucket['id'])}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Stage 2→3 transition failed / 阶段2→3转换失败: {e}")
+
+            # --- Auto-resolve: emotion_arousal <= 0.33 (equivalent to old imp≤4) + >30 days + not resolved → auto resolve ---
+            # --- 自动结案：情绪唤醒度≤0.33（等价于旧重要度≤4）+ 超过30天 + 未解决 → 自动 resolve ---
             if not meta.get("resolved", False):
-                imp = int(meta.get("importance", 5))
+                emotion_arousal = self._calc_emotion_arousal(meta)
                 last_active_str = meta.get("last_active", meta.get("created", ""))
                 try:
                     last_active = datetime.fromisoformat(str(last_active_str))
-                    days_since = (datetime.now() - last_active).total_seconds() / 86400
+                    if last_active.tzinfo is None:
+                        last_active = last_active.replace(tzinfo=timezone.utc)
+                    days_since = (datetime.now(timezone.utc) - last_active).total_seconds() / 86400
                 except (ValueError, TypeError):
                     days_since = 999
-                if imp <= 4 and days_since > 30:
+                if emotion_arousal <= 0.33 and days_since > 30:
                     try:
                         await self.bucket_mgr.update(bucket["id"], resolved=True)
                         meta["resolved"] = True  # refresh local meta so resolved_factor applies this cycle
@@ -220,7 +359,7 @@ class DecayEngine:
                         logger.info(
                             f"Auto-resolved / 自动结案: "
                             f"{meta.get('name', bucket['id'])} "
-                            f"(imp={imp}, days={days_since:.0f})"
+                            f"(arousal={emotion_arousal:.2f}, days={days_since:.0f})"
                         )
                     except Exception as e:
                         logger.warning(f"Auto-resolve failed / 自动结案失败: {e}")
@@ -254,10 +393,39 @@ class DecayEngine:
                         f"归档失败: {e}"
                     )
 
+        # --- Timeline decay: decay timelines that are too old ---
+        # --- 时间链衰减：衰减过旧的时间链，用一句话总结替换完整内容 ---
+        timelines_decayed = 0
+        try:
+            timelines = await self.bucket_mgr.get_timelines()
+            for timeline in timelines:
+                if timeline.get("decayed"):
+                    continue
+                
+                created_str = timeline.get("created", "")
+                try:
+                    created = datetime.fromisoformat(str(created_str))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    days_since = (datetime.now(timezone.utc) - created).total_seconds() / 86400
+                except (ValueError, TypeError):
+                    days_since = 999
+                
+                if days_since > 30:
+                    success = await self.bucket_mgr.decay_timeline(timeline["id"])
+                    if success:
+                        timelines_decayed += 1
+                        logger.info(f"Timeline decayed / 时间链已衰减: {timeline['title']} (days={days_since:.0f})")
+        except Exception as e:
+            logger.warning(f"Timeline decay failed / 时间链衰减失败: {e}")
+
         result = {
             "checked": checked,
             "archived": archived,
             "auto_resolved": auto_resolved,
+            "stage_1_to_2": stage_1_to_2,
+            "stage_2_to_3": stage_2_to_3,
+            "timelines_decayed": timelines_decayed,
             "lowest_score": lowest_score if checked > 0 else 0,
         }
         logger.info(f"Decay cycle complete / 衰减周期完成: {result}")
