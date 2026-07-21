@@ -51,6 +51,7 @@ import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from bucket_manager import BucketManager
 from dehydrator import Dehydrator
@@ -129,6 +130,14 @@ mcp = FastMCP(
     "Ombre Brain",
     host="0.0.0.0",
     port=OMBRE_PORT,
+    # Disable DNS rebinding protection: this service is meant for remote access
+    # via Cloudflare Tunnel / Render / ngrok, where the Host header is an
+    # external domain that would never match the default localhost allowlist
+    # (which returns 421 Misdirected Request). CORS is already open below.
+    # 禁用 DNS rebinding 防护：本服务专供远程访问（Cloudflare Tunnel / Render / ngrok），
+    # Host 头是外部域名，不可能匹配默认的 localhost 白名单（会返回 421）。
+    # 下方已配置 CORS allow_origins=["*"]。
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
