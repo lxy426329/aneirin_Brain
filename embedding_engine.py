@@ -59,7 +59,7 @@ class EmbeddingEngine:
         
         use_api = embed_cfg.get("use_api", True)
         
-        if OPENAI_AVAILABLE and use_api and self.api_key and "deepseek" not in self.base_url.lower():
+        if OPENAI_AVAILABLE and use_api and self.api_key:
             try:
                 self.client = AsyncOpenAI(
                     api_key=self.api_key,
@@ -72,6 +72,7 @@ class EmbeddingEngine:
         
         if not self.client:
             logger.warning("Embedding: No API client available, embedding disabled")
+            logger.warning("Set OMBRE_API_KEY or configure embedding.api_key / embedding.base_url in config.yaml")
             self.enabled = False
 
         # --- Initialize SQLite ---

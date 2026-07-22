@@ -297,7 +297,12 @@ class Housekeeper:
         
         self._load_state()
         
-        asyncio.create_task(self.start())
+        # NOTE: Do NOT call asyncio.create_task(self.start()) here.
+        # The event loop is NOT running during __init__ (called at module level).
+        # Housekeeper is started via ensure_started() (lazy) or an explicit
+        # startup hook in server.py.
+        # 不要在 __init__ 中调用 asyncio.create_task，此时事件循环尚未启动。
+        # 管家通过 ensure_started()（懒加载）或 server.py 的启动钩子来启动。
     
     def _load_state(self):
         """Load last run times from state file."""

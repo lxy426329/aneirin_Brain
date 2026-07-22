@@ -7882,6 +7882,34 @@ if __name__ == "__main__":
             expose_headers=["*"],
         )
         logger.info("CORS middleware enabled for remote transport / 已启用 CORS 中间件")
+        
+        # --- Start housekeeper background task (event loop already running) ---
+        # --- 启动管家后台任务（事件循环已就绪） ---
+        async def _housekeeper_startup():
+            await asyncio.sleep(2)  # Wait for the server to be fully ready
+            try:
+                await housekeeper.start()
+                logger.info("Housekeeper started via startup hook / 管家已通过启动钩子启动")
+            except Exception as e:
+                logger.error(f"Housekeeper startup failed / 管家启动失败: {e}")
+        
+        def _start_housekeeper():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_housekeeper_startup())
+        
+        hk_thread = threading.Thread(target=_start_housekeeper, daemon=True)
+        hk_thread.start()
+        
         uvicorn.run(_app, host="0.0.0.0", port=OMBRE_PORT)
     else:
+        # --- Start housekeeper for stdio transport ---
+        # --- 为 stdio 传输启动管家 ---
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(housekeeper.start())
+            loop.close()
+        except Exception as e:
+            logger.warning(f"Housekeeper startup for stdio failed: {e}")
         mcp.run(transport=transport)
