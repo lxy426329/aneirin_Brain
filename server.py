@@ -3767,31 +3767,195 @@ async def reject_cleanup_proposal(proposal_id: str) -> str:
 
 @mcp.tool()
 async def run_housekeeper() -> str:
-    """手动触发管家管线执行（时间链归拢 + 废旧记忆扫描）。"""
+    """手动触发管家管线执行（每日总结 + 时间链更新）。"""
     await housekeeper.ensure_started()
     
     try:
-        results = await housekeeper.run_pipeline()
+        results = await housekeeper.run_daily_job()
         parts = ["=== 管家管线执行结果 ===\n"]
         
-        event_chains = results.get("event_chains", {})
-        if "error" in event_chains:
-            parts.append(f"❌ 时间链归拢失败: {event_chains['error']}")
+        daily_summary = results.get("daily_summary", {})
+        if "error" in daily_summary:
+            parts.append(f"❌ 每日总结失败: {daily_summary['error']}")
         else:
-            parts.append(f"✅ 时间链归拢: 发现{event_chains.get('topics_found', 0)}个主题, "
-                        f"更新{event_chains.get('chains_updated', 0)}条, "
-                        f"创建{event_chains.get('chains_created', 0)}条")
+            parts.append(f"✅ 每日总结: 处理{daily_summary.get('buckets_processed', 0)}条记忆")
         
-        cleanup = results.get("cleanup_proposals", {})
-        if "error" in cleanup:
-            parts.append(f"❌ 废旧记忆扫描失败: {cleanup['error']}")
+        chain_updates = results.get("chain_updates", {})
+        if "error" in chain_updates:
+            parts.append(f"❌ 时间链更新失败: {chain_updates['error']}")
         else:
-            parts.append(f"✅ 废旧记忆扫描: 生成{cleanup.get('proposals_created', 0)}条清理提案")
+            parts.append(f"✅ 时间链更新: 更新{chain_updates.get('chains_updated', 0)}条链")
         
         return "\n".join(parts)
     except Exception as e:
         logger.error(f"run_housekeeper failed: {e}")
         return f"管家执行失败: {e}"
+
+
+@mcp.tool()
+async def run_weekly_housekeeper() -> str:
+    """手动触发每周管家管线（事件链合并 + 清理提案生成）。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        results = await housekeeper.run_weekly_job()
+        parts = ["=== 每周管家管线执行结果 ===\n"]
+        
+        chain_merge = results.get("chain_merge", {})
+        if "error" in chain_merge:
+            parts.append(f"❌ 事件链合并失败: {chain_merge['error']}")
+        else:
+            parts.append(f"✅ 事件链合并: 合并{chain_merge.get('chains_merged', 0)}条链")
+        
+        cleanup_scan = results.get("cleanup_scan", {})
+        if "error" in cleanup_scan:
+            parts.append(f"❌ 清理扫描失败: {cleanup_scan['error']}")
+        else:
+            parts.append(f"✅ 清理扫描: 生成{cleanup_scan.get('proposals_created', 0)}条清理提案")
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"run_weekly_housekeeper failed: {e}")
+        return f"每周管家执行失败: {e}"
+
+
+@mcp.tool()
+async def review_digest() -> str:
+    """审阅回音壁中的待办提案（每日/每周摘要 + 清理提案），行使主AI最高裁决权。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        summary = await housekeeper.review_digest()
+        
+        if summary["pending_digests"] == 0 and summary["pending_actions"] == 0:
+            return "回音壁中暂无待办提案。"
+        
+        parts = ["=== 回音壁审阅报告 ===\n"]
+        
+        if summary["pending_digests"] > 0:
+            parts.append(f"\n📝 待审阅摘要 ({summary['pending_digests']}条):")
+            for digest in summary["digests"]:
+                parts.append(f"  • [{digest['digest_id']}] {digest['digest_type']}")
+                parts.append(f"    {digest['content'][:200]}...")
+        
+        if summary["pending_actions"] > 0:
+            parts.append(f"\n📋 待审批提案 ({summary['pending_actions']}条):")
+            for action in summary["actions"]:
+                data = action.get("data", {})
+                parts.append(f"  • [{action['action_id']}] {action['action_type']}")
+                if action["action_type"] == "cleanup":
+                    parts.append(f"    Bucket: {data.get('bucket_id', '')}")
+                    parts.append(f"    Reason: {data.get('reason', '')}")
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"review_digest failed: {e}")
+        return f"审阅失败: {e}"
+
+
+@mcp.tool()
+async def approve_action(action_id: str) -> str:
+    """批准回音壁中的待办提案。action_id=提案ID。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        success = await housekeeper.approve_action(action_id)
+        if success:
+            return f"✅ 已批准提案: {action_id}"
+        else:
+            return f"❌ 未找到提案: {action_id}"
+    except Exception as e:
+        logger.error(f"approve_action failed: {e}")
+        return f"批准失败: {e}"
+
+
+@mcp.tool()
+async def reject_action(action_id: str) -> str:
+    """驳回回音壁中的待办提案。action_id=提案ID。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        success = await housekeeper.reject_action(action_id)
+        if success:
+            return f"✅ 已驳回提案: {action_id}"
+        else:
+            return f"❌ 未找到提案: {action_id}"
+    except Exception as e:
+        logger.error(f"reject_action failed: {e}")
+        return f"驳回失败: {e}"
+
+
+@mcp.tool()
+async def inject_context(user_input: str = "") -> str:
+    """
+    静默预处理中间件：自动检索相关记忆并注入上下文。
+    在用户发送消息前调用，将检索到的背景记忆以<context>结构注入到Prompt头部。
+    user_input=用户输入的消息内容。
+    """
+    await decay_engine.ensure_started()
+    await housekeeper.ensure_started()
+    
+    context_parts = []
+    
+    try:
+        chains = await housekeeper.get_event_chains()
+        relevant_chains = []
+        
+        for chain in chains:
+            if chain.status == "resolved":
+                continue
+            
+            chain_text = f"{chain.topic} {chain.summary}"
+            chain_text += " ".join(node.get("content_preview", "") for node in chain.timeline)
+            
+            if HAS_RAPIDFUZZ:
+                try:
+                    from rapidfuzz import fuzz
+                    similarity = fuzz.ratio(user_input, chain_text)
+                    if similarity >= 40:
+                        relevant_chains.append(chain)
+                except ImportError:
+                    if user_input and any(keyword in chain.topic for keyword in user_input[:20]):
+                        relevant_chains.append(chain)
+            else:
+                if user_input and any(keyword in chain.topic for keyword in user_input[:20]):
+                    relevant_chains.append(chain)
+        
+        for chain in relevant_chains[:3]:
+            context_parts.append(f"【事件链】{chain.topic}")
+            context_parts.append(f"   状态: {chain.status}")
+            context_parts.append(f"   摘要: {chain.summary}")
+            for node in chain.timeline[-3:]:
+                context_parts.append(f"   [{node.get('timestamp', '')[:10]}] {node.get('content_preview', '')}")
+            context_parts.append("")
+    except Exception as e:
+        logger.warning(f"Event chain context injection failed: {e}")
+    
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        recent_feels = [
+            b for b in all_buckets
+            if b["metadata"].get("type") == "feel"
+        ]
+        recent_feels.sort(key=lambda x: x["metadata"].get("created", ""), reverse=True)
+        
+        for feel in recent_feels[:3]:
+            meta = feel["metadata"]
+            context_metadata = meta.get("context_metadata", {})
+            event_context = context_metadata.get("event_context", "")
+            
+            feel_entry = f"【感觉状态】[{meta.get('created', '')[:10]}]"
+            if event_context:
+                feel_entry += f" {event_context}"
+            feel_entry += f"\n   {feel['content'][:100]}"
+            context_parts.append(feel_entry)
+    except Exception as e:
+        logger.warning(f"Feel context injection failed: {e}")
+    
+    if context_parts:
+        return "<context>\n" + "\n".join(context_parts) + "</context>"
+    else:
+        return "<context></context>"
 
 
 async def weekly_organize() -> str:

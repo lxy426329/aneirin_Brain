@@ -2,16 +2,19 @@
 # Module: Memory Housekeeper (housekeeper.py)
 # 模块：记忆管家
 #
-# Batch pipeline service that runs periodically to:
-# 1. Consolidate fragmented memories into Event Chains
-# 2. Flag stale memories for cleanup (proposals only)
-# 
+# Batch pipeline service with:
+# 1. Event Chain persistence
+# 2. Echo Chamber (system-level staging area)
+# 3. Daily/Weekly cron jobs
+# 4. Event classification rules (Atomic vs Long-term)
+#
 # All operations are staging-only - no direct deletion or overwriting.
 # Final approval rests with the main AI.
 # ============================================================
 
 import os
 import json
+import uuid
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
@@ -98,10 +101,177 @@ class CleanupProposal:
         return proposal
 
 
+class MergeProposal:
+    """
+    Proposal for merging similar memories.
+    相似记忆合并提案。
+    """
+    
+    def __init__(self, proposal_id: str, bucket_ids: list, summary: str):
+        self.proposal_id = proposal_id
+        self.bucket_ids = bucket_ids
+        self.summary = summary
+        self.status = "pending"
+        self.created = datetime.now(timezone.utc).isoformat()
+    
+    def to_dict(self) -> dict:
+        return {
+            "proposal_id": self.proposal_id,
+            "bucket_ids": self.bucket_ids,
+            "summary": self.summary,
+            "status": self.status,
+            "created": self.created,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "MergeProposal":
+        return cls(data["proposal_id"], data.get("bucket_ids", []), data.get("summary", ""))
+
+
+class EchoChamber:
+    """
+    System-level staging area for:
+    - Daily/Weekly digests
+    - Pending cleanup/merge proposals
+    - Event chain drafts
+    """
+    
+    def __init__(self, base_dir: str):
+        self.base_dir = base_dir
+        self.digests_dir = os.path.join(base_dir, "digests")
+        self.pending_actions_dir = os.path.join(base_dir, "pending_actions")
+        
+        os.makedirs(self.digests_dir, exist_ok=True)
+        os.makedirs(self.pending_actions_dir, exist_ok=True)
+    
+    async def write_digest(self, digest_type: str, content: str, metadata: dict = None):
+        """
+        Write a daily/weekly digest to echo chamber.
+        digest_type: daily/weekly
+        """
+        digest_id = f"{digest_type}_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+        file_path = os.path.join(self.digests_dir, f"{digest_id}.json")
+        
+        digest = {
+            "digest_id": digest_id,
+            "digest_type": digest_type,
+            "content": content,
+            "metadata": metadata or {},
+            "created": datetime.now(timezone.utc).isoformat(),
+            "reviewed": False,
+        }
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(digest, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"Written {digest_type} digest: {digest_id}")
+    
+    async def get_pending_digests(self, digest_type: str = "all") -> list:
+        """Get unreviewed digests."""
+        digests = []
+        for filename in os.listdir(self.digests_dir):
+            if filename.endswith(".json"):
+                file_path = os.path.join(self.digests_dir, filename)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if data.get("reviewed") is False:
+                            if digest_type == "all" or data.get("digest_type") == digest_type:
+                                digests.append(data)
+                except Exception as e:
+                    logger.warning(f"Failed to load digest: {file_path}: {e}")
+        
+        digests.sort(key=lambda d: d.get("created", ""), reverse=True)
+        return digests
+    
+    async def mark_digest_reviewed(self, digest_id: str):
+        """Mark a digest as reviewed."""
+        file_path = os.path.join(self.digests_dir, f"{digest_id}.json")
+        if not os.path.exists(file_path):
+            return False
+        
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        data["reviewed"] = True
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        return True
+    
+    async def add_pending_action(self, action_type: str, data: dict):
+        """
+        Add a pending action to echo chamber.
+        action_type: cleanup/merge/chain_update
+        """
+        action_id = str(uuid.uuid4())[:8]
+        file_path = os.path.join(self.pending_actions_dir, f"{action_id}.json")
+        
+        action = {
+            "action_id": action_id,
+            "action_type": action_type,
+            "status": "pending",
+            "data": data,
+            "created": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(action, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"Added pending action: {action_type} - {action_id}")
+    
+    async def get_pending_actions(self, action_type: str = "all") -> list:
+        """Get pending actions."""
+        actions = []
+        for filename in os.listdir(self.pending_actions_dir):
+            if filename.endswith(".json"):
+                file_path = os.path.join(self.pending_actions_dir, filename)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if data.get("status") == "pending":
+                            if action_type == "all" or data.get("action_type") == action_type:
+                                actions.append(data)
+                except Exception as e:
+                    logger.warning(f"Failed to load action: {file_path}: {e}")
+        
+        actions.sort(key=lambda a: a.get("created", ""), reverse=True)
+        return actions
+    
+    async def update_action_status(self, action_id: str, status: str):
+        """Update action status (approve/reject/executed)."""
+        file_path = os.path.join(self.pending_actions_dir, f"{action_id}.json")
+        if not os.path.exists(file_path):
+            return False
+        
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        data["status"] = status
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"Updated action {action_id} → {status}")
+        return True
+    
+    async def get_review_summary(self) -> dict:
+        """Get summary of all pending items for main AI review."""
+        digests = await self.get_pending_digests()
+        actions = await self.get_pending_actions()
+        
+        return {
+            "pending_digests": len(digests),
+            "pending_actions": len(actions),
+            "digests": digests,
+            "actions": actions,
+        }
+
+
 class Housekeeper:
     """
-    Memory housekeeper service - batch pipeline for memory management.
-    记忆管家服务 - 批量记忆管理管线。
+    Memory housekeeper service with daily/weekly pipeline.
     """
     
     def __init__(self, config: dict, bucket_mgr):
@@ -109,15 +279,16 @@ class Housekeeper:
         
         data_dir = config.get("buckets_dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"))
         self.event_chains_dir = os.path.join(data_dir, "event_chains")
-        self.staging_dir = os.path.join(data_dir, "staging")
-        self.cleanup_proposals_dir = os.path.join(self.staging_dir, "cleanup_proposals")
+        self.echo_chamber_dir = os.path.join(data_dir, "echo_chamber")
         
         os.makedirs(self.event_chains_dir, exist_ok=True)
-        os.makedirs(self.cleanup_proposals_dir, exist_ok=True)
+        
+        self.echo_chamber = EchoChamber(self.echo_chamber_dir)
         
         self._task: asyncio.Task | None = None
         self._running = False
-        self.run_interval_hours = config.get("housekeeper", {}).get("run_interval_hours", 24)
+        self._last_daily_run = None
+        self._last_weekly_run = None
     
     @property
     def is_running(self) -> bool:
@@ -134,7 +305,7 @@ class Housekeeper:
             return
         self._running = True
         self._task = asyncio.create_task(self._background_loop())
-        logger.info(f"Housekeeper started, interval: {self.run_interval_hours}h")
+        logger.info("Housekeeper started (daily/weekly pipeline)")
     
     async def stop(self):
         """Stop the housekeeper background task."""
@@ -148,55 +319,152 @@ class Housekeeper:
         logger.info("Housekeeper stopped")
     
     async def _background_loop(self):
-        """Background loop: run pipeline → sleep → repeat."""
+        """Background loop: check schedule every hour."""
         while self._running:
             try:
-                await self.run_pipeline()
+                await self._check_schedule()
             except Exception as e:
-                logger.error(f"Housekeeper pipeline error: {e}")
+                logger.error(f"Housekeeper schedule error: {e}")
             
             try:
-                await asyncio.sleep(self.run_interval_hours * 3600)
+                await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 break
     
-    async def run_pipeline(self) -> dict:
+    async def _check_schedule(self):
+        """Check if daily/weekly jobs should run."""
+        now = datetime.now(timezone.utc)
+        
+        should_daily = False
+        should_weekly = False
+        
+        if self._last_daily_run is None:
+            should_daily = True
+        else:
+            hours_since_daily = (now - self._last_daily_run).total_seconds() / 3600
+            if hours_since_daily >= 24:
+                should_daily = True
+        
+        if self._last_weekly_run is None:
+            should_weekly = now.weekday() == 6
+        else:
+            days_since_weekly = (now - self._last_weekly_run).days
+            if days_since_weekly >= 7 and now.weekday() == 6:
+                should_weekly = True
+        
+        if should_daily:
+            logger.info("Starting daily housekeeper job...")
+            await self.run_daily_job()
+            self._last_daily_run = now
+        
+        if should_weekly:
+            logger.info("Starting weekly housekeeper job...")
+            await self.run_weekly_job()
+            self._last_weekly_run = now
+    
+    async def run_daily_job(self) -> dict:
         """
-        Execute one full housekeeping pipeline cycle.
-        执行一轮完整的管家管线。
+        Daily job: lightweight summary of today's conversations.
+        Append key facts to corresponding Event Chains as temporary nodes.
+        Do NOT delete any data.
         """
-        logger.info("Starting housekeeper pipeline...")
+        logger.info("Running daily housekeeper job...")
         results = {}
         
         try:
-            results["event_chains"] = await self._task_event_chain_consolidation()
+            results["daily_summary"] = await self._daily_summary()
         except Exception as e:
-            logger.error(f"Event chain consolidation failed: {e}")
-            results["event_chains"] = {"error": str(e)}
+            logger.error(f"Daily summary failed: {e}")
+            results["daily_summary"] = {"error": str(e)}
         
         try:
-            results["cleanup_proposals"] = await self._task_cleanup_scan()
+            results["chain_updates"] = await self._daily_chain_update()
         except Exception as e:
-            logger.error(f"Cleanup scan failed: {e}")
-            results["cleanup_proposals"] = {"error": str(e)}
+            logger.error(f"Daily chain update failed: {e}")
+            results["chain_updates"] = {"error": str(e)}
         
-        logger.info(f"Housekeeper pipeline complete: {results}")
+        logger.info(f"Daily job complete: {results}")
         return results
     
-    async def _task_event_chain_consolidation(self) -> dict:
+    async def run_weekly_job(self) -> dict:
         """
-        Task 1: Consolidate fragmented memories into Event Chains.
-        任务一：将分散的碎片记忆归拢到事件链中。
+        Weekly job: deduplicate and merge Event Chains.
+        Scan stale low-weight memories, mark pending_delete, generate cleanup drafts.
+        Submit to echo_chamber for main AI final review.
         """
+        logger.info("Running weekly housekeeper job...")
+        results = {}
+        
+        try:
+            results["chain_merge"] = await self._weekly_chain_merge()
+        except Exception as e:
+            logger.error(f"Weekly chain merge failed: {e}")
+            results["chain_merge"] = {"error": str(e)}
+        
+        try:
+            results["cleanup_scan"] = await self._weekly_cleanup_scan()
+        except Exception as e:
+            logger.error(f"Weekly cleanup scan failed: {e}")
+            results["cleanup_scan"] = {"error": str(e)}
+        
+        try:
+            await self._write_weekly_digest(results)
+        except Exception as e:
+            logger.error(f"Weekly digest write failed: {e}")
+        
+        logger.info(f"Weekly job complete: {results}")
+        return results
+    
+    async def _daily_summary(self) -> dict:
+        """Generate daily summary of today's buckets."""
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        
         try:
             all_buckets = await self.bucket_mgr.list_all(include_archive=False)
         except Exception as e:
-            logger.error(f"Failed to list buckets for consolidation: {e}")
             return {"error": str(e)}
         
-        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        recent_buckets = []
+        today_buckets = []
+        for b in all_buckets:
+            created_str = b["metadata"].get("created", "")
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created >= today_start:
+                    today_buckets.append(b)
+            except (ValueError, TypeError):
+                continue
         
+        if not today_buckets:
+            return {"message": "No buckets from today"}
+        
+        summary_lines = []
+        for b in today_buckets:
+            meta = b["metadata"]
+            content_preview = b["content"][:80].replace("\n", " ")
+            summary_lines.append(f"- [{meta.get('created', '')}] {meta.get('name', '')}: {content_preview}")
+        
+        summary = "\n".join(summary_lines)
+        
+        await self.echo_chamber.write_digest(
+            digest_type="daily",
+            content=summary,
+            metadata={"bucket_count": len(today_buckets)}
+        )
+        
+        return {"buckets_processed": len(today_buckets)}
+    
+    async def _daily_chain_update(self) -> dict:
+        """Update event chains with today's relevant buckets (temporary nodes)."""
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            return {"error": str(e)}
+        
+        today_buckets = []
         for b in all_buckets:
             meta = b["metadata"]
             if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
@@ -207,44 +475,257 @@ class Housekeeper:
                 created = datetime.fromisoformat(str(created_str))
                 if created.tzinfo is None:
                     created = created.replace(tzinfo=timezone.utc)
-                if created >= one_week_ago:
-                    recent_buckets.append(b)
+                if created >= today_start:
+                    today_buckets.append(b)
             except (ValueError, TypeError):
                 continue
         
-        if not recent_buckets:
-            return {"message": "No recent buckets to consolidate"}
-        
-        topics = self._extract_topics(recent_buckets)
+        chains = await self.get_event_chains()
         chains_updated = 0
-        chains_created = 0
         
-        for topic, buckets in topics.items():
-            if len(buckets) < 2:
+        for bucket in today_buckets:
+            if not self._is_long_term_event(bucket):
                 continue
             
-            existing_chain = await self._find_existing_chain(topic)
+            topic = self._generate_topic_name(bucket["content"])
+            matched_chain = None
             
-            if existing_chain:
-                updated = await self._update_event_chain(existing_chain, buckets)
-                if updated:
-                    chains_updated += 1
+            for chain in chains:
+                if HAS_RAPIDFUZZ:
+                    if fuzz.ratio(chain.topic, topic) >= 60:
+                        matched_chain = chain
+                        break
+                else:
+                    if topic in chain.topic or chain.topic in topic:
+                        matched_chain = chain
+                        break
+            
+            if matched_chain:
+                await self._append_temporary_node(matched_chain, bucket)
+                chains_updated += 1
             else:
-                created = await self._create_event_chain(topic, buckets)
-                if created:
-                    chains_created += 1
+                if await self._should_create_chain(topic):
+                    await self._create_event_chain(topic, [bucket])
+                    chains_updated += 1
         
-        return {
-            "topics_found": len(topics),
-            "chains_updated": chains_updated,
-            "chains_created": chains_created,
+        return {"chains_updated": chains_updated}
+    
+    def _is_long_term_event(self, bucket: dict) -> bool:
+        """
+        Determine if this is a long-term event that should be in an Event Chain.
+        Rules:
+        - Atomic events (一次性餐饮、即时体感等) -> NO
+        - Long-term events (病程跟进、备考、项目开发等) -> YES
+        """
+        content = bucket["content"]
+        meta = bucket["metadata"]
+        
+        atomic_patterns = [
+            r'^(吃|喝|买|去)\s*[了过]$',
+            r'^我去洗个手$',
+            r'^我去吃饭$',
+            r'^我去喝水$',
+            r'^我去睡觉$',
+            r'^我走了$',
+            r'^再见$',
+            r'^晚安$',
+        ]
+        
+        import re
+        for pattern in atomic_patterns:
+            if re.match(pattern, content.strip()):
+                return False
+        
+        long_term_patterns = [
+            r'(生病|身体不适|不舒服|难受|痛)',
+            r'(备考|学习|考试)',
+            r'(项目|开发|工作)',
+            r'(恋爱|感情|关系)',
+            r'(减肥|健身|运动)',
+            r'(旅行|出差)',
+            r'(持续|一直|经常|频繁)',
+        ]
+        
+        for pattern in long_term_patterns:
+            if re.search(pattern, content):
+                return True
+        
+        tags = meta.get("tags", [])
+        long_term_tags = ["health", "study", "work", "project", "relationship"]
+        if any(tag.lower() in long_term_tags for tag in tags):
+            return True
+        
+        return False
+    
+    async def _should_create_chain(self, topic: str) -> bool:
+        """Check if a new chain should be created (topic mentioned across multiple days)."""
+        chains = await self.get_event_chains()
+        for chain in chains:
+            if HAS_RAPIDFUZZ:
+                if fuzz.ratio(chain.topic, topic) >= 60:
+                    return False
+            else:
+                if topic in chain.topic or chain.topic in topic:
+                    return False
+        
+        return True
+    
+    async def _append_temporary_node(self, chain: EventChain, bucket: dict):
+        """Append a temporary node to event chain timeline."""
+        timeline_entry = {
+            "memory_id": bucket["id"],
+            "timestamp": bucket["metadata"].get("created", ""),
+            "content_preview": bucket["content"][:100],
+            "temporary": True,
         }
+        
+        chain.timeline.append(timeline_entry)
+        chain.timeline.sort(key=lambda x: x["timestamp"])
+        chain.updated = datetime.now(timezone.utc).isoformat()
+        
+        await self._save_event_chain(chain)
+        logger.debug(f"Added temporary node to chain: {chain.chain_id}")
+    
+    async def _weekly_chain_merge(self) -> dict:
+        """Deduplicate and merge event chains."""
+        chains = await self.get_event_chains()
+        if not chains:
+            return {"message": "No chains to merge"}
+        
+        merged_count = 0
+        to_merge = []
+        
+        for i, c1 in enumerate(chains):
+            for j, c2 in enumerate(chains[i+1:]):
+                if HAS_RAPIDFUZZ:
+                    if fuzz.ratio(c1.topic, c2.topic) >= 70:
+                        to_merge.append((c1, c2))
+        
+        for c1, c2 in to_merge:
+            c1.timeline.extend(c2.timeline)
+            c1.timeline.sort(key=lambda x: x["timestamp"])
+            c1.source_bucket_ids.extend(c2.source_bucket_ids)
+            c1.updated = datetime.now(timezone.utc).isoformat()
+            
+            await self._save_event_chain(c1)
+            
+            chain_file = os.path.join(self.event_chains_dir, f"{c2.chain_id}.json")
+            if os.path.exists(chain_file):
+                os.remove(chain_file)
+            
+            merged_count += 1
+        
+        return {"chains_merged": merged_count}
+    
+    async def _weekly_cleanup_scan(self) -> dict:
+        """Scan for stale low-weight memories and generate cleanup proposals."""
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            return {"error": str(e)}
+        
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        proposals_created = 0
+        
+        for b in all_buckets:
+            meta = b["metadata"]
+            
+            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
+                continue
+            
+            if meta.get("resolved", False):
+                continue
+            
+            last_accessed_str = meta.get("last_accessed", meta.get("created", ""))
+            try:
+                last_accessed = datetime.fromisoformat(str(last_accessed_str))
+                if last_accessed.tzinfo is None:
+                    last_accessed = last_accessed.replace(tzinfo=timezone.utc)
+                if last_accessed < thirty_days_ago:
+                    if await self._should_propose_cleanup(b):
+                        await self._create_cleanup_proposal_echo(b)
+                        proposals_created += 1
+            except (ValueError, TypeError):
+                continue
+        
+        return {"proposals_created": proposals_created}
+    
+    async def _should_propose_cleanup(self, bucket: dict) -> bool:
+        """Determine if a bucket should be proposed for cleanup."""
+        meta = bucket["metadata"]
+        
+        importance = meta.get("importance", 5)
+        if importance >= 7:
+            return False
+        
+        activation_count = meta.get("activation_count", 0)
+        if activation_count >= 3:
+            return False
+        
+        related_buckets = meta.get("related_buckets", [])
+        if related_buckets:
+            return False
+        
+        return True
+    
+    async def _create_cleanup_proposal_echo(self, bucket: dict):
+        """Create cleanup proposal via echo chamber."""
+        meta = bucket["metadata"]
+        
+        reasons = []
+        importance = meta.get("importance", 5)
+        if importance < 5:
+            reasons.append(f"低重要度({importance})")
+        
+        activation_count = meta.get("activation_count", 0)
+        if activation_count == 0:
+            reasons.append("从未被激活")
+        
+        last_accessed_str = meta.get("last_accessed", meta.get("created", ""))
+        try:
+            last_accessed = datetime.fromisoformat(str(last_accessed_str))
+            if last_accessed.tzinfo is None:
+                last_accessed = last_accessed.replace(tzinfo=timezone.utc)
+            days_since = (datetime.now(timezone.utc) - last_accessed).days
+            reasons.append(f"{days_since}天未访问")
+        except (ValueError, TypeError):
+            reasons.append("访问时间未知")
+        
+        await self.echo_chamber.add_pending_action(
+            action_type="cleanup",
+            data={
+                "bucket_id": bucket["id"],
+                "reason": ", ".join(reasons),
+                "bucket_info": {
+                    "name": meta.get("name", bucket["id"]),
+                    "domain": meta.get("domain", []),
+                    "importance": importance,
+                    "created": meta.get("created", ""),
+                    "last_accessed": last_accessed_str,
+                }
+            }
+        )
+    
+    async def _write_weekly_digest(self, results: dict):
+        """Write weekly digest to echo chamber."""
+        digest_content = f"""每周管家报告
+
+【事件链合并】
+合并了 {results.get('chain_merge', {}).get('chains_merged', 0)} 条事件链
+
+【清理提案】
+生成了 {results.get('cleanup_scan', {}).get('proposals_created', 0)} 条清理提案
+
+请审阅并执行必要的批准操作。"""
+        
+        await self.echo_chamber.write_digest(
+            digest_type="weekly",
+            content=digest_content,
+            metadata=results
+        )
     
     def _extract_topics(self, buckets: list) -> dict:
-        """
-        Extract topics from buckets by finding semantically similar content.
-        通过语义相似性提取主题。
-        """
+        """Extract topics from buckets by finding semantically similar content."""
         if not HAS_RAPIDFUZZ:
             return self._extract_topics_simple(buckets)
         
@@ -320,8 +801,12 @@ class Housekeeper:
         """Find an existing event chain by topic."""
         chains = await self.get_event_chains()
         for chain in chains:
-            if fuzz.ratio(chain.topic, topic) >= 70:
-                return chain
+            if HAS_RAPIDFUZZ:
+                if fuzz.ratio(chain.topic, topic) >= 70:
+                    return chain
+            else:
+                if topic in chain.topic or chain.topic in topic:
+                    return chain
         return None
     
     async def _create_event_chain(self, topic: str, buckets: list) -> bool:
@@ -421,146 +906,8 @@ class Housekeeper:
                 return EventChain.from_dict(data)
         return None
     
-    async def _task_cleanup_scan(self) -> dict:
-        """
-        Task 2: Scan for stale memories and generate cleanup proposals.
-        任务二：扫描废旧记忆并生成清理提案。
-        """
-        try:
-            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
-        except Exception as e:
-            logger.error(f"Failed to list buckets for cleanup scan: {e}")
-            return {"error": str(e)}
-        
-        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-        proposals_created = 0
-        
-        for b in all_buckets:
-            meta = b["metadata"]
-            
-            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
-                continue
-            
-            if meta.get("resolved", False):
-                continue
-            
-            last_accessed_str = meta.get("last_accessed", meta.get("created", ""))
-            try:
-                last_accessed = datetime.fromisoformat(str(last_accessed_str))
-                if last_accessed.tzinfo is None:
-                    last_accessed = last_accessed.replace(tzinfo=timezone.utc)
-                if last_accessed < thirty_days_ago:
-                    if await self._should_propose_cleanup(b):
-                        await self._create_cleanup_proposal(b)
-                        proposals_created += 1
-            except (ValueError, TypeError):
-                continue
-        
-        return {"proposals_created": proposals_created}
-    
-    async def _should_propose_cleanup(self, bucket: dict) -> bool:
-        """Determine if a bucket should be proposed for cleanup."""
-        meta = bucket["metadata"]
-        
-        importance = meta.get("importance", 5)
-        if importance >= 7:
-            return False
-        
-        activation_count = meta.get("activation_count", 0)
-        if activation_count >= 3:
-            return False
-        
-        related_buckets = meta.get("related_buckets", [])
-        if related_buckets:
-            return False
-        
-        return True
-    
-    async def _create_cleanup_proposal(self, bucket: dict):
-        """Create a cleanup proposal for a stale bucket."""
-        proposal_id = self._generate_id()
-        meta = bucket["metadata"]
-        
-        reasons = []
-        importance = meta.get("importance", 5)
-        if importance < 5:
-            reasons.append(f"低重要度({importance})")
-        
-        activation_count = meta.get("activation_count", 0)
-        if activation_count == 0:
-            reasons.append("从未被激活")
-        
-        last_accessed_str = meta.get("last_accessed", meta.get("created", ""))
-        try:
-            last_accessed = datetime.fromisoformat(str(last_accessed_str))
-            if last_accessed.tzinfo is None:
-                last_accessed = last_accessed.replace(tzinfo=timezone.utc)
-            days_since = (datetime.now(timezone.utc) - last_accessed).days
-            reasons.append(f"{days_since}天未访问")
-        except (ValueError, TypeError):
-            reasons.append("访问时间未知")
-        
-        reason = ", ".join(reasons)
-        
-        proposal = CleanupProposal(proposal_id, bucket["id"], reason)
-        proposal.bucket_info = {
-            "name": meta.get("name", bucket["id"]),
-            "domain": meta.get("domain", []),
-            "importance": importance,
-            "created": meta.get("created", ""),
-            "last_accessed": last_accessed_str,
-        }
-        
-        await self._save_cleanup_proposal(proposal)
-        logger.info(f"Created cleanup proposal: {proposal_id} for {bucket['id']}")
-    
-    async def _save_cleanup_proposal(self, proposal: CleanupProposal):
-        """Save cleanup proposal to staging area."""
-        file_path = os.path.join(self.cleanup_proposals_dir, f"{proposal.proposal_id}.json")
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(proposal.to_dict(), f, ensure_ascii=False, indent=2)
-    
-    async def get_cleanup_proposals(self, status: str = "pending") -> list[CleanupProposal]:
-        """Get cleanup proposals by status."""
-        proposals = []
-        for filename in os.listdir(self.cleanup_proposals_dir):
-            if filename.endswith(".json"):
-                file_path = os.path.join(self.cleanup_proposals_dir, filename)
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        proposal = CleanupProposal.from_dict(data)
-                        if status == "all" or proposal.status == status:
-                            proposals.append(proposal)
-                except Exception as e:
-                    logger.warning(f"Failed to load cleanup proposal: {file_path}: {e}")
-        
-        proposals.sort(key=lambda p: p.created, reverse=True)
-        return proposals
-    
-    async def update_cleanup_proposal(self, proposal_id: str, status: str):
-        """Update cleanup proposal status."""
-        file_path = os.path.join(self.cleanup_proposals_dir, f"{proposal_id}.json")
-        if not os.path.exists(file_path):
-            return False
-        
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        
-        proposal = CleanupProposal.from_dict(data)
-        proposal.status = status
-        
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(proposal.to_dict(), f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"Updated cleanup proposal: {proposal_id} → {status}")
-        return True
-    
     async def approve_chain(self, chain_id: str) -> bool:
-        """
-        Approve an event chain - mark it as finalized.
-        批准事件链 - 标记为已结案。
-        """
+        """Approve an event chain - mark it as finalized."""
         chain = await self.get_event_chain(chain_id)
         if not chain:
             return False
@@ -571,20 +918,53 @@ class Housekeeper:
         logger.info(f"Approved event chain: {chain_id}")
         return True
     
+    async def get_cleanup_proposals(self, status: str = "pending") -> list[CleanupProposal]:
+        """Get cleanup proposals by status (legacy method)."""
+        actions = await self.echo_chamber.get_pending_actions(action_type="cleanup")
+        proposals = []
+        for action in actions:
+            data = action.get("data", {})
+            proposal = CleanupProposal(
+                action["action_id"],
+                data.get("bucket_id", ""),
+                data.get("reason", "")
+            )
+            proposal.bucket_info = data.get("bucket_info", {})
+            proposals.append(proposal)
+        return proposals
+    
+    async def update_cleanup_proposal(self, proposal_id: str, status: str):
+        """Update cleanup proposal status (legacy method)."""
+        return await self.echo_chamber.update_action_status(proposal_id, status)
+    
     async def reject_proposal(self, proposal_id: str) -> bool:
-        """
-        Reject a cleanup proposal - mark it as rejected.
-        驳回清理提案。
-        """
-        return await self.update_cleanup_proposal(proposal_id, "rejected")
+        """Reject a cleanup proposal."""
+        return await self.echo_chamber.update_action_status(proposal_id, "rejected")
     
     async def approve_proposal(self, proposal_id: str) -> bool:
-        """
-        Approve a cleanup proposal - mark it as approved.
-        批准清理提案。
-        """
-        return await self.update_cleanup_proposal(proposal_id, "approved")
+        """Approve a cleanup proposal."""
+        return await self.echo_chamber.update_action_status(proposal_id, "approved")
+    
+    async def review_digest(self) -> dict:
+        """Get digest for main AI review."""
+        return await self.echo_chamber.get_review_summary()
+    
+    async def approve_action(self, action_id: str) -> bool:
+        """Approve a pending action."""
+        return await self.echo_chamber.update_action_status(action_id, "approved")
+    
+    async def reject_action(self, action_id: str) -> bool:
+        """Reject a pending action."""
+        return await self.echo_chamber.update_action_status(action_id, "rejected")
     
     def _generate_id(self) -> str:
         """Generate a unique ID."""
         return str(uuid.uuid4())[:8]
+    
+    async def run_pipeline(self) -> dict:
+        """Run both daily and weekly jobs (for manual trigger)."""
+        results = {}
+        results["daily"] = await self.run_daily_job()
+        if datetime.now(timezone.utc).weekday() == 6:
+            results["weekly"] = await self.run_weekly_job()
+        return results
