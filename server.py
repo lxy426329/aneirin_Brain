@@ -118,7 +118,7 @@ embedding_engine = EmbeddingEngine(config)            # Embedding engine first (
 bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket manager / 记忆桶管理器
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
-housekeeper = Housekeeper(config, bucket_mgr)         # Housekeeper / 记忆管家
+housekeeper = Housekeeper(config, bucket_mgr, dehydrator)         # Housekeeper / 记忆管家
 identity_mgr = IdentityManager(config)               # Identity manager / 身份管理器
 emotion_mgr = EmotionManager(config)                 # Emotion manager / 情绪管理器
 pattern_mgr = PatternManager(config)                 # Pattern manager / 模式管理器
