@@ -4858,71 +4858,348 @@ async def ai_manage(request: str) -> str:
         if not dehydrator or not dehydrator.api_available:
             return "AI管家需要配置脱水API才能工作，请先在设置中配置API。"
         
-        tools_info = [
-            {"name": "breath", "description": "检索/浮现记忆，支持关键词搜索、按主题域/情感坐标/重要度筛选"},
-            {"name": "hold", "description": "存储单条记忆，自动打标+合并，支持设置重要度、钉选、情感坐标"},
-            {"name": "grow", "description": "日记归档，自动拆分为多个记忆桶"},
-            {"name": "trace", "description": "修改记忆元数据或内容，支持沉底/激活/钉选/删除等操作"},
-            {"name": "dream", "description": "读取最近新增的记忆桶，供自省"},
-            {"name": "smart_organize", "description": "智能整理：自动识别过期记忆并批量降低权重（days=30, importance_drop=2）"},
-            {"name": "weekly_organize", "description": "每周内容整理：生成本周新增记忆报告（仅报告，不调整权重）"},
-            {"name": "manage_record", "description": "通用记录管理：action(create/update/get/list/delete/apply), record_type(identity/roster/pattern/candlestick/experience/annual_ring), record_id"},
-            {"name": "manage_relation", "description": "通用关联管理：action(link/parent/chain/importance), bucket_id, target_id"},
-            {"name": "manage_identity_relation", "description": "管理身份关系：action(add/query/update_weight), from_id, to_id, relation_type, base_weight"},
-            {"name": "query_memory", "description": "通用记忆查询：mode(search/float/status/directory/recent), query"},
-            {"name": "ai_analyze", "description": "AI分析工具：task(link/find/chain/summarize/classify), bucket_id, query"},
-            {"name": "get_anchors", "description": "获取行为与情绪锚点（触发词+情绪基调+行为禁忌）"},
-            {"name": "get_timelines", "description": "获取时间链（事件发展脉络）"},
-            {"name": "get_memos", "description": "获取烛台备忘录"},
-            {"name": "get_experiences", "description": "获取年轮经验"},
-            {"name": "get_roster", "description": "查询名册(人物)记录，支持姓名精确查找"},
-            {"name": "analytics", "description": "获取记忆库统计分析数据（情绪分布、类型统计、活跃度趋势）"},
-            {"name": "trace_chain", "description": "追溯记忆因果链（前因后果），direction=both/previous/next, max_depth=3"},
-            {"name": "link_events", "description": "建立两个事件之间的因果关系，prev_id=前因, next_id=后果"},
-            {"name": "memory_export", "description": "导出记忆数据，export_type=all/dynamic/permanent/identity/pattern/feel"},
+        # --- Build tool schemas for OpenAI tools API ---
+        # --- 构建 OpenAI 工具 API 所需 function schemas ---
+        tools_schema = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "breath",
+                    "description": "检索/浮现记忆。不传query=自动浮现权重最高的未解决记忆;传query=按关键词+情感坐标检索记忆。支持按domain/importance/type筛选。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "检索关键词，留空则自动浮现"},
+                            "domain": {"type": "string", "description": "按主题域筛选"},
+                            "type": {"type": "string", "description": "按类型筛选: identity/pattern/event/feel"},
+                            "max_results": {"type": "integer", "description": "返回数量上限(默认10,最大50)"},
+                            "importance_min": {"type": "integer", "description": "最低重要度(1-5)"},
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "hold",
+                    "description": "存储单条记忆。自动情感打标+语义查重合并+异步生成embedding。支持设置重要度、钉选、情感坐标。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "记忆内容"},
+                            "tags": {"type": "string", "description": "逗号分隔的标签"},
+                            "importance": {"type": "integer", "description": "重要度(1-5)"},
+                            "pinned": {"type": "boolean", "description": "是否钉选"},
+                            "feel": {"type": "boolean", "description": "是否感官记忆"},
+                            "task_flag": {"type": "boolean", "description": "是否任务标记"},
+                            "valence": {"type": "number", "description": "效价(0~1)"},
+                            "arousal": {"type": "number", "description": "唤醒度(0~1)"},
+                        },
+                        "required": ["content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "grow",
+                    "description": "日记归档。自动拆分长内容为多个记忆桶，逐条执行hold流程。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "日记/长文本内容"},
+                        },
+                        "required": ["content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "trace",
+                    "description": "修改记忆元数据或内容。支持resolved/tags/importance/pinned等操作，也支持删除桶。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "bucket_id": {"type": "string", "description": "记忆桶ID"},
+                            "resolved": {"type": "boolean", "description": "标记为已解决"},
+                            "tags": {"type": "string", "description": "覆盖标签"},
+                            "importance": {"type": "integer", "description": "重要度(1-5)"},
+                            "pinned": {"type": "boolean", "description": "钉选"},
+                            "action": {"type": "string", "description": "delete=删除,archive=归档"},
+                            "content": {"type": "string", "description": "修改内容"},
+                        },
+                        "required": ["bucket_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "dream",
+                    "description": "读取最近新增的记忆桶，供自我回顾和反思。返回最近记忆列表。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "max_results": {"type": "integer", "description": "最大返回数量(默认10)"},
+                            "max_days": {"type": "integer", "description": "最近多少天(默认7)"},
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_memory",
+                    "description": "通用记忆查询。mode=search(语义搜索)/float(权重浮现)/status(状态)/directory(目录)/recent(近期)。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string", "description": "查询模式: search/float/status/directory/recent"},
+                            "query": {"type": "string", "description": "搜索关键词"},
+                        },
+                        "required": ["mode"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "ai_analyze",
+                    "description": "AI分析工具。task=link(关联分析)/find(语义搜索)/chain(事件链)/summarize(总结)/classify(分类)。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {"type": "string", "description": "分析任务: link/find/chain/summarize/classify"},
+                            "bucket_id": {"type": "string", "description": "记忆桶ID"},
+                            "query": {"type": "string", "description": "搜索关键词"},
+                        },
+                        "required": ["task"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "smart_organize",
+                    "description": "智能整理：自动识别过期记忆并批量降低权重。days=30, importance_drop=2。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_anchors",
+                    "description": "获取行为与情绪锚点：触发词+情绪基调+行为禁忌。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_timelines",
+                    "description": "获取时间链：事件发展脉络。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_experiences",
+                    "description": "获取年轮经验：已积累的长期经验模式。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "analytics",
+                    "description": "获取记忆库统计分析数据：情绪分布、类型统计、活跃度趋势。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "manage_record",
+                    "description": "通用记录管理。action=create/update/get/list/delete/apply。record_type=identity/roster/pattern/candlestick/experience/annual_ring。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "description": "create/update/get/list/delete/apply"},
+                            "record_type": {"type": "string", "description": "identity/roster/pattern/candlestick/experience/annual_ring"},
+                            "record_id": {"type": "string", "description": "记录ID"},
+                            "content": {"type": "string", "description": "记录内容"},
+                        },
+                        "required": ["action", "record_type"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "manage_relation",
+                    "description": "通用关联管理。action=link/parent/chain/importance。在bucket_id和target_id之间建立关联。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "description": "link/parent/chain/importance"},
+                            "bucket_id": {"type": "string", "description": "源记忆ID"},
+                            "target_id": {"type": "string", "description": "目标ID"},
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "trace_chain",
+                    "description": "追溯记忆因果链。direction=both/previous/next, max_depth=3。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "bucket_id": {"type": "string", "description": "起始记忆ID"},
+                            "direction": {"type": "string", "description": "both/previous/next"},
+                            "max_depth": {"type": "integer", "description": "最大深度"},
+                        },
+                        "required": ["bucket_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "link_events",
+                    "description": "建立两个事件之间的因果关系。prev_id=前因, next_id=后果。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prev_id": {"type": "string", "description": "前因事件ID"},
+                            "next_id": {"type": "string", "description": "后果事件ID"},
+                        },
+                        "required": ["prev_id", "next_id"]
+                    }
+                }
+            },
         ]
         
-        tools_json = _json_lib.dumps(tools_info, ensure_ascii=False)
-        
-        system_prompt = f"""你是记忆系统AI管家，用最少工具调用完成任务。
-        
-可用工具：{tools_json}
+        # --- Build system prompt ---
+        # --- 构建系统提示词 ---
+        system_prompt = """你是记忆系统AI管家。用最少的工具调用完成任务。
 
-概念：年轮(experience)=经验，烛台(candlestick)=备忘录
+核心原则：
+1. 先查询再操作——检索记忆后判断是否需要进一步处理
+2. 一次完成多个步骤——如果需要进行多项操作，同时列出所有步骤
+3. 优先使用 tools API（function calling）来调用工具
+4. 如果 tools API 不可用，返回 JSON 格式：{"action":"call_tools","steps":[{"tool_name":"...","parameters":{...}}]}
+5. 概念：年轮(experience)=经验，烛台(candlestick)=备忘录，年轮分析(annual_ring)=经验分析
 
-调用格式：
-{{"action":"call_tool","tool_name":"工具名","parameters":{{...}},"reason":"原因"}}
-{{"action":"call_tools","steps":[{{"tool_name":"工具名","parameters":{{...}}}}]}}
-{{"action":"direct_answer","answer":"回答"}}
-{{"action":"summarize","summary":"总结","steps":[...],"result":"结果"}}
-
-规则：
-- 整理过期记忆用smart_organize，每周报告用weekly_organize
-- 先查询再操作，一次返回所有步骤
-- 只返回JSON，无其他文字"""
+可用工具请通过 functions 接口调用。"""
         
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request},
         ]
         
+        # --- Log request to LLM ---
+        # --- 记录发给 LLM 的请求 ---
+        tool_names = [t["function"]["name"] for t in tools_schema]
+        logger.info(f"[ai_manage] Sending to LLM model={dehydrator.model}")
+        logger.info(f"[ai_manage] Tools available ({len(tools_schema)}): {', '.join(tool_names)}")
+        logger.debug(f"[ai_manage] System prompt: {system_prompt[:300]}...")
+        logger.debug(f"[ai_manage] User message: {request[:300]}...")
+        
         response = await dehydrator.client.chat.completions.create(
             model=dehydrator.model,
             messages=messages,
-            max_tokens=500,
+            tools=tools_schema,
+            tool_choice="auto",
+            max_tokens=2000,
             temperature=0.3,
         )
         
-        if not response.choices or not response.choices[0].message.content:
+        if not response.choices:
             return f"AI管家无法理解您的请求: {request}"
         
-        raw = response.choices[0].message.content.strip()
+        choice = response.choices[0]
+        message = choice.message
+        
+        # --- Log LLM response ---
+        # --- 记录 LLM 的响应 ---
+        if message.tool_calls:
+            logger.info(f"[ai_manage] LLM returned {len(message.tool_calls)} tool_calls")
+            for tc in message.tool_calls:
+                logger.info(f"[ai_manage]   -> tool_call: {tc.function.name}({tc.function.arguments[:200]})")
+        elif message.content:
+            logger.info(f"[ai_manage] LLM returned text response ({len(message.content)} chars): {message.content[:200]}...")
+        else:
+            logger.info("[ai_manage] LLM returned empty response")
+        
+        # --- Handle native tool_calls (OpenAI format) ---
+        # --- 处理原生 tool_calls ---
+        if message.tool_calls:
+            results = []
+            for i, tc in enumerate(message.tool_calls):
+                tool_name = tc.function.name
+                try:
+                    parameters = _json_lib.loads(tc.function.arguments)
+                except _json_lib.JSONDecodeError:
+                    parameters = {}
+                
+                logger.info(f"[ai_manage] Executing tool_call {i+1}: {tool_name}")
+                
+                tool_func = globals().get(tool_name)
+                if not tool_func:
+                    results.append(f"步骤 {i+1}: 未知工具 {tool_name}")
+                    continue
+                
+                try:
+                    if asyncio.iscoroutinefunction(tool_func):
+                        tool_result = await tool_func(**parameters)
+                    else:
+                        tool_result = tool_func(**parameters)
+                    results.append(f"步骤 {i+1}: [{tool_name}] {str(tool_result)[:500]}")
+                except Exception as e:
+                    results.append(f"步骤 {i+1}: {tool_name} 调用失败 - {e}")
+            
+            return "📋 执行结果\n\n" + "\n\n---\n\n".join(results)
+        
+        # --- Handle text response (check for JSON format) ---
+        # --- 处理文本响应（检查 JSON 格式） ---
+        raw = message.content.strip() if message.content else ""
+        if not raw:
+            return "AI管家没有返回任何内容"
+        
+        # Try to parse as JSON first (backward compatibility)
         try:
             if raw.startswith("```"):
-                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = _json_lib.loads(raw)
         except _json_lib.JSONDecodeError:
-            return f"AI管家解析失败，请重试。原始响应: {raw[:200]}"
+            return raw  # Plain text response
         
         action = result.get("action")
         
@@ -4944,6 +5221,8 @@ async def ai_manage(request: str) -> str:
         
     except Exception as e:
         logger.error(f"ai_manage failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return f"AI管家执行失败: {e}"
 
 
@@ -7261,7 +7540,7 @@ async def api_run_housekeeper(request):
 # =============================================================
 @mcp.custom_route("/api/ai-chat", methods=["POST"])
 async def api_ai_chat(request):
-    """AI chat interface - sends message to ai_manage and returns response."""
+    """AI chat interface - silent preprocessing + LLM with tools + response."""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
@@ -7271,7 +7550,30 @@ async def api_ai_chat(request):
         if not message:
             return JSONResponse({"ok": False, "error": "消息不能为空"}, status_code=400)
         
-        result = await ai_manage(message)
+        # --- Step 1: Silent preprocessing - inject context BEFORE calling LLM ---
+        # --- 第一步：静默预处理 - 在调用 LLM 之前注入上下文 ---
+        logger.info(f"[Middleware] Silent preprocessing for message: {message[:100]}...")
+        context = ""
+        try:
+            context = await inject_context(user_input=message)
+            if context and context != "<context>\n</context>":
+                logger.info(f"[Middleware] Context injected ({len(context)} chars)")
+                logger.debug(f"[Middleware] Context content:\n{context[:500]}...")
+            else:
+                logger.info("[Middleware] No relevant context found, sending raw message")
+        except Exception as e:
+            logger.warning(f"[Middleware] Context injection failed: {e}")
+        
+        # --- Step 2: Call ai_manage with pre-injected context ---
+        # --- 第二步：调用 AI 管家，将上下文拼入消息 ---
+        enriched_message = message
+        if context and context != "<context>\n</context>":
+            enriched_message = f"{context}\n\n用户消息:\n{message}"
+        
+        logger.info(f"[Chat] Sending to ai_manage (with context: {'yes' if context and context != '<context>\\n</context>' else 'no'})")
+        result = await ai_manage(enriched_message)
+        
+        logger.info(f"[Chat] Response received ({len(result)} chars): {result[:200]}...")
         
         return JSONResponse({
             "ok": True,
