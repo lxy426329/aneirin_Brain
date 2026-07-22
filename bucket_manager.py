@@ -743,6 +743,7 @@ class BucketManager:
         protected: bool = False,
         task_flag: bool = False,
         dehydrator=None,
+        context_metadata: dict = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -826,6 +827,7 @@ class BucketManager:
             "task_flag": bool(task_flag),
             "previous_event_id": None,
             "next_event_id": None,
+            "context_metadata": context_metadata or {},
         }
         if pinned:
             metadata["pinned"] = True

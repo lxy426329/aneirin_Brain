@@ -582,6 +582,76 @@ async def dream_hook(request):
         return PlainTextResponse("")
 
 
+def _extract_event_context(content: str) -> str:
+    """
+    Extract event context from content: time, location, state, and events.
+    从内容中提取事件背景：时间、地点、状态、发生的事件。
+    
+    Returns a formatted context string like:
+    "事件背景：顾尘今日身体不适去医院/身体隐痛"
+    """
+    if not content or not content.strip():
+        return ""
+    
+    text = content.strip()
+    context_parts = []
+    
+    import re
+    
+    date_patterns = [
+        r'(\d{4}[-年]\d{1,2}[-月]\d{1,2}[日号]?)',
+        r'(\d{4}[-]\d{2}[-]\d{2})',
+        r'(今天|今日|昨天|昨日|前天|明日|明天)',
+        r'(早晨|早上|上午|中午|下午|晚上|深夜)',
+    ]
+    for pattern in date_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            context_parts.append("时间: " + matches[0])
+            break
+    
+    location_patterns = [
+        r'(在\s*[\u4e00-\u9fff]+)',
+        r'(从\s*[\u4e00-\u9fff]+到[\u4e00-\u9fff]+)',
+        r'(去\s*[\u4e00-\u9fff]+)',
+        r'(医院|公司|家|学校|办公室)',
+    ]
+    for pattern in location_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            context_parts.append("地点: " + matches[0])
+            break
+    
+    state_patterns = [
+        r'(身体不适|生病|感冒|发烧|头痛|胃痛|疲劳|疲惫|累)',
+        r'(开心|难过|生气|焦虑|烦躁|郁闷|沮丧|兴奋)',
+        r'(加班|工作|学习|开会|休息|睡觉)',
+    ]
+    for pattern in state_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            context_parts.append("状态: " + matches[0])
+            break
+    
+    event_patterns = [
+        r'(发生了|遇到了|经历了|做了)\s*([^\。！？]+)',
+        r'(去\s*[\u4e00-\u9fff]+\s*[做办]了\s*[^\。！？]+)',
+        r'(和\s*[\u4e00-\u9fff]+[^\。！？]+)',
+    ]
+    for pattern in event_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            if isinstance(matches[0], tuple):
+                context_parts.append("事件: " + matches[0][0] + matches[0][1])
+            else:
+                context_parts.append("事件: " + matches[0])
+            break
+    
+    if context_parts:
+        return "事件背景：" + "；".join(context_parts)
+    return ""
+
+
 # =============================================================
 # Internal helper: merge-or-create
 # 内部辅助：检查是否可合并，可以则合并，否则新建
@@ -601,6 +671,7 @@ async def _merge_or_create(
     name: str = "",
     task_flag: bool = False,
     dehydrator=None,
+    context_metadata: dict = None,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -664,6 +735,7 @@ async def _merge_or_create(
         "name": name or None,
         "task_flag": task_flag,
         "dehydrator": dehydrator,
+        "context_metadata": context_metadata,
     }
 
     if emotions:
@@ -734,7 +806,7 @@ async def _breath_identity(max_tokens: int) -> str:
 
 
 async def _breath_feel(max_tokens: int) -> str:
-    """Load all feels."""
+    """Load all feels with event context."""
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
@@ -744,8 +816,18 @@ async def _breath_feel(max_tokens: int) -> str:
         
         results = []
         for f in feels:
-            created = f["metadata"].get("created", "")
-            entry = f"[{created}] [bucket_id:{f['id']}]\n{strip_wikilinks(f['content'])}"
+            meta = f["metadata"]
+            created = meta.get("created", "")
+            context_metadata = meta.get("context_metadata", {})
+            event_context = context_metadata.get("event_context", "")
+            
+            content = strip_wikilinks(f["content"])
+            
+            if event_context:
+                entry = f"[{created}] [bucket_id:{f['id']}]\n{event_context}\n{content}"
+            else:
+                entry = f"[{created}] [bucket_id:{f['id']}]\n{content}"
+            
             results.append(entry)
             if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                 break
@@ -1666,6 +1748,12 @@ async def breath(
                 shown_count += 1
                 continue
             
+            context_metadata = bucket["metadata"].get("context_metadata", {})
+            event_context = context_metadata.get("event_context", "")
+            
+            score = bucket.get("score", 0)
+            is_high_relevance = score >= 0.3
+            
             if decay_stage == 2:
                 dehydrated_summary = bucket["metadata"].get("dehydrated_summary", "")
                 if dehydrated_summary:
@@ -1673,12 +1761,22 @@ async def breath(
                 else:
                     summary = strip_wikilinks(bucket["content"])[:100]
                 summary = f"[总结] [bucket_id:{bucket['id']}] {summary}"
+                
+                if event_context and is_high_relevance:
+                    summary = f"{event_context}\n{summary}"
             else:
                 content = strip_wikilinks(bucket["content"])
                 if bucket.get("vector_match"):
                     summary = f"[语义关联] [bucket_id:{bucket['id']}] {content[:200]}"
                 else:
                     summary = f"[bucket_id:{bucket['id']}] {content[:200]}"
+                
+                if event_context:
+                    if is_high_relevance:
+                        summary = f"{event_context}\n{summary}"
+                    else:
+                        context_summary = event_context[:80] + "..." if len(event_context) > 80 else event_context
+                        summary = f"[背景: {context_summary}] {summary}"
 
             # Add cooldown tag for pattern/experience types
             # 为年轮经验添加冷却标记
@@ -1932,10 +2030,12 @@ async def hold(
     pinned: bool = False,
     feel: bool = False,
     task_flag: bool = False,
-    source_bucket: str = "",    valence: float = -1,
+    source_bucket: str = "",
+    valence: float = -1,
     arousal: float = -1,
+    event_context: str = "",
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。event_context=事件背景(时间/地点/状态/当时发生的事件)。"""
     await decay_engine.ensure_started()
     await tag_normalizer.ensure_started()
 
@@ -1989,6 +2089,16 @@ async def hold(
                 logger.warning(f"Failed to mark source as digested / 标记已消化失败: {e}")
         return f"🫧feel→{bucket_id}"
 
+    # --- Step 0: Extract Event Context / 提取事件背景 ---
+    # 如果没有显式提供 event_context，则尝试从 content 中提取
+    context_metadata = {}
+    if event_context and event_context.strip():
+        context_metadata["event_context"] = event_context.strip()
+        context_metadata["context_provided"] = True
+    else:
+        context_metadata["event_context"] = _extract_event_context(content)
+        context_metadata["context_provided"] = False
+    
     # --- Step 1: auto-tagging / 自动打标 ---
     try:
         analysis = await dehydrator.analyze(content)
@@ -2038,6 +2148,7 @@ async def hold(
             bucket_type="permanent",
             pinned=True,
             task_flag=task_flag,
+            context_metadata=context_metadata,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -2061,6 +2172,7 @@ async def hold(
         name=suggested_name,
         task_flag=task_flag,
         dehydrator=dehydrator,
+        context_metadata=context_metadata,
     )
 
     action = "合并→" if is_merged else "新建→"
