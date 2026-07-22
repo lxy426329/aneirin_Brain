@@ -3425,9 +3425,9 @@ async def weekly_organize() -> str:
 async def manage_record(action: str, record_type: str = "", record_id: str = "", **kwargs) -> str:
     """通用记录管理工具，替代identity_*/pattern_*/candlestick_*/experience_*等CRUD工具。
     action: create/update/get/list/delete/apply
-    record_type: identity/pattern/candlestick/experience
+    record_type: identity/roster/pattern/candlestick/experience/annual_ring
     record_id: 记录ID(仅get/update/delete/apply需要)
-    kwargs: 其他参数(content,name,tags等)"""
+    kwargs: 其他参数(content/detail/text/name/tags等)"""
     try:
         if action not in ["create", "update", "get", "list", "delete", "apply"]:
             return f"未知操作: {action}"
@@ -3437,8 +3437,14 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 name = kwargs.get("name", "")
                 description = kwargs.get("description", "")
                 relationships = kwargs.get("relationships", [])
-                success = await bucket_mgr.save_identity(name, description, relationships)
-                return f"👤 身份档案已创建 → {success['id']}" if success else "创建失败"
+                if not name:
+                    return "请提供姓名"
+                identity_id = await identity_mgr.create(
+                    name=name,
+                    content=description,
+                    relationships=relationships,
+                )
+                return f"👤 身份档案已创建 → {identity_id}"
             elif record_type == "pattern":
                 name = kwargs.get("name", "")
                 description = kwargs.get("description", "")
@@ -3452,9 +3458,9 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 success = await bucket_mgr.save_candlestick(content, bucket_id, title)
                 return f"🕯️ 烛台已记录 → {success['id']}" if success else "记录失败"
             elif record_type == "experience":
-                content = kwargs.get("content", "")
+                content = kwargs.get("content", "") or kwargs.get("detail", "") or kwargs.get("text", "")
                 exp_type = kwargs.get("exp_type", "")
-                title = kwargs.get("title", "")
+                title = kwargs.get("title", "") or kwargs.get("name", "")
                 source = kwargs.get("source", "")
                 source_bucket_ids = kwargs.get("source_bucket_ids", [])
                 
@@ -3485,11 +3491,28 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 )
                 
                 return f"📚 经验已创建 → {bucket_id}"
+            elif record_type == "annual_ring":
+                content = kwargs.get("content", "") or kwargs.get("detail", "") or kwargs.get("text", "")
+                title = kwargs.get("title", "") or kwargs.get("name", "")
+                
+                if not content:
+                    return "请提供年轮内容"
+                
+                bucket_id = await bucket_mgr.create(
+                    content=content,
+                    tags=[],
+                    importance=8,
+                    domain=["年轮"],
+                    name=title or "未命名年轮",
+                    bucket_type="permanent",
+                )
+                
+                return f"🌳 年轮已记录 → {bucket_id}"
             return f"不支持创建 {record_type} 类型"
         
         elif action == "list":
-            if record_type == "identity":
-                identities = await bucket_mgr.get_identities()
+            if record_type == "identity" or record_type == "roster":
+                identities = await identity_mgr.list_all()
                 return "\n".join([f"[{i['id']}] {i['metadata'].get('name', '')}" for i in identities]) if identities else "暂无身份档案"
             elif record_type == "pattern":
                 patterns = await bucket_mgr.get_patterns()
@@ -3523,12 +3546,21 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     results.append(entry)
                 
                 return "\n".join(results)
+            elif record_type == "annual_ring":
+                all_buckets = await bucket_mgr.list_all(include_archive=False)
+                rings = [b for b in all_buckets 
+                         if b.get("metadata", {}).get("domain") and "年轮" in b.get("metadata", {}).get("domain")]
+                
+                if not rings:
+                    return "暂无年轮记录"
+                
+                return "\n".join([f"[{r['id']}] {r['metadata'].get('name', r['id'])}" for r in rings])
             return f"不支持列出 {record_type} 类型"
         
         elif action == "get":
             if not record_id:
                 return "请提供record_id"
-            if record_type in ["identity", "pattern", "candlestick", "experience"]:
+            if record_type in ["identity", "roster", "pattern", "candlestick", "experience", "annual_ring"]:
                 record = await bucket_mgr.get(record_id)
                 if record:
                     meta = record.get("metadata", {})
@@ -3539,7 +3571,7 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
         elif action == "update":
             if not record_id:
                 return "请提供record_id"
-            if record_type in ["identity", "pattern", "candlestick", "experience"]:
+            if record_type in ["identity", "roster", "pattern", "candlestick", "experience", "annual_ring"]:
                 record = await bucket_mgr.get(record_id)
                 if not record:
                     return f"未找到记录: {record_id}"
@@ -3552,7 +3584,7 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
         elif action == "delete":
             if not record_id:
                 return "请提供record_id"
-            if record_type in ["identity", "pattern", "candlestick", "experience"]:
+            if record_type in ["identity", "roster", "pattern", "candlestick", "experience", "annual_ring"]:
                 success = await bucket_mgr.delete(record_id)
                 return f"已删除 → {record_id}" if success else "删除失败"
             return f"不支持删除 {record_type} 类型"
@@ -3569,6 +3601,15 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 meta["last_applied"] = datetime.now().isoformat()
                 success = await bucket_mgr.update(record_id, exp.get("content", ""), meta)
                 return f"经验已应用 → {record_id} | 次数: {meta['apply_count']}" if success else "应用失败"
+            elif record_type == "annual_ring":
+                ring = await bucket_mgr.get(record_id)
+                if not ring:
+                    return f"未找到年轮: {record_id}"
+                meta = ring.get("metadata", {})
+                meta["apply_count"] = meta.get("apply_count", 0) + 1
+                meta["last_applied"] = datetime.now().isoformat()
+                success = await bucket_mgr.update(record_id, ring.get("content", ""), meta)
+                return f"年轮已应用 → {record_id} | 次数: {meta['apply_count']}" if success else "应用失败"
             return f"不支持应用 {record_type} 类型"
         
         return f"操作失败: {action} {record_type}"
@@ -4065,7 +4106,7 @@ async def ai_manage(request: str) -> str:
             {"name": "dream", "description": "读取最近新增的记忆桶，供自省"},
             {"name": "smart_organize", "description": "智能整理：自动识别过期记忆并批量降低权重（days=30, importance_drop=2）"},
             {"name": "weekly_organize", "description": "每周内容整理：生成本周新增记忆报告（仅报告，不调整权重）"},
-            {"name": "manage_record", "description": "通用记录管理：action(create/update/get/list/delete/apply), record_type(identity/pattern/candlestick/experience), record_id"},
+            {"name": "manage_record", "description": "通用记录管理：action(create/update/get/list/delete/apply), record_type(identity/roster/pattern/candlestick/experience/annual_ring), record_id"},
             {"name": "manage_relation", "description": "通用关联管理：action(link/parent/chain/importance), bucket_id, target_id"},
             {"name": "query_memory", "description": "通用记忆查询：mode(search/float/status/directory/recent), query"},
             {"name": "ai_analyze", "description": "AI分析工具：task(link/find/chain/summarize/classify), bucket_id, query"},
