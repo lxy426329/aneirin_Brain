@@ -310,10 +310,12 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('identity-view').style.display = target === 'identity' ? '' : 'none';
     document.getElementById('timeline-view').style.display = target === 'timeline' ? '' : 'none';
     document.getElementById('candlestick-view').style.display = target === 'candlestick' ? '' : 'none';
+    document.getElementById('echo-view').style.display = target === 'echo' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
+    if (target === 'echo') refreshEchoChamber();
     if (target === 'identity') loadIdentities();
     if (target === 'directory') loadDirectory(true);
     if (target === 'experience') loadExperiences();
@@ -4415,6 +4417,248 @@ async function sendGlobalAIChat() {
     btn.disabled = false;
     btn.style.opacity = '1';
     messages.scrollTop = messages.scrollHeight;
+  }
+}
+
+// ========================================
+// Echo Chamber / 回音壁
+// ========================================
+var echoData = null;
+var echoFilter = 'daily';
+
+async function refreshEchoChamber() {
+  try {
+    const resp = await authFetch('/api/echo-chamber');
+    if (!resp) return;
+    echoData = await resp.json();
+    renderEchoChamber();
+  } catch(e) {
+    console.error('Failed to load echo chamber:', e);
+    document.getElementById('echo-empty').style.display = 'block';
+  }
+}
+
+function filterEcho(type) {
+  echoFilter = type;
+  document.querySelectorAll('.echo-filter-btn').forEach(btn => btn.classList.remove('active'));
+  event.target.classList.add('active');
+  renderEchoChamber();
+}
+
+function renderEchoChamber() {
+  if (!echoData) return;
+  
+  const summaryEl = document.getElementById('echo-summary');
+  const digestsEl = document.getElementById('echo-digests');
+  const digestListEl = document.getElementById('echo-digest-list');
+  const actionsEl = document.getElementById('echo-actions');
+  const actionListEl = document.getElementById('echo-action-list');
+  const emptyEl = document.getElementById('echo-empty');
+  
+  emptyEl.style.display = 'none';
+  
+  summaryEl.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;padding:12px 16px;border:1px solid var(--border);">
+      <div style="font-size:11px;color:var(--text-light);">每日摘要</div>
+      <div style="font-size:18px;font-weight:600;color:var(--accent);">${echoData.pending_digests?.filter(d => d.digest_type === 'daily').length || 0}</div>
+    </div>
+    <div style="background:var(--surface);border-radius:12px;padding:12px 16px;border:1px solid var(--border);">
+      <div style="font-size:11px;color:var(--text-light);">每周摘要</div>
+      <div style="font-size:18px;font-weight:600;color:var(--accent);">${echoData.pending_digests?.filter(d => d.digest_type === 'weekly').length || 0}</div>
+    </div>
+    <div style="background:var(--surface);border-radius:12px;padding:12px 16px;border:1px solid var(--border);">
+      <div style="font-size:11px;color:var(--text-light);">待审批提案</div>
+      <div style="font-size:18px;font-weight:600;color:var(--accent);">${echoData.pending_actions || 0}</div>
+    </div>
+    <div style="background:var(--surface);border-radius:12px;padding:12px 16px;border:1px solid var(--border);">
+      <div style="font-size:11px;color:var(--text-light);">冲突检测</div>
+      <div style="font-size:18px;font-weight:600;color:var(--accent);">${echoData.pending_actions ? echoData.actions?.filter(a => a.action_type === 'conflict').length || 0 : 0}</div>
+    </div>
+  `;
+  
+  digestsEl.style.display = echoFilter === 'daily' || echoFilter === 'weekly' || echoFilter === 'all' ? 'block' : 'none';
+  actionsEl.style.display = echoFilter === 'pending' || echoFilter === 'all' ? 'block' : 'none';
+  
+  if (digestsEl.style.display === 'block') {
+    const filteredDigests = echoData.digests?.filter(d => {
+      if (echoFilter === 'all') return true;
+      return d.digest_type === echoFilter;
+    }) || [];
+    
+    if (filteredDigests.length === 0) {
+      digestListEl.innerHTML = '<div class="loading">暂无摘要数据</div>';
+    } else {
+      digestListEl.innerHTML = filteredDigests.map(digest => {
+        const metadata = digest.metadata || {};
+        const moodTags = metadata.mood_tags || [];
+        const moodLevel = metadata.mood_level || '';
+        const bucketCount = metadata.bucket_count || 0;
+        
+        const moodColors = {
+          low: '#8B4A4A',
+          slightly_low: '#9A7B4F',
+          high: '#4A7C59',
+          slightly_high: '#4A7C59',
+          neutral: '#8A8070'
+        };
+        
+        const moodBgColors = {
+          low: '#FFE4E4',
+          slightly_low: '#FFF0D4',
+          high: '#E4FFE4',
+          slightly_high: '#E4FFE4',
+          neutral: '#F5F3E8'
+        };
+        
+        const moodLabels = {
+          low: '情绪低落',
+          slightly_low: '情绪偏低',
+          high: '情绪高涨',
+          slightly_high: '情绪较好',
+          neutral: '情绪平稳'
+        };
+        
+        return `
+          <div style="background:var(--surface);border-radius:16px;padding:20px;margin-bottom:12px;border:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="font-size:15px;font-weight:600;color:var(--accent);">${digest.digest_id}</span>
+                  <span style="padding:2px 8px;border-radius:10px;font-size:11px;background:${digest.digest_type === 'daily' ? '#E8F4F4' : '#F4F0E8'};color:${digest.digest_type === 'daily' ? '#2F4F4F' : '#9A7B4F'};">
+                    ${digest.digest_type === 'daily' ? '每日' : '每周'}
+                  </span>
+                </div>
+                <div style="font-size:12px;color:var(--text-light);margin-top:2px;">${digest.created || ''}</div>
+              </div>
+              <div style="font-size:11px;color:var(--text-dim);">已审阅: ${digest.reviewed ? '是' : '否'}</div>
+            </div>
+            
+            ${bucketCount > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">处理了 ${bucketCount} 条记忆</div>` : ''}
+            
+            ${moodTags.length > 0 || moodLevel !== 'neutral' ? `
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 12px;border-radius:10px;background:${moodBgColors[moodLevel]};">
+                <span style="color:${moodColors[moodLevel]};font-size:12px;font-weight:500;">${moodLabels[moodLevel]}</span>
+                ${moodTags.map(tag => `<span style="padding:2px 6px;border-radius:6px;font-size:10px;background:white;color:${moodColors[moodLevel]};">${tag}</span>`).join('')}
+              </div>
+            ` : ''}
+            
+            <div style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;">${digest.content}</div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+  
+  if (actionsEl.style.display === 'block') {
+    const actions = echoData.actions || [];
+    
+    if (actions.length === 0) {
+      actionListEl.innerHTML = '<div class="loading">暂无待审批提案</div>';
+    } else {
+      actionListEl.innerHTML = actions.map(action => {
+        const data = action.data || {};
+        const actionTypeLabels = {
+          conflict: '记忆冲突',
+          cleanup: '清理提案',
+          merge: '合并提案',
+          chain_update: '链更新'
+        };
+        
+        const actionTypeColors = {
+          conflict: '#8B4A4A',
+          cleanup: '#9A7B4F',
+          merge: '#4A7C59',
+          chain_update: '#2F4F4F'
+        };
+        
+        let contentHtml = '';
+        
+        if (action.action_type === 'conflict') {
+          contentHtml = `
+            <div style="margin-top:8px;padding:12px;border-radius:10px;background:#FFF5F5;border:1px solid #FFE4E4;">
+              <div style="font-size:12px;color:${actionTypeColors.conflict};font-weight:500;margin-bottom:8px;">${data.conflict_reason}</div>
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">旧记录: ${data.old_metadata?.created?.slice(0,10) || ''} - ${data.old_content || ''}</div>
+              <div style="font-size:12px;color:var(--text);">新记录: ${data.new_metadata?.created?.slice(0,10) || ''} - ${data.new_content || ''}</div>
+            </div>
+          `;
+        } else if (action.action_type === 'cleanup') {
+          contentHtml = `
+            <div style="margin-top:8px;padding:12px;border-radius:10px;background:#FFF8F0;border:1px solid #FFF0D4;">
+              <div style="font-size:12px;color:${actionTypeColors.cleanup};font-weight:500;margin-bottom:4px;">${data.reason || '清理原因'}</div>
+              <div style="font-size:12px;color:var(--text-dim);">Bucket: ${data.bucket_id || ''}</div>
+            </div>
+          `;
+        }
+        
+        return `
+          <div style="background:var(--surface);border-radius:16px;padding:20px;margin-bottom:12px;border:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="font-size:15px;font-weight:600;color:var(--accent);">${action.action_id}</span>
+                  <span style="padding:2px 8px;border-radius:10px;font-size:11px;background:rgba(47,79,79,0.1);color:${actionTypeColors[action.action_type]};">
+                    ${actionTypeLabels[action.action_type] || action.action_type}
+                  </span>
+                </div>
+                <div style="font-size:12px;color:var(--text-light);margin-top:2px;">${action.created || ''}</div>
+              </div>
+              <span style="padding:4px 10px;border-radius:8px;font-size:11px;${action.status === 'pending' ? 'background:#FFF0D4;color:#9A7B4F;' : 'background:#E4FFE4;color:#4A7C59;'}">
+                ${action.status === 'pending' ? '待审批' : '已处理'}
+              </span>
+            </div>
+            
+            ${contentHtml}
+            
+            ${action.status === 'pending' ? `
+              <div style="display:flex;gap:10px;margin-top:12px;">
+                <button onclick="approveEchoAction('${action.action_id}')" style="padding:8px 16px;border-radius:8px;border:none;background:var(--positive);color:white;font-size:12px;cursor:pointer;">批准</button>
+                <button onclick="rejectEchoAction('${action.action_id}')" style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);font-size:12px;cursor:pointer;">驳回</button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+  }
+}
+
+async function runDailyHousekeeper() {
+  try {
+    const resp = await authFetch('/api/run-housekeeper');
+    if (!resp) return;
+    const data = await resp.json();
+    alert('管家执行完成:\n\n' + data);
+    refreshEchoChamber();
+  } catch(e) {
+    alert('管家执行失败: ' + e.message);
+  }
+}
+
+async function approveEchoAction(actionId) {
+  try {
+    const resp = await authFetch('/api/echo-chamber/approve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action_id: actionId})
+    });
+    if (!resp) return;
+    refreshEchoChamber();
+  } catch(e) {
+    alert('操作失败: ' + e.message);
+  }
+}
+
+async function rejectEchoAction(actionId) {
+  try {
+    const resp = await authFetch('/api/echo-chamber/reject', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action_id: actionId})
+    });
+    if (!resp) return;
+    refreshEchoChamber();
+  } catch(e) {
+    alert('操作失败: ' + e.message);
   }
 }
 

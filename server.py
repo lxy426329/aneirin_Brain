@@ -7149,6 +7149,93 @@ async def api_ai_test(request):
 
 
 # =============================================================
+# /api/echo-chamber — Echo Chamber API
+# =============================================================
+@mcp.custom_route("/api/echo-chamber", methods=["GET"])
+async def api_echo_chamber(request):
+    """Get echo chamber data including digests and pending actions."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        await housekeeper.ensure_started()
+        summary = await housekeeper.review_digest()
+        return JSONResponse(summary)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/echo-chamber/approve", methods=["POST"])
+async def api_echo_chamber_approve(request):
+    """Approve a pending action."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+        action_id = body.get("action_id", "")
+        if not action_id:
+            return JSONResponse({"error": "action_id required"}, status_code=400)
+        
+        await approve_action(action_id)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/echo-chamber/reject", methods=["POST"])
+async def api_echo_chamber_reject(request):
+    """Reject a pending action."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+        action_id = body.get("action_id", "")
+        if not action_id:
+            return JSONResponse({"error": "action_id required"}, status_code=400)
+        
+        await reject_action(action_id)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/run-housekeeper", methods=["POST"])
+async def api_run_housekeeper(request):
+    """Run daily housekeeper job."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        await housekeeper.ensure_started()
+        results = await housekeeper.run_daily_job()
+        
+        parts = []
+        daily_summary = results.get("daily_summary", {})
+        if "error" in daily_summary:
+            parts.append(f"❌ 每日总结失败: {daily_summary['error']}")
+        else:
+            parts.append(f"✅ 每日总结: 处理{daily_summary.get('buckets_processed', 0)}条记忆")
+        
+        chain_updates = results.get("chain_updates", {})
+        if "error" in chain_updates:
+            parts.append(f"❌ 时间链更新失败: {chain_updates['error']}")
+        else:
+            parts.append(f"✅ 时间链更新: 更新{chain_updates.get('chains_updated', 0)}条链")
+        
+        conflicts = results.get("conflicts", {})
+        if "error" in conflicts:
+            parts.append(f"❌ 冲突检测失败: {conflicts['error']}")
+        else:
+            parts.append(f"✅ 冲突检测: 发现{conflicts.get('conflicts_found', 0)}条冲突")
+        
+        return JSONResponse("\n".join(parts))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
 # /api/ai-chat — AI chat interface (calls ai_manage internally)
 # =============================================================
 @mcp.custom_route("/api/ai-chat", methods=["POST"])

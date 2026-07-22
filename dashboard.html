@@ -650,6 +650,7 @@
   <div class="tab" data-tab="identity">名册</div>
   <div class="tab" data-tab="timeline">时间链</div>
   <div class="tab" data-tab="candlestick">烛台</div>
+  <div class="tab" data-tab="echo">回音壁</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
 </div>
@@ -809,6 +810,40 @@
   <div id="anchor-list"></div>
   
   <div id="anchor-empty" class="loading" style="display:none;">暂无锚点记录</div>
+</div>
+
+<div class="content" id="echo-view" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+      <h2>回音壁</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">AI管家生成的每日/每周摘要、待审批提案和冲突检测结果</p>
+    </div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-secondary" onclick="runDailyHousekeeper()">运行每日管家</button>
+      <button class="btn-primary" onclick="refreshEchoChamber()">刷新</button>
+    </div>
+  </div>
+  
+  <div style="display:flex;gap:10px;margin-bottom:24px;">
+    <button onclick="filterEcho('daily')" class="echo-filter-btn active" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">每日摘要</button>
+    <button onclick="filterEcho('weekly')" class="echo-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">每周摘要</button>
+    <button onclick="filterEcho('pending')" class="echo-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">待审批提案</button>
+    <button onclick="filterEcho('all')" class="echo-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">全部</button>
+  </div>
+  
+  <div id="echo-summary" style="display:flex;gap:16px;margin-bottom:24px;"></div>
+  
+  <div id="echo-digests" style="display:none;">
+    <h3 style="margin:0 0 16px 0;font-size:15px;color:var(--text);font-weight:600;">📝 摘要列表</h3>
+    <div id="echo-digest-list"></div>
+  </div>
+  
+  <div id="echo-actions" style="display:none;">
+    <h3 style="margin:0 0 16px 0;font-size:15px;color:var(--text);font-weight:600;">📋 待审批提案</h3>
+    <div id="echo-action-list"></div>
+  </div>
+  
+  <div id="echo-empty" class="loading" style="display:none;">暂无回音壁数据</div>
 </div>
 
 <div class="content" id="network-view" style="display:none">
