@@ -4,43 +4,47 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ombre Brain</title>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js?v=4.4.8"></script>
 <style>
   :root {
-    --bg: #FDFCF0;
-    --bg-gradient: radial-gradient(ellipse at 30% 20%, #FDFCF0 0%, #EDE4D3 60%, #E2D1B3 100%);
-    --surface: rgba(255, 255, 255, 0.45);
-    --surface-solid: #F7F2E8;
-    --border: rgba(180, 165, 140, 0.3);
-    --border-strong: rgba(160, 140, 110, 0.5);
-    --text: #3A3530;
-    --text-dim: #8A8070;
-    --text-light: #B0A590;
+    --bg: #F8F6F1;
+    --bg-gradient: linear-gradient(135deg, #F8F6F1 0%, #F0ECE3 50%, #E8E2D5 100%);
+    --surface: rgba(255, 255, 255, 0.6);
+    --surface-solid: #F7F5F0;
+    --border: rgba(200, 190, 175, 0.25);
+    --border-strong: rgba(180, 168, 150, 0.5);
+    --text: #2D2A25;
+    --text-dim: #8C8478;
+    --text-light: #B0A898;
     --accent: #2F4F4F;
     --accent-light: #3D6363;
     --accent-hover: #254040;
-    --accent-glow: rgba(47, 79, 79, 0.12);
+    --accent-glow: rgba(47, 79, 79, 0.1);
     --positive: #4A7C59;
     --negative: #8B4A4A;
     --warning: #9A7B4F;
-    --shadow-light: rgba(255, 252, 240, 0.7);
-    --shadow-dark: rgba(163, 148, 120, 0.4);
-    --shadow-dark-subtle: rgba(163, 148, 120, 0.2);
-    --header-bg: rgba(253, 252, 240, 0.7);
-    --card-bg: rgba(255, 255, 255, 0.45);
-    --timeline-line: var(--border);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+    --shadow-lg: 0 8px 30px rgba(0,0,0,0.08);
+    --header-bg: rgba(248, 246, 241, 0.85);
+    --card-bg: rgba(255, 255, 255, 0.6);
+    --timeline-line: rgba(200, 190, 175, 0.3);
     --scrollbar-bg: transparent;
-    --scrollbar-thumb: rgba(180, 165, 140, 0.3);
+    --scrollbar-thumb: rgba(200, 190, 175, 0.3);
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
   }
 
   body.dark {
-    --bg: #1A1A1E;
-    --bg-gradient: radial-gradient(ellipse at 30% 20%, #1A1A1E 0%, #121214 60%, #0D0D0F 100%);
-    --surface: rgba(30, 30, 35, 0.65);
-    --surface-solid: #242428;
-    --border: rgba(100, 95, 90, 0.3);
-    --border-strong: rgba(120, 110, 100, 0.5);
+    --bg: #18181B;
+    --bg-gradient: linear-gradient(135deg, #18181B 0%, #131315 50%, #0E0E10 100%);
+    --surface: rgba(30, 30, 35, 0.55);
+    --surface-solid: #222226;
+    --border: rgba(100, 95, 90, 0.2);
+    --border-strong: rgba(120, 110, 100, 0.4);
     --text: #E0DDD5;
     --text-dim: #9A9488;
     --text-light: #6A6558;
@@ -51,14 +55,14 @@
     --positive: #5A9A6A;
     --negative: #A06060;
     --warning: #B09060;
-    --shadow-light: rgba(255, 252, 240, 0.03);
-    --shadow-dark: rgba(0, 0, 0, 0.4);
-    --shadow-dark-subtle: rgba(0, 0, 0, 0.25);
-    --header-bg: rgba(20, 20, 22, 0.8);
-    --card-bg: rgba(30, 30, 35, 0.55);
-    --timeline-line: rgba(100, 95, 90, 0.3);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+    --shadow-lg: 0 8px 30px rgba(0,0,0,0.4);
+    --header-bg: rgba(20, 20, 22, 0.85);
+    --card-bg: rgba(30, 30, 35, 0.45);
+    --timeline-line: rgba(100, 95, 90, 0.2);
     --scrollbar-bg: transparent;
-    --scrollbar-thumb: rgba(100, 95, 90, 0.3);
+    --scrollbar-thumb: rgba(100, 95, 90, 0.25);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -66,7 +70,8 @@
   body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-weight: 400;
-    background: var(--bg-gradient);
+    background: var(--bg);
+    background-image: var(--bg-gradient);
     background-attachment: fixed;
     color: var(--text);
     min-height: 100vh;
@@ -80,11 +85,12 @@
   ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
 
   .header {
-    padding: 28px 40px 20px;
+    padding: 20px 40px;
     display: flex;
     align-items: center;
-    gap: 20px;
-    backdrop-filter: blur(12px);
+    gap: 16px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     background: var(--header-bg);
     border-bottom: 1px solid var(--border);
     position: sticky;
@@ -94,41 +100,41 @@
   }
   .header h1 {
     font-family: 'Cormorant Garamond', serif;
-    font-size: 26px;
+    font-size: 24px;
     font-weight: 600;
     color: var(--accent);
-    letter-spacing: 0.5px;
+    letter-spacing: 0.3px;
     transition: color 0.3s ease;
   }
   .header .stats {
     font-size: 12px;
     color: var(--text-dim);
-    font-weight: 300;
-    letter-spacing: 0.3px;
+    font-weight: 400;
     display: flex;
-    gap: 16px;
+    gap: 12px;
     align-items: center;
+    margin-left: 4px;
   }
+
   .theme-toggle {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 20px;
-    padding: 6px 12px;
-    font-size: 14px;
+    padding: 6px 14px;
+    font-size: 13px;
     cursor: pointer;
     color: var(--text-dim);
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 8px;
+    transition: all 0.25s ease;
+    font-family: inherit;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
   }
   .theme-toggle:hover {
     border-color: var(--accent);
     color: var(--accent);
     background: var(--accent-glow);
-    transform: scale(1.05);
   }
+
   .search-bar {
     margin-left: auto;
     display: flex;
@@ -140,49 +146,46 @@
     backdrop-filter: blur(8px);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 10px 18px;
+    padding: 8px 16px;
     border-radius: 20px;
     font-family: inherit;
     font-size: 13px;
-    width: 260px;
-    transition: all 0.3s ease;
-    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
+    width: 240px;
+    transition: all 0.25s ease;
   }
   .search-bar input:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-glow), inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
+    box-shadow: 0 0 0 3px var(--accent-glow);
   }
   .search-bar input::placeholder { color: var(--text-light); }
 
   .search-results-panel {
     position: absolute;
-    top: calc(100% + 8px);
+    top: calc(100% + 6px);
     left: 0;
     right: 0;
     background: var(--surface-solid);
     border: 1px solid var(--border-strong);
-    border-radius: 16px;
-    box-shadow: 0 12px 40px var(--shadow-dark);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
     z-index: 100;
-    max-height: 400px;
+    max-height: 360px;
     overflow-y: auto;
     display: none;
-    padding: 8px;
+    padding: 6px;
   }
   .search-results-panel.open { display: block; }
   .search-result-item {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border-radius: 10px;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.15s ease;
     font-size: 13px;
-    border-bottom: 1px solid var(--border);
   }
-  .search-result-item:last-child { border-bottom: none; }
   .search-result-item:hover {
     background: var(--accent-glow);
   }
@@ -207,14 +210,9 @@
     font-weight: 500;
     color: var(--accent);
   }
-  .search-result-highlight {
-    background: rgba(255, 183, 77, 0.3);
-    padding: 0 2px;
-    border-radius: 2px;
-  }
   .search-no-results {
     text-align: center;
-    padding: 24px;
+    padding: 20px;
     color: var(--text-dim);
     font-size: 13px;
   }
@@ -225,26 +223,51 @@
     font-size: 12px;
   }
 
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 8px;
+  }
+  .header-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s ease;
+  }
+  .header-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-glow);
+  }
+
   .tabs {
     display: flex;
     padding: 0 40px;
-    gap: 4px;
-    background: rgba(253, 252, 240, 0.5);
+    gap: 2px;
+    background: rgba(248, 246, 241, 0.4);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--border);
+    overflow-x: auto;
   }
   body.dark .tabs {
-    background: rgba(20, 20, 22, 0.5);
+    background: rgba(20, 20, 22, 0.4);
   }
   .tab {
-    padding: 14px 22px;
+    padding: 12px 20px;
     font-size: 13px;
     font-weight: 400;
     color: var(--text-dim);
     cursor: pointer;
     border-bottom: 2px solid transparent;
-    transition: all 0.25s ease;
-    letter-spacing: 0.3px;
+    transition: all 0.2s ease;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
     position: relative;
   }
   .tab:hover { color: var(--text); }
@@ -254,24 +277,27 @@
     font-weight: 500;
   }
 
-  .content { padding: 32px 40px; }
+  .content {
+    padding: 28px 40px;
+    max-width: 1280px;
+    margin: 0 auto;
+    width: 100%;
+  }
 
-  /* Enhanced Stats Cards */
   .stats-cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 14px;
-    margin-bottom: 28px;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
   }
   .stat-card {
     background: var(--surface);
     backdrop-filter: blur(8px);
-    border-radius: 16px;
-    padding: 20px 16px;
+    border-radius: var(--radius-md);
+    padding: 18px 14px;
     border: 1px solid var(--border);
     text-align: center;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 4px 4px 10px var(--shadow-dark-subtle), -4px -4px 10px var(--shadow-light);
+    transition: all 0.25s ease;
     cursor: default;
     position: relative;
     overflow: hidden;
@@ -285,18 +311,18 @@
     height: 3px;
     background: var(--accent);
     opacity: 0;
-    transition: opacity 0.3s ease;
+    transition: opacity 0.25s ease;
   }
   .stat-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 8px 8px 20px var(--shadow-dark), -6px -6px 16px var(--shadow-light);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
     border-color: var(--border-strong);
   }
   .stat-card:hover::before { opacity: 1; }
   .stat-card .stat-value {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
-    letter-spacing: -0.5px;
+    letter-spacing: -0.3px;
     line-height: 1.2;
     transition: color 0.3s ease;
   }
@@ -308,50 +334,43 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
-  .stat-card .stat-icon {
-    font-size: 20px;
-    margin-bottom: 6px;
-    display: block;
-  }
   .stat-card .stat-trend {
     font-size: 10px;
-    margin-top: 6px;
+    margin-top: 4px;
     opacity: 0;
-    transition: opacity 0.3s ease;
+    transition: opacity 0.25s ease;
   }
   .stat-card:hover .stat-trend { opacity: 1; }
 
-  /* Mood/Emotion Summary Widget */
   .mood-widget {
     background: var(--surface);
     backdrop-filter: blur(8px);
-    border-radius: 20px;
-    padding: 24px;
+    border-radius: var(--radius-lg);
+    padding: 22px;
     border: 1px solid var(--border);
-    box-shadow: 6px 6px 14px var(--shadow-dark-subtle), -6px -6px 14px var(--shadow-light);
-    margin-bottom: 24px;
-    transition: all 0.3s ease;
+    margin-bottom: 20px;
+    transition: box-shadow 0.25s ease;
   }
   .mood-widget:hover {
-    box-shadow: 8px 8px 20px var(--shadow-dark), -8px -8px 20px var(--shadow-light);
+    box-shadow: var(--shadow-md);
   }
   .mood-widget-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 18px;
+    margin-bottom: 16px;
   }
   .mood-widget-header h3 {
     font-family: 'Cormorant Garamond', serif;
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 600;
     color: var(--accent);
-    letter-spacing: 0.3px;
+    letter-spacing: 0.2px;
   }
   .mood-bars {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
   .mood-bar-row {
     display: flex;
@@ -359,7 +378,7 @@
     gap: 10px;
   }
   .mood-bar-label {
-    width: 56px;
+    width: 52px;
     font-size: 12px;
     color: var(--text);
     font-weight: 500;
@@ -371,7 +390,7 @@
   .mood-bar-track {
     flex: 1;
     height: 8px;
-    background: var(--shadow-dark-subtle);
+    background: var(--border);
     border-radius: 4px;
     overflow: hidden;
     position: relative;
@@ -379,18 +398,8 @@
   .mood-bar-fill {
     height: 100%;
     border-radius: 4px;
-    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
-  }
-  .mood-bar-fill::after {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 8px;
-    background: rgba(255,255,255,0.3);
-    border-radius: 4px;
   }
   .mood-bar-count {
     width: 28px;
@@ -402,8 +411,8 @@
   .mood-summary {
     display: flex;
     gap: 16px;
-    margin-top: 16px;
-    padding-top: 16px;
+    margin-top: 14px;
+    padding-top: 14px;
     border-top: 1px solid var(--border);
     font-size: 12px;
     color: var(--text-dim);
@@ -420,41 +429,39 @@
     border-radius: 50%;
   }
 
-  /* Memory Timeline */
   .memory-timeline {
     background: var(--surface);
     backdrop-filter: blur(8px);
-    border-radius: 20px;
-    padding: 24px;
+    border-radius: var(--radius-lg);
+    padding: 22px;
     border: 1px solid var(--border);
-    box-shadow: 6px 6px 14px var(--shadow-dark-subtle), -6px -6px 14px var(--shadow-light);
-    margin-bottom: 24px;
-    transition: all 0.3s ease;
+    margin-bottom: 20px;
+    transition: box-shadow 0.25s ease;
   }
   .memory-timeline:hover {
-    box-shadow: 8px 8px 20px var(--shadow-dark), -8px -8px 20px var(--shadow-light);
+    box-shadow: var(--shadow-md);
   }
   .memory-timeline-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
   }
   .memory-timeline-header h3 {
     font-family: 'Cormorant Garamond', serif;
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 600;
     color: var(--accent);
-    letter-spacing: 0.3px;
+    letter-spacing: 0.2px;
   }
   .timeline-container {
     position: relative;
-    padding-left: 28px;
+    padding-left: 24px;
   }
   .timeline-container::before {
     content: '';
     position: absolute;
-    left: 8px;
+    left: 7px;
     top: 0;
     bottom: 0;
     width: 2px;
@@ -463,49 +470,46 @@
   }
   .timeline-entry {
     position: relative;
-    padding: 12px 16px;
-    margin-bottom: 12px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
     background: var(--card-bg);
-    border-radius: 12px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: all 0.2s ease;
   }
   .timeline-entry:last-child { margin-bottom: 0; }
   .timeline-entry:hover {
     border-color: var(--accent);
-    transform: translateX(4px);
-    box-shadow: 4px 4px 12px var(--shadow-dark-subtle);
+    transform: translateX(3px);
+    box-shadow: var(--shadow-sm);
   }
   .timeline-entry::before {
     content: '';
     position: absolute;
-    left: -24px;
-    top: 18px;
-    width: 10px;
-    height: 10px;
+    left: -21px;
+    top: 16px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--accent);
     border: 2px solid var(--surface-solid);
     box-shadow: 0 0 0 2px var(--accent);
-    transition: transform 0.3s ease;
+    transition: transform 0.25s ease;
   }
   .timeline-entry:hover::before {
-    transform: scale(1.3);
+    transform: scale(1.25);
   }
   .timeline-entry .tl-time {
     font-size: 10px;
     color: var(--text-light);
-    margin-bottom: 4px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    margin-bottom: 3px;
   }
   .timeline-entry .tl-name {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--text);
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
   .timeline-entry .tl-preview {
     font-size: 12px;
@@ -518,11 +522,11 @@
   .timeline-entry .tl-tags {
     display: flex;
     gap: 4px;
-    margin-top: 6px;
+    margin-top: 5px;
     flex-wrap: wrap;
   }
   .timeline-entry .tl-tag {
-    padding: 1px 8px;
+    padding: 1px 7px;
     border-radius: 8px;
     font-size: 10px;
     background: var(--accent-glow);
@@ -530,66 +534,59 @@
   }
   .timeline-loading {
     text-align: center;
-    padding: 24px;
+    padding: 20px;
     color: var(--text-dim);
     font-size: 13px;
   }
 
   .filters {
     display: flex;
-    gap: 10px;
-    margin-bottom: 24px;
+    gap: 8px;
+    margin-bottom: 20px;
     flex-wrap: wrap;
   }
   .filter-btn {
-    padding: 8px 18px;
+    padding: 7px 16px;
     font-size: 12px;
     font-weight: 400;
     border: none;
-    border-radius: 24px;
-    background: linear-gradient(145deg, #FAF6ED, #EDE4D3);
+    border-radius: 20px;
+    background: var(--surface);
     color: var(--text-dim);
     cursor: pointer;
     font-family: inherit;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 4px 4px 8px var(--shadow-dark-subtle), -4px -4px 8px var(--shadow-light);
-  }
-  body.dark .filter-btn {
-    background: linear-gradient(145deg, #2A2A2E, #202024);
+    transition: all 0.2s ease;
+    border: 1px solid var(--border);
   }
   .filter-btn:hover {
     color: var(--accent);
-    box-shadow: 5px 5px 10px var(--shadow-dark), -5px -5px 10px var(--shadow-light);
-    transform: translateY(-1px);
-  }
-  .filter-btn:active {
-    transform: translateY(0);
-    box-shadow: inset 2px 2px 5px var(--shadow-dark-subtle), inset -2px -2px 5px var(--shadow-light);
+    border-color: var(--accent);
+    background: var(--accent-glow);
   }
   .filter-btn.active {
     color: #F0EDE4;
-    background: linear-gradient(145deg, var(--accent-light), var(--accent));
-    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.2), inset -2px -2px 4px rgba(255,255,255,0.05);
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 2px 8px rgba(47, 79, 79, 0.2);
   }
 
-  .bucket-list { display: flex; flex-direction: column; gap: 8px; }
+  .bucket-list { display: flex; flex-direction: column; gap: 6px; }
   .bucket-row {
     display: grid;
-    grid-template-columns: 32px 160px 80px 80px 1fr 60px;
+    grid-template-columns: 1fr 80px 120px 1fr 60px;
     gap: 12px;
-    padding: 14px 20px;
-    border-radius: 16px;
+    padding: 12px 18px;
+    border-radius: var(--radius-md);
     font-size: 13px;
     align-items: center;
     cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.2s ease;
     background: var(--surface);
     border: 1px solid transparent;
-    box-shadow: 4px 4px 10px var(--shadow-dark-subtle), -4px -4px 10px var(--shadow-light);
-    animation: fadeInUp 0.4s ease both;
+    animation: fadeInUp 0.3s ease both;
   }
   @keyframes fadeInUp {
-    from { opacity: 0; transform: translateY(12px); }
+    from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
   }
   .bucket-row:nth-child(1) { animation-delay: 0.02s; }
@@ -597,17 +594,11 @@
   .bucket-row:nth-child(3) { animation-delay: 0.06s; }
   .bucket-row:nth-child(4) { animation-delay: 0.08s; }
   .bucket-row:nth-child(5) { animation-delay: 0.10s; }
-  .bucket-row:nth-child(6) { animation-delay: 0.12s; }
-  .bucket-row:nth-child(7) { animation-delay: 0.14s; }
-  .bucket-row:nth-child(8) { animation-delay: 0.16s; }
-  .bucket-row:nth-child(9) { animation-delay: 0.18s; }
-  .bucket-row:nth-child(10) { animation-delay: 0.20s; }
   .bucket-row:hover {
     border-color: var(--border);
-    box-shadow: 6px 6px 14px var(--shadow-dark), -6px -6px 14px var(--shadow-light);
-    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-1px);
   }
-  .bucket-row .icon { font-size: 16px; text-align: center; }
   .bucket-row .name {
     font-weight: 500;
     white-space: nowrap;
@@ -635,38 +626,20 @@
     font-weight: 500;
     color: var(--accent);
   }
-  .bucket-row .time {
-    font-size: 11px;
-    color: var(--text-light);
-    text-align: right;
-  }
-  .bucket-row .preview {
-    font-size: 12px;
-    color: var(--text-dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  
 
-  .v-bar {
-    width: 44px;
-    height: 6px;
-    border-radius: 3px;
-    background: linear-gradient(to right, var(--negative), var(--warning), var(--positive));
-    position: relative;
-    display: inline-block;
+  .identity-card {
+    background: linear-gradient(135deg, rgba(74,124,89,0.06), rgba(74,124,89,0.02));
+    border-color: rgba(74,124,89,0.15);
   }
-  .v-dot {
-    position: absolute;
-    top: -3px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--surface-solid);
-    border: 2px solid var(--accent);
-    transform: translateX(-50%);
-    box-shadow: 0 1px 3px var(--shadow-dark-subtle);
+  body.dark .identity-card {
+    background: linear-gradient(135deg, rgba(74,124,89,0.1), rgba(74,124,89,0.04));
+  }
+  .pattern-card {
+    background: linear-gradient(135deg, rgba(154,123,79,0.06), rgba(154,123,79,0.02));
+    border-color: rgba(154,123,79,0.15);
+  }
+  body.dark .pattern-card {
+    background: linear-gradient(135deg, rgba(154,123,79,0.1), rgba(154,123,79,0.04));
   }
 
   .detail-panel {
@@ -677,25 +650,28 @@
     height: 100vh;
     background: var(--surface-solid);
     border-left: 1px solid var(--border);
-    padding: 32px 28px;
+    padding: 28px 24px;
     overflow-y: auto;
     transform: translateX(100%);
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     z-index: 100;
-    box-shadow: -8px 0 24px var(--shadow-dark-subtle);
+    box-shadow: -4px 0 20px rgba(0,0,0,0.06);
+  }
+  body.dark .detail-panel {
+    box-shadow: -4px 0 20px rgba(0,0,0,0.2);
   }
   .detail-panel.open { transform: translateX(0); }
   .detail-panel .close-btn {
     position: absolute;
-    top: 16px;
-    right: 16px;
+    top: 14px;
+    right: 14px;
     background: none;
     border: none;
     color: var(--text-dim);
-    font-size: 20px;
+    font-size: 18px;
     cursor: pointer;
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -710,22 +686,22 @@
     font-family: 'Cormorant Garamond', serif;
     font-size: 20px;
     font-weight: 600;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
     color: var(--accent);
-    padding-right: 40px;
+    padding-right: 36px;
   }
   .detail-meta {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-bottom: 24px;
+    gap: 10px;
+    margin-bottom: 20px;
   }
   .detail-meta .field { font-size: 12px; }
   .detail-meta .field label {
     color: var(--text-light);
     display: block;
-    margin-bottom: 3px;
-    font-size: 11px;
+    margin-bottom: 2px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
@@ -734,159 +710,137 @@
     line-height: 1.8;
     white-space: pre-wrap;
     background: var(--surface);
-    padding: 20px;
-    border-radius: 16px;
+    padding: 18px;
+    border-radius: var(--radius-md);
     border: 1px solid var(--border);
     max-height: 50vh;
     overflow-y: auto;
-    box-shadow: inset 3px 3px 6px var(--shadow-dark-subtle), inset -3px -3px 6px var(--shadow-light);
   }
 
   .config-section {
-    margin-bottom: 28px;
-    padding: 24px;
+    margin-bottom: 24px;
+    padding: 22px;
     background: var(--surface);
-    border-radius: 20px;
+    border-radius: var(--radius-lg);
     border: 1px solid var(--border);
-    box-shadow: 6px 6px 14px var(--shadow-dark-subtle), -6px -6px 14px var(--shadow-light);
+    transition: box-shadow 0.25s ease;
+  }
+  .config-section:hover {
+    box-shadow: var(--shadow-sm);
   }
   .config-section h3 {
     font-family: 'Cormorant Garamond', serif;
     font-size: 16px;
     font-weight: 600;
     color: var(--accent);
-    margin-bottom: 16px;
-    letter-spacing: 0.3px;
+    margin-bottom: 14px;
+    letter-spacing: 0.2px;
   }
   .config-row {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
   .config-row label {
-    width: 110px;
+    width: 100px;
     font-size: 12px;
     color: var(--text-dim);
     flex-shrink: 0;
     font-weight: 500;
-    letter-spacing: 0.2px;
   }
   .config-row input, .config-row select {
     flex: 1;
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 10px 14px;
-    border-radius: 12px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
     font-family: inherit;
     font-size: 13px;
-    transition: all 0.25s ease;
-    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
+    transition: all 0.2s ease;
   }
   .config-row input:focus, .config-row select:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-glow), inset 2px 2px 4px var(--shadow-dark-subtle);
+    box-shadow: 0 0 0 3px var(--accent-glow);
   }
 
   .btn-primary {
-    padding: 12px 28px;
-    background: linear-gradient(145deg, var(--accent-light), var(--accent));
+    padding: 10px 24px;
+    background: var(--accent);
     color: #F0EDE4;
     border: none;
-    border-radius: 24px;
+    border-radius: 20px;
     font-family: inherit;
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 6px 6px 12px rgba(40, 65, 65, 0.25), -4px -4px 10px var(--shadow-light), inset 0 1px 0 rgba(255,255,255,0.1);
-    letter-spacing: 0.4px;
-    position: relative;
-    overflow: hidden;
-  }
-  .btn-primary::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 24px;
-    background: linear-gradient(145deg, rgba(255,255,255,0.08), transparent);
-    pointer-events: none;
+    transition: all 0.2s ease;
+    letter-spacing: 0.3px;
   }
   .btn-primary:hover {
-    box-shadow: 8px 8px 16px rgba(40, 65, 65, 0.3), -5px -5px 12px var(--shadow-light), inset 0 1px 0 rgba(255,255,255,0.15);
-    transform: translateY(-2px);
+    background: var(--accent-hover);
+    box-shadow: 0 4px 12px rgba(47, 79, 79, 0.25);
+    transform: translateY(-1px);
   }
   .btn-primary:active {
     transform: translateY(0);
-    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.2), inset -2px -2px 4px rgba(255,255,255,0.05);
   }
   .btn-secondary {
-    padding: 12px 28px;
-    background: linear-gradient(145deg, #FAF6ED, #EDE4D3);
-    color: var(--accent);
-    border: none;
-    border-radius: 24px;
+    padding: 10px 24px;
+    background: var(--surface);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 20px;
     font-family: inherit;
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 5px 5px 10px var(--shadow-dark-subtle), -5px -5px 10px var(--shadow-light);
-  }
-  body.dark .btn-secondary {
-    background: linear-gradient(145deg, #2A2A2E, #202024);
+    transition: all 0.2s ease;
   }
   .btn-secondary:hover {
-    box-shadow: 7px 7px 14px var(--shadow-dark), -6px -6px 12px var(--shadow-light);
-    transform: translateY(-2px);
-  }
-  .btn-secondary:active {
-    transform: translateY(0);
-    box-shadow: inset 3px 3px 6px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-glow);
   }
 
   #network-canvas {
     width: 100%;
     height: calc(100vh - 180px);
-    background: linear-gradient(135deg, #FDFCF0 0%, #F5F3E8 100%);
-    border-radius: 20px;
+    background: var(--bg);
+    border-radius: var(--radius-lg);
     border: 1px solid var(--border);
-    box-shadow: inset 4px 4px 10px var(--shadow-dark-subtle), inset -4px -4px 10px var(--shadow-light);
     cursor: grab;
   }
-  body.dark #network-canvas {
-    background: linear-gradient(135deg, #1A1A1E 0%, #121214 100%);
-  }
-  #network-canvas:active {
-    cursor: grabbing;
-  }
+  #network-canvas:active { cursor: grabbing; }
+
   .network-legend {
     display: flex;
-    gap: 16px;
-    margin-bottom: 16px;
+    gap: 14px;
+    margin-bottom: 14px;
     font-size: 12px;
     color: var(--text-dim);
     flex-wrap: wrap;
+    align-items: center;
   }
-  .legend-item { 
-    display: flex; 
-    align-items: center; 
-    gap: 6px;
-    padding: 4px 10px;
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
     background: var(--surface);
-    border-radius: 12px;
+    border-radius: 8px;
     border: 1px solid var(--border);
   }
   .legend-dot {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    box-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+    display: inline-block;
   }
   .legend-line {
-    width: 20px;
+    width: 18px;
     height: 3px;
     border-radius: 2px;
   }
@@ -896,11 +850,11 @@
     right: 30px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
   .network-btn {
-    width: 36px;
-    height: 36px;
+    width: 34px;
+    height: 34px;
     border-radius: 50%;
     border: 1px solid var(--border);
     background: var(--surface);
@@ -910,64 +864,95 @@
     justify-content: center;
     font-size: 16px;
     transition: all 0.2s;
+    color: var(--text-dim);
   }
   .network-btn:hover {
     background: var(--accent);
     color: white;
-  }
-  
-  /* Identity and Pattern specific styles */
-  .identity-card {
-    background: linear-gradient(145deg, #E8F4F4, #D0E8E8);
-    border-color: #2F4F4F30;
-  }
-  body.dark .identity-card {
-    background: linear-gradient(145deg, #1A2A2A, #152020);
-  }
-  .pattern-card {
-    background: linear-gradient(145deg, #F4F0E8, #E8E0D0);
-    border-color: #9A7B4F30;
-  }
-  body.dark .pattern-card {
-    background: linear-gradient(145deg, #24201A, #1E1A14);
-  }
-  .emotion-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 4px;
-  }
-  .emotion-tag {
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 11px;
-    background: var(--surface);
-    color: var(--accent);
-  }
-  .emotion-tag.high { background: #FFE4E4; color: #8B4A4A; }
-  .emotion-tag.low { background: #E4FFE4; color: #4A7C59; }
-  .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    display: inline-block;
-    box-shadow: 0 1px 3px var(--shadow-dark-subtle);
+    border-color: var(--accent);
   }
 
   .loading {
     text-align: center;
     color: var(--text-dim);
-    padding: 60px;
+    padding: 48px;
     font-size: 14px;
     font-weight: 300;
+  }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow-y: auto;
+  }
+  .modal-content {
+    background: var(--surface-solid);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    padding: 28px;
+    box-shadow: var(--shadow-lg);
+    max-width: 90vw;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    position: relative;
+  }
+
+  .btn-mode-active {
+    padding: 4px 12px;
+    border-radius: 16px;
+    font-size: 12px;
+    border: none;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-mode-inactive {
+    padding: 4px 12px;
+    border-radius: 16px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .memory-item {
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .memory-item:hover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-sm);
+  }
+  .memory-item.pinned {
+    border-color: rgba(255, 215, 0, 0.3);
+  }
+  .memory-item.pinned:hover {
+    border-color: #FFD700;
   }
 
   .score-row {
     display: grid;
     grid-template-columns: 32px 180px 1fr 60px;
     gap: 12px;
-    padding: 12px 16px;
-    border-radius: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
     font-size: 13px;
     align-items: center;
     transition: all 0.2s ease;
@@ -975,14 +960,6 @@
   }
   .score-row:hover {
     background: var(--surface);
-    box-shadow: 3px 3px 8px var(--shadow-dark-subtle), -3px -3px 8px var(--shadow-light);
-  }
-  .score-row .rank { color: var(--text-light); font-size: 12px; text-align: center; font-weight: 500; }
-  .score-row .name {
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .score-bars { display: flex; gap: 4px; align-items: center; }
   .score-bar-group { display: flex; flex-direction: column; gap: 1px; flex: 1; }
@@ -1003,101 +980,113 @@
   .score-pass { color: var(--positive); }
   .score-fail { color: var(--text-light); }
 
-  .memory-item {
-    background: var(--surface);
-    border-radius: 10px;
-    padding: 12px;
+  .exp-filter-btn {
+    padding: 7px 16px;
+    border-radius: 20px;
     border: 1px solid var(--border);
+    background: var(--surface);
     cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--text-dim);
     transition: all 0.2s;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
   }
-  .memory-item:hover {
+  .exp-filter-btn:hover {
     border-color: var(--accent);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    color: var(--accent);
   }
-  .memory-item.pinned {
-    border-color: #FFD70040;
+  .exp-filter-btn.active {
+    background: var(--accent);
+    color: #F0EDE4;
+    border-color: var(--accent);
   }
-  .memory-item.pinned:hover {
-    border-color: #FFD700;
+
+  .anchor-filter-btn {
+    padding: 7px 16px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--text-dim);
+    transition: all 0.2s;
+  }
+  .anchor-filter-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .anchor-filter-btn.active {
+    background: var(--accent);
+    color: #F0EDE4;
+    border-color: var(--accent);
+  }
+
+  .emotion-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .emotion-tag {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--surface);
+    color: var(--accent);
   }
 
   @media (max-width: 768px) {
-    .header { padding: 20px; flex-wrap: wrap; }
-    .header h1 { font-size: 22px; }
+    .header { padding: 16px 20px; flex-wrap: wrap; }
+    .header h1 { font-size: 20px; }
+    .header .stats { font-size: 11px; gap: 8px; flex-wrap: wrap; }
     .search-bar { margin-left: 0; width: 100%; }
     .search-bar input { width: 100%; }
-    .theme-toggle { margin-left: 0; }
-    .tabs { padding: 0 16px; overflow-x: auto; }
-    .tab { padding: 12px 16px; font-size: 12px; }
+    .tabs { padding: 0 16px; }
+    .tab { padding: 10px 14px; font-size: 12px; }
     .content { padding: 20px 16px; }
     .bucket-row {
-      grid-template-columns: 28px 1fr 60px;
+      grid-template-columns: 1fr 60px;
       gap: 8px;
-      padding: 12px 16px;
+      padding: 10px 14px;
     }
     .bucket-row .domain,
     .bucket-row .emotion,
-    .bucket-row .time,
-    .bucket-row .preview { display: none; }
+    .bucket-row .type { display: none; }
+    .stats-cards { grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .detail-panel { width: 100%; }
     .config-row { flex-wrap: wrap; }
     .config-row label { width: 100%; }
-    .breath-flow { display: none; }
-    .stats-cards { grid-template-columns: repeat(2, 1fr); gap: 10px; }
     .mood-widget { padding: 16px; }
     .memory-timeline { padding: 16px; }
-    .mood-summary { flex-direction: column; gap: 8px; }
+    .mood-summary { flex-direction: column; gap: 6px; }
   }
 
   @media (max-width: 480px) {
-    .stats-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
-    .stat-card { padding: 14px 10px; }
+    .stats-cards { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .stat-card { padding: 12px 10px; }
     .stat-card .stat-value { font-size: 22px; }
-  }
-
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 200;
-    background: rgba(0, 0, 0, 0.4);
-    backdrop-filter: blur(6px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow-y: auto;
-  }
-
-  .modal-content {
-    background: var(--surface-solid);
-    border: 1px solid var(--border-strong);
-    border-radius: 24px;
-    padding: 32px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
-    max-width: 90vw;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    position: relative;
+    .header-actions { width: 100%; justify-content: flex-end; }
   }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>◐ Ombre Brain</h1>
+  <h1>Ombre Brain</h1>
   <span class="stats" id="stats">loading...</span>
-  <div id="ai-status-badge" style="margin-left:8px;padding:4px 10px;border-radius:12px;font-size:11px;background:rgba(160,140,110,0.1);color:var(--text-dim);border:1px solid var(--border);">AI: 检测中</div>
-  <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="切换主题">🌓</button>
+  <div id="ai-status-badge" style="margin-left:4px;padding:4px 10px;border-radius:12px;font-size:11px;background:rgba(160,140,110,0.1);color:var(--text-dim);border:1px solid var(--border);">AI: 检测中</div>
+  <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">深色</button>
   <div class="search-bar">
-    <input type="text" id="search-input" placeholder="搜索记忆…" autocomplete="off" />
+    <input type="text" id="search-input" placeholder="搜索记忆..." autocomplete="off" />
     <div class="search-results-panel" id="search-results-panel"></div>
   </div>
-  <button onclick="window.location.href='/echo-chamber'" title="查看回音壁" style="margin-left:12px;background:none;border:1px solid var(--border);color:var(--accent);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:500;">◐ 回音壁</button>
-  <button onclick="doLogout()" title="退出登录" style="margin-left:8px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;">退出</button>
+  <div class="header-actions">
+    <button class="header-btn" onclick="window.location.href='/echo-chamber'">回音壁</button>
+    <button class="header-btn" onclick="doLogout()">退出</button>
+  </div>
 </div>
 
 <div class="tabs">
@@ -1113,136 +1102,131 @@
 </div>
 
 <div class="content" id="list-view">
-  <!-- Mood/Emotion Summary Widget -->
   <div class="mood-widget" id="mood-widget" style="display:none;">
     <div class="mood-widget-header">
-      <h3>🌤 情绪总览</h3>
+      <h3>情绪总览</h3>
       <span id="mood-date" style="font-size:12px;color:var(--text-dim);"></span>
     </div>
     <div class="mood-bars" id="mood-bars"></div>
     <div class="mood-summary" id="mood-summary"></div>
   </div>
 
-  <!-- Memory Timeline -->
   <div class="memory-timeline" id="memory-timeline" style="display:none;">
     <div class="memory-timeline-header">
-      <h3>📋 最近记忆</h3>
+      <h3>最近记忆</h3>
       <span id="timeline-count" style="font-size:12px;color:var(--text-dim);"></span>
     </div>
     <div class="timeline-container" id="timeline-container">
-      <div class="timeline-loading">加载中…</div>
+      <div class="timeline-loading">加载中...</div>
     </div>
   </div>
 
-  <!-- Enhanced Stats Cards -->
   <div class="stats-cards" id="stats-cards"></div>
 
   <div class="filters" id="filters"></div>
   <div class="bucket-list" id="bucket-list">
-    <div class="loading">加载中…</div>
+    <div class="loading">加载中...</div>
   </div>
 </div>
 
 <div class="content" id="directory-view" style="display:none;">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
     <div>
-      <h2 style="margin:0;font-size:22px;">记忆目录</h2>
+      <h2 style="margin:0;font-size:22px;font-weight:600;">记忆目录</h2>
       <p style="color:var(--text-dim);font-size:13px;margin:4px 0 0 0;">快速了解记忆库整体结构，按类型分类展示关键记忆条目和数据分析</p>
     </div>
-    <button onclick="loadDirectory(true)" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.background='var(--border)'" onmouseout="this.style.background='var(--surface)'">
-      刷新
-    </button>
+    <button onclick="loadDirectory(true)" class="btn-secondary" style="padding:8px 16px;">刷新</button>
   </div>
-  
+
   <div id="directory-stats" style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:24px;"></div>
-  
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
-    <div style="background:var(--surface);border-radius:16px;padding:24px;border:1px solid var(--border);">
-      <h3 style="margin:0 0 20px 0;font-size:15px;color:var(--text);font-weight:600;">类型分布</h3>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px;">
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);">
+      <h3 style="margin:0 0 18px 0;font-size:15px;color:var(--text);font-weight:600;">类型分布</h3>
       <div style="position:relative;height:280px;width:100%;">
         <canvas id="directory-type-chart"></canvas>
       </div>
     </div>
-    <div style="background:var(--surface);border-radius:16px;padding:24px;border:1px solid var(--border);">
-      <h3 style="margin:0 0 20px 0;font-size:15px;color:var(--text);font-weight:600;">重要度分布</h3>
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);">
+      <h3 style="margin:0 0 18px 0;font-size:15px;color:var(--text);font-weight:600;">重要度分布</h3>
       <div style="position:relative;height:280px;width:100%;">
         <canvas id="directory-importance-chart"></canvas>
       </div>
     </div>
   </div>
-  
-  <div style="background:var(--surface);border-radius:16px;padding:24px;border:1px solid var(--border);margin-bottom:24px;">
-    <h3 style="margin:0 0 20px 0;font-size:15px;color:var(--text);font-weight:600;">重要度维度分析</h3>
+
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);margin-bottom:24px;">
+    <h3 style="margin:0 0 18px 0;font-size:15px;color:var(--text);font-weight:600;">重要度维度分析</h3>
     <div style="position:relative;height:320px;width:100%;">
       <canvas id="directory-importance-radar"></canvas>
     </div>
   </div>
-  
-  <div style="background:var(--surface);border-radius:12px;padding:16px;border:1px solid var(--border);margin-bottom:24px;">
+
+  <div style="background:var(--surface);border-radius:var(--radius-md);padding:16px;border:1px solid var(--border);margin-bottom:24px;">
     <h3 style="margin:0 0 12px 0;font-size:13px;color:var(--text-dim);font-weight:500;">活跃热力图</h3>
     <div id="directory-heatmap" style="overflow-x:auto;"></div>
   </div>
-  
+
   <div id="directory-content" style="min-height:200px;"></div>
-  
+
   <div id="directory-empty" class="loading" style="display:none;text-align:center;padding:40px;color:var(--text-dim);">暂无记忆数据</div>
 </div>
 
 <div class="content" id="experience-view" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
     <div>
-      <h2>年轮</h2>
+      <h2 style="font-size:22px;font-weight:600;">年轮</h2>
       <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">从事件中消化得到的经验，用于记忆补充和智能决策</p>
     </div>
     <button class="btn-primary" onclick="showExperienceEditor()">+ 添加经验</button>
   </div>
-  
+
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
     <div id="experience-stats" style="display:flex;gap:16px;"></div>
     <div style="display:flex;gap:6px;">
-      <button onclick="filterExperiences('')" class="exp-filter-btn active" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">全部</button>
-      <button onclick="filterExperiences('user')" class="exp-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">用户经验</button>
-      <button onclick="filterExperiences('agent')" class="exp-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">智能体经验</button>
+      <button onclick="filterExperiences('')" class="exp-filter-btn active">全部</button>
+      <button onclick="filterExperiences('user')" class="exp-filter-btn">用户经验</button>
+      <button onclick="filterExperiences('agent')" class="exp-filter-btn">智能体经验</button>
     </div>
   </div>
-  
+
   <div id="experience-list"></div>
-  
+
   <div id="experience-empty" class="loading" style="display:none;">暂无经验记录</div>
 </div>
 
 <div class="content" id="timeline-view" style="display:none">
-  <h2>时间链</h2>
+  <h2 style="font-size:22px;font-weight:600;">时间链</h2>
   <p style="color:var(--text-dim);font-size:13px;margin-bottom:20px;">通过 AI 梳理事情发展流程，自动分析事件因果关系和时间顺序</p>
-  
+
   <div style="display:flex;gap:12px;margin-bottom:24px;">
-    <input type="text" id="timeline-query" placeholder="输入关键词搜索相关事件（如：项目、会议等）" 
-      style="flex:1;padding:10px;border-radius:12px;border:1px solid var(--border);font-size:13px;" />
+    <input type="text" id="timeline-query" placeholder="输入关键词搜索相关事件（如：项目、会议等）"
+      style="flex:1;padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);" />
     <button class="btn-primary" onclick="generateTimeline()">生成时间链</button>
   </div>
-  
+
   <div id="timeline-loading" style="display:none;text-align:center;padding:40px;">
     <div style="color:var(--text-dim);">AI 正在梳理事件流程...</div>
   </div>
-  
+
   <div id="timeline-result" style="display:none;">
-    <div style="background:var(--surface);border-radius:16px;padding:24px;margin-bottom:20px;cursor:pointer;" onclick="toggleTimelineAll()">
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;margin-bottom:20px;cursor:pointer;border:1px solid var(--border);" onclick="toggleTimelineAll()">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;">
         <div>
-          <h3 id="timeline-title" style="margin:0 0 12px 0;font-size:20px;"></h3>
-          <p id="timeline-summary" style="color:var(--text-secondary);line-height:1.6;"></p>
+          <h3 id="timeline-title" style="margin:0 0 10px 0;font-size:18px;"></h3>
+          <p id="timeline-summary" style="color:var(--text-dim);line-height:1.6;font-size:13px;"></p>
         </div>
-        <div id="timeline-all-arrow" style="font-size:20px;color:var(--text-dim);transition:transform 0.2s;flex-shrink:0;margin-left:16px;">▼</div>
+        <div id="timeline-all-arrow" style="font-size:18px;color:var(--text-dim);transition:transform 0.2s;flex-shrink:0;margin-left:16px;">&#9660;</div>
       </div>
     </div>
-    
+
     <div id="timeline-phases" style="display:none;">
       <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <button onclick="toggleTimelineAll();event.stopPropagation();" style="padding:6px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);font-size:12px;cursor:pointer;">收起全部</button>
+        <button onclick="toggleTimelineAll();event.stopPropagation();" class="btn-secondary" style="padding:6px 14px;font-size:12px;">收起全部</button>
       </div>
     </div>
   </div>
-  
+
   <div id="timeline-empty" style="text-align:center;padding:60px;color:var(--text-dim);">
     <div>暂无时间链数据</div>
     <div style="font-size:12px;margin-top:8px;">输入关键词并点击"生成时间链"开始分析</div>
@@ -1252,25 +1236,23 @@
 <div class="content" id="candlestick-view" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
     <div>
-      <h2>烛台</h2>
+      <h2 style="font-size:22px;font-weight:600;">烛台</h2>
       <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">智能体对事件的感想和反思，记录内心的感悟</p>
     </div>
     <button class="btn-primary" onclick="showCandlestickEditor()">+ 记录感想</button>
   </div>
-  
+
   <div id="candlestick-stats" style="margin-bottom:24px;"></div>
-  
+
   <div id="candlestick-list"></div>
-  
+
   <div id="candlestick-empty" class="loading" style="display:none;">暂无烛台记录</div>
 </div>
-
-
 
 <div class="content" id="anchor-view" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
     <div>
-      <h2>锚点</h2>
+      <h2 style="font-size:22px;font-weight:600;">锚点</h2>
       <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">记录高情绪瞬间，用于快速定位重要记忆</p>
     </div>
     <div style="display:flex;gap:10px;">
@@ -1278,18 +1260,18 @@
       <button class="btn-primary" onclick="showAnchorEditor()">+ 添加锚点</button>
     </div>
   </div>
-  
+
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
     <div id="anchor-stats" style="display:flex;gap:16px;"></div>
     <div style="display:flex;gap:6px;">
-      <button onclick="filterAnchors('', this)" class="anchor-filter-btn active" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">全部</button>
-      <button onclick="filterAnchors('high', this)" class="anchor-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">高情绪</button>
-      <button onclick="filterAnchors('medium', this)" class="anchor-filter-btn" style="padding:7px 16px;border-radius:20px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;">中情绪</button>
+      <button onclick="filterAnchors('', this)" class="anchor-filter-btn active">全部</button>
+      <button onclick="filterAnchors('high', this)" class="anchor-filter-btn">高情绪</button>
+      <button onclick="filterAnchors('medium', this)" class="anchor-filter-btn">中情绪</button>
     </div>
   </div>
-  
+
   <div id="anchor-list"></div>
-  
+
   <div id="anchor-empty" class="loading" style="display:none;">暂无锚点记录</div>
 </div>
 
@@ -1300,64 +1282,62 @@
     <div class="legend-item"><span class="legend-dot" style="background:#8B6A6A"></span> feel</div>
     <div class="legend-item"><span class="legend-dot" style="background:#4A7C59"></span> identity</div>
     <div class="legend-item"><span class="legend-dot" style="background:#6A6A8B"></span> pattern</div>
-    <div style="border-left:1px solid var(--border);margin:0 16px;"></div>
+    <div style="border-left:1px solid var(--border);margin:0 14px;height:20px;"></div>
     <div class="legend-item"><span class="legend-line" style="background:#2196F3;"></span> 同一事件</div>
     <div class="legend-item"><span class="legend-line" style="background:#4CAF50;"></span> 相关内容</div>
     <div class="legend-item"><span class="legend-line" style="background:#FF9800;"></span> 父子关系</div>
     <div class="legend-item"><span class="legend-line" style="background:#9C27B0;"></span> 语义相似</div>
     <div class="legend-item"><span class="legend-line" style="background:#E91E63;"></span> 共享标签</div>
     <div style="margin-left:auto;font-size:11px;color:var(--text-dim);">
-      💡 滚轮缩放 | 拖拽节点移动 | 点击查看详情
+      滚轮缩放 | 拖拽节点移动 | 点击查看详情
     </div>
   </div>
   <div style="position:relative;">
     <canvas id="network-canvas"></canvas>
     <div class="network-controls">
       <button class="network-btn" onclick="networkZoomIn()" title="放大">+</button>
-      <button class="network-btn" onclick="networkZoomOut()" title="缩小">−</button>
-      <button class="network-btn" onclick="networkReset()" title="重置视图">↺</button>
+      <button class="network-btn" onclick="networkZoomOut()" title="缩小">-</button>
+      <button class="network-btn" onclick="networkReset()" title="重置视图">&#8634;</button>
     </div>
   </div>
 </div>
 
-<!-- Identity Management View -->
 <div class="content" id="identity-view" style="display:none">
   <div style="max-width:800px;margin:0 auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
-      <h2>名册</h2>
+      <h2 style="font-size:22px;font-weight:600;">名册</h2>
       <button class="btn-primary" onclick="showIdentityEditor()">+ 创建身份</button>
     </div>
-    
+
     <div id="identity-list" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;"></div>
-    
+
     <div id="identity-empty" class="loading" style="display:none;">暂无身份档案</div>
   </div>
 </div>
 
-<!-- Identity Editor Modal -->
 <div id="identity-editor-modal" class="modal-overlay" style="display:none;">
-  <div style="background:var(--surface-solid);border-radius:24px;padding:32px;max-width:520px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,0.15);margin-top:40px;">
+  <div style="background:var(--surface-solid);border-radius:var(--radius-xl);padding:28px;max-width:520px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);margin-top:40px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h3 id="identity-editor-title">创建身份档案</h3>
       <button onclick="closeIdentityEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
     </div>
-    
+
     <input type="hidden" id="identity-editor-id" />
-    
+
     <div class="config-row" style="margin-bottom:12px;">
       <label>姓名 *</label>
       <input type="text" id="identity-editor-name" placeholder="请输入姓名" />
     </div>
-    
+
     <div class="config-row" style="margin-bottom:12px;">
       <label>别名</label>
       <input type="text" id="identity-editor-aliases" placeholder="逗号分隔，如：小张, 三哥" />
     </div>
-    
+
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
       <div class="config-row">
         <label>性别</label>
-        <select id="identity-editor-gender" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);">
+        <select id="identity-editor-gender" style="width:100%;padding:8px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:inherit;">
           <option value="">请选择</option>
           <option value="男">男</option>
           <option value="女">女</option>
@@ -1369,53 +1349,53 @@
         <input type="number" id="identity-editor-age" placeholder="年龄" min="0" max="150" />
       </div>
     </div>
-    
+
     <div class="config-row" style="margin-bottom:12px;">
       <label>职业</label>
       <input type="text" id="identity-editor-occupation" placeholder="如：软件工程师" />
     </div>
-    
+
     <div class="config-row" style="margin-bottom:12px;">
       <label>性格特征</label>
       <input type="text" id="identity-editor-traits" placeholder="逗号分隔，如：乐观, 细心, 幽默" />
     </div>
-    
+
     <div class="config-row" style="margin-bottom:12px;">
       <label>兴趣爱好</label>
       <input type="text" id="identity-editor-interests" placeholder="逗号分隔，如：阅读, 跑步, 摄影" />
     </div>
-    
+
     <div style="margin-bottom:12px;">
       <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">基本信息（自定义字段）</label>
       <div id="identity-basic-info-list">
         <div style="display:flex;gap:8px;margin-bottom:6px;">
-          <input type="text" placeholder="键" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);" class="basic-info-key" />
-          <input type="text" placeholder="值" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);" class="basic-info-value" />
-          <button onclick="addBasicInfoRow()" style="padding:8px 12px;border:none;background:var(--accent);color:white;border-radius:8px;cursor:pointer;">+</button>
+          <input type="text" placeholder="键" style="flex:1;padding:8px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;" class="basic-info-key" />
+          <input type="text" placeholder="值" style="flex:1;padding:8px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;" class="basic-info-value" />
+          <button onclick="addBasicInfoRow()" style="padding:8px 12px;border:none;background:var(--accent);color:white;border-radius:var(--radius-sm);cursor:pointer;">+</button>
         </div>
       </div>
     </div>
-    
+
     <div style="margin-bottom:16px;">
       <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">人际关系</label>
-      <textarea id="identity-editor-relationships" rows="3" placeholder="每行一条关系描述，如：与李四是大学同学" style="width:100%;padding:10px;border-radius:12px;border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+      <textarea id="identity-editor-relationships" rows="3" placeholder="每行一条关系描述，如：与李四是大学同学" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
     </div>
-    
+
     <div style="margin-bottom:16px;">
       <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">关联名册（选择已有名册建立关系）</label>
-      <div id="identity-related-list" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:12px;padding:8px;background:var(--surface);"></div>
+      <div id="identity-related-list" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-md);padding:8px;background:var(--surface);"></div>
     </div>
-    
+
     <div style="margin-bottom:16px;">
       <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">备注</label>
-      <textarea id="identity-editor-content" rows="4" placeholder="其他备注信息" style="width:100%;padding:10px;border-radius:12px;border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+      <textarea id="identity-editor-content" rows="4" placeholder="其他备注信息" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
     </div>
-    
+
     <div style="display:flex;gap:12px;justify-content:flex-end;">
       <button class="btn-secondary" onclick="closeIdentityEditor()">取消</button>
       <button class="btn-primary" onclick="saveIdentity()">保存</button>
     </div>
-    
+
     <div id="identity-editor-msg" style="margin-top:12px;font-size:13px;"></div>
   </div>
 </div>
@@ -1428,18 +1408,18 @@
         <label>API Key</label>
         <input type="password" id="cfg-dehy-key" placeholder="输入你的 API Key" />
       </div>
-      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">输入你的 API Key，已设置时显示掩码</div>
+      <div style="margin-top:-2px;margin-bottom:10px;padding-left:112px;font-size:11px;color:var(--text-light);">输入你的 API Key，已设置时显示掩码</div>
       <div class="config-row">
         <label>Base URL</label>
         <input type="text" id="cfg-dehy-url" placeholder="https://api.deepseek.com/v1" />
       </div>
-      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空使用默认 DeepSeek API</div>
+      <div style="margin-top:-2px;margin-bottom:10px;padding-left:112px;font-size:11px;color:var(--text-light);">留空使用默认 DeepSeek API</div>
       <div class="config-row">
         <label>Model</label>
         <input type="text" id="cfg-dehy-model" placeholder="deepseek-chat" />
       </div>
-      <div style="margin-top:12px;padding-left:122px;">
-        <button onclick="testAIConnection()" id="btn-ai-test" style="padding:8px 20px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer;">测试AI连接</button>
+      <div style="margin-top:12px;padding-left:112px;">
+        <button onclick="testAIConnection()" id="btn-ai-test" class="btn-secondary" style="padding:8px 18px;font-size:12px;">测试AI连接</button>
         <span id="ai-status" style="margin-left:12px;font-size:12px;color:var(--text-light);"></span>
       </div>
     </div>
@@ -1450,10 +1430,10 @@
     </div>
     <div id="config-status" style="margin-top:16px;font-size:13px;"></div>
 
-    <div class="config-section" style="margin-top:28px;">
+    <div class="config-section" style="margin-top:24px;">
       <h3>修改密码</h3>
       <div id="settings-env-notice" style="display:none;font-size:12px;color:var(--warning);margin-bottom:10px;">
-        ⚠ 当前使用环境变量 OMBRE_DASHBOARD_PASSWORD，请直接修改环境变量。
+        当前使用环境变量 OMBRE_DASHBOARD_PASSWORD，请直接修改环境变量。
       </div>
       <div class="config-row">
         <label>当前密码</label>
@@ -1471,76 +1451,73 @@
       <div id="settings-pwd-msg" style="margin-top:10px;font-size:13px;"></div>
     </div>
 
-    <div class="config-section" style="margin-top:28px;">
+    <div class="config-section" style="margin-top:24px;">
       <h3>数据导出/导入</h3>
       <div style="font-size:12px;color:var(--text-light);margin-bottom:16px;">
         导出大脑数据（buckets/ 目录和数据库）为 zip 文件，或从 zip 文件恢复数据。
       </div>
-      
-      <div style="margin-bottom:20px;padding:16px;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
-        <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px;">📤 导出</div>
-        
+
+      <div style="margin-bottom:20px;padding:16px;background:var(--surface);border-radius:var(--radius-md);border:1px solid var(--border);">
+        <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px;">导出</div>
+
         <button onclick="doExportBrain('')" class="btn-primary" style="width:100%;margin-bottom:8px;">
           一键导出（自动命名）
         </button>
-        
+
         <div style="display:flex;gap:10px;">
-          <input type="text" id="export-path" placeholder="自定义导出路径（可选）" 
-            style="flex:1;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:13px;" />
+          <input type="text" id="export-path" placeholder="自定义导出路径（可选）"
+            style="flex:1;padding:8px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);" />
           <button onclick="doExportBrain(document.getElementById('export-path').value)" class="btn-secondary">
             导出到指定路径
           </button>
         </div>
-        
+
         <div id="export-status" style="margin-top:10px;font-size:13px;"></div>
       </div>
-      
-      <div style="padding:16px;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
-        <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px;">📥 导入</div>
-        
+
+      <div style="padding:16px;background:var(--surface);border-radius:var(--radius-md);border:1px solid var(--border);">
+        <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px;">导入</div>
+
         <div style="display:flex;gap:10px;margin-bottom:10px;">
-          <input type="text" id="import-path" placeholder="zip 文件路径" 
-            style="flex:1;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:13px;" />
+          <input type="text" id="import-path" placeholder="zip 文件路径"
+            style="flex:1;padding:8px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);" />
           <button onclick="doImportBrain()" class="btn-secondary">
             导入
           </button>
         </div>
-        
+
         <div style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="import-overwrite" />
           <label for="import-overwrite" style="font-size:12px;color:var(--text-dim);">覆盖现有数据</label>
           <span style="font-size:11px;color:var(--text-light);">(不勾选则跳过已有文件)</span>
         </div>
-        
+
         <div id="import-status" style="margin-top:10px;font-size:13px;"></div>
       </div>
     </div>
 
-    <div class="config-section" style="margin-top:28px;">
+    <div class="config-section" style="margin-top:24px;">
       <h3>系统信息</h3>
-      <div id="config-readonly" style="font-size:13px;color:var(--text-dim);line-height:1.8;">加载中…</div>
+      <div id="config-readonly" style="font-size:13px;color:var(--text-dim);line-height:1.8;">加载中...</div>
     </div>
   </div>
 </div>
 
-<!-- Auth Overlay -->
-<div id="auth-overlay" style="position:fixed;inset:0;z-index:9999;background:var(--bg-gradient);background-attachment:fixed;display:flex;align-items:center;justify-content:center;">
-  <div style="background:var(--surface);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:24px;padding:48px 40px;max-width:400px;width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.12);">
-    <h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--accent);margin-bottom:8px;">◐ Ombre Brain</h2>
+<div id="auth-overlay" style="position:fixed;inset:0;z-index:9999;background:var(--bg);background-image:var(--bg-gradient);background-attachment:fixed;display:flex;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:var(--radius-xl);padding:44px 36px;max-width:400px;width:90%;text-align:center;box-shadow:var(--shadow-lg);">
+    <h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--accent);margin-bottom:8px;">Ombre Brain</h2>
     <p style="color:var(--text-dim);font-size:13px;margin-bottom:28px;" id="auth-subtitle">验证身份</p>
 
-    <!-- Setup form -->
     <div id="auth-setup-form" style="display:none;">
       <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">首次使用，请设置访问密码</p>
-      <input type="password" id="auth-setup-pwd" placeholder="设置密码（至少6位）" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:10px;" />
-      <input type="password" id="auth-setup-pwd2" placeholder="确认密码" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:16px;" onkeydown="if(event.key==='Enter')doSetup()" />
-      <button onclick="doSetup()" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;cursor:pointer;">设置密码并进入</button>
+      <input type="password" id="auth-setup-pwd" placeholder="设置密码（至少6位）" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:10px;font-family:inherit;" />
+      <input type="password" id="auth-setup-pwd2" placeholder="确认密码" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:16px;font-family:inherit;" onkeydown="if(event.key==='Enter')doSetup()" />
+      <button onclick="doSetup()" class="btn-primary" style="width:100%;padding:12px;font-size:14px;">设置密码并进入</button>
     </div>
 
-    <!-- Login form -->
     <div id="auth-login-form" style="display:none;">
-      <input type="password" id="auth-login-pwd" placeholder="输入访问密码" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:16px;" onkeydown="if(event.key==='Enter')doLogin()" />
-      <button onclick="doLogin()" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;cursor:pointer;">登录</button>
+      <input type="password" id="auth-login-pwd" placeholder="输入访问密码" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:16px;font-family:inherit;" onkeydown="if(event.key==='Enter')doLogin()" />
+      <button onclick="doLogin()" class="btn-primary" style="width:100%;padding:12px;font-size:14px;">登录</button>
     </div>
 
     <div id="auth-error" style="color:var(--negative);font-size:13px;margin-top:12px;display:none;"></div>
@@ -1548,7 +1525,7 @@
 </div>
 
 <div class="detail-panel" id="detail-panel">
-  <button class="close-btn" onclick="closeDetail()">✕</button>
+  <button class="close-btn" onclick="closeDetail()">&times;</button>
   <div id="detail-content"></div>
 </div>
 
@@ -1556,41 +1533,41 @@
   <div class="modal-content" style="width:500px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h3 id="exp-modal-title">添加经验</h3>
-      <button onclick="closeExperienceEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">✕</button>
+      <button onclick="closeExperienceEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
     </div>
-    
+
     <input type="hidden" id="exp-edit-id" />
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">标题</label>
-      <input type="text" id="exp-title" placeholder="输入经验标题" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+      <input type="text" id="exp-title" placeholder="输入经验标题" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);" />
     </div>
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">经验类型</label>
-      <select id="exp-type" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;">
+      <select id="exp-type" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);">
         <option value="user">用户经验</option>
         <option value="agent">智能体经验</option>
       </select>
     </div>
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">来源事件（可选）</label>
-      <input type="text" id="exp-source" placeholder="关联的事件或来源" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+      <input type="text" id="exp-source" placeholder="关联的事件或来源" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);" />
     </div>
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">标签（逗号分隔）</label>
-      <input type="text" id="exp-tags" placeholder="如：健康, 习惯, 工作" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+      <input type="text" id="exp-tags" placeholder="如：健康, 习惯, 工作" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);" />
     </div>
-    
+
     <div style="margin-bottom:20px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">经验内容</label>
-      <textarea id="exp-content" rows="6" placeholder="详细描述从事件中学到的经验..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;"></textarea>
+      <textarea id="exp-content" rows="6" placeholder="详细描述从事件中学到的经验..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;font-family:inherit;background:var(--surface);color:var(--text);"></textarea>
     </div>
-    
+
     <div style="display:flex;gap:10px;">
-      <button onclick="closeExperienceEditor()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;">取消</button>
+      <button onclick="closeExperienceEditor()" class="btn-secondary" style="flex:1;">取消</button>
       <button onclick="saveExperience()" class="btn-primary" style="flex:1;">保存</button>
     </div>
   </div>
@@ -1600,36 +1577,36 @@
   <div class="modal-content" style="width:560px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h3 id="anchor-modal-title">添加锚点</h3>
-      <button onclick="closeAnchorEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">✕</button>
+      <button onclick="closeAnchorEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
     </div>
-    
+
     <input type="hidden" id="anchor-edit-id" />
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">关联记忆桶 <span style="color:var(--negative);">*</span></label>
       <div style="position:relative;">
-        <input type="text" id="anchor-bucket-search" placeholder="搜索记忆桶名称或ID..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+        <input type="text" id="anchor-bucket-search" placeholder="搜索记忆桶名称或ID..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);" />
         <input type="hidden" id="anchor-bucket-id" />
       </div>
       <div id="anchor-bucket-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface-solid);border:1px solid var(--border);border-radius:0 0 10px 10px;max-height:200px;overflow-y:auto;z-index:10;border-top:none;"></div>
       <div id="anchor-bucket-selected" style="display:none;margin-top:8px;padding:8px 12px;background:var(--accent-glow);border-radius:8px;font-size:13px;color:var(--accent);"></div>
     </div>
-    
+
     <div style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <label style="font-size:13px;color:var(--text-dim);">情绪输入方式</label>
         <div style="display:flex;gap:4px;">
-          <button onclick="toggleEmotionMode('tags')" id="emotion-mode-tags" class="btn-mode-active" style="padding:4px 12px;border-radius:16px;font-size:12px;border:none;background:var(--accent);color:white;cursor:pointer;">标签选择</button>
-          <button onclick="toggleEmotionMode('slider')" id="emotion-mode-slider" class="btn-mode-inactive" style="padding:4px 12px;border-radius:16px;font-size:12px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);cursor:pointer;">数值调整</button>
+          <button onclick="toggleEmotionMode('tags')" id="emotion-mode-tags" class="btn-mode-active">标签选择</button>
+          <button onclick="toggleEmotionMode('slider')" id="emotion-mode-slider" class="btn-mode-inactive">数值调整</button>
         </div>
       </div>
     </div>
-    
+
     <div id="emotion-mode-tags-panel" style="margin-bottom:14px;">
       <div id="anchor-emotion-tags" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
       <div style="font-size:11px;color:var(--text-light);">点击选择情绪标签（可多选）</div>
     </div>
-    
+
     <div id="emotion-mode-slider-panel" style="margin-bottom:14px;display:none;">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
         <div>
@@ -1638,7 +1615,7 @@
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-top:4px;">
             <span>弱</span>
             <div style="display:flex;align-items:center;gap:6px;">
-              <input type="number" id="anchor-intensity-input" min="0" max="1" step="0.01" value="0.7" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;" />
+              <input type="number" id="anchor-intensity-input" min="0" max="1" step="0.01" value="0.7" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;background:var(--surface);color:var(--text);" />
             </div>
             <span>强</span>
           </div>
@@ -1649,25 +1626,25 @@
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-top:4px;">
             <span>负面</span>
             <div style="display:flex;align-items:center;gap:6px;">
-              <input type="number" id="anchor-valence-input" min="0" max="1" step="0.01" value="0.5" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;" />
+              <input type="number" id="anchor-valence-input" min="0" max="1" step="0.01" value="0.5" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;background:var(--surface);color:var(--text);" />
             </div>
             <span>正面</span>
           </div>
         </div>
       </div>
-      
+
       <div style="margin-bottom:14px;">
         <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">唤醒度 (Arousal)</label>
         <input type="range" id="anchor-arousal" min="0" max="1" step="0.01" value="0.5" style="width:100%;" />
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-top:4px;">
           <span>平静</span>
           <div style="display:flex;align-items:center;gap:6px;">
-            <input type="number" id="anchor-arousal-input" min="0" max="1" step="0.01" value="0.5" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;" />
+            <input type="number" id="anchor-arousal-input" min="0" max="1" step="0.01" value="0.5" style="width:60px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-size:12px;text-align:center;background:var(--surface);color:var(--text);" />
           </div>
           <span>激动</span>
         </div>
       </div>
-      
+
       <div style="margin-bottom:14px;">
         <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">情绪坐标图</label>
         <div style="background:var(--surface);border-radius:12px;padding:16px;border:1px solid var(--border);">
@@ -1678,7 +1655,7 @@
             <div style="position:absolute;right:0;bottom:0;font-size:10px;color:var(--text-light);padding:2px;">正面</div>
             <div style="position:absolute;left:0;top:0;font-size:10px;color:var(--text-light);padding:2px;">平静</div>
             <div style="position:absolute;right:0;top:0;font-size:10px;color:var(--text-light);padding:2px;">激动</div>
-            
+
             <div style="position:absolute;left:12.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:25%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:37.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
@@ -1686,7 +1663,7 @@
             <div style="position:absolute;left:62.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:75%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:87.5%;bottom:0;width:1px;height:100%;background:var(--border);opacity:0.3;"></div>
-            
+
             <div style="position:absolute;left:0;bottom:12.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:0;bottom:25%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:0;bottom:37.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
@@ -1694,7 +1671,7 @@
             <div style="position:absolute;left:0;bottom:62.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:0;bottom:75%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
             <div style="position:absolute;left:0;bottom:87.5%;width:100%;height:1px;background:var(--border);opacity:0.3;"></div>
-            
+
             <div style="position:absolute;left:10%;bottom:20%;font-size:9px;color:var(--text-light);">悲伤</div>
             <div style="position:absolute;left:8%;bottom:60%;font-size:9px;color:var(--text-light);">平静</div>
             <div style="position:absolute;left:10%;bottom:85%;font-size:9px;color:var(--text-light);">恐惧</div>
@@ -1703,20 +1680,20 @@
             <div style="position:absolute;left:88%;bottom:60%;font-size:9px;color:var(--text-light);">喜悦</div>
             <div style="position:absolute;left:88%;bottom:20%;font-size:9px;color:var(--text-light);">惊讶</div>
             <div style="position:absolute;left:50%;bottom:8%;font-size:9px;color:var(--text-light);">厌恶</div>
-            
+
             <div id="anchor-emotion-dot" style="position:absolute;width:16px;height:16px;border-radius:50%;background:var(--accent);border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.2);transform:translate(-50%, -50%);transition:all 0.2s;top:50%;left:50%;"></div>
           </div>
         </div>
       </div>
     </div>
-    
+
     <div style="margin-bottom:20px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">事件摘要 <span style="color:var(--negative);">*</span></label>
-      <textarea id="anchor-summary" rows="4" placeholder="描述这个高情绪事件的内容..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;"></textarea>
+      <textarea id="anchor-summary" rows="4" placeholder="描述这个高情绪事件的内容..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;font-family:inherit;background:var(--surface);color:var(--text);"></textarea>
     </div>
-    
+
     <div style="display:flex;gap:10px;">
-      <button onclick="closeAnchorEditor()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;">取消</button>
+      <button onclick="closeAnchorEditor()" class="btn-secondary" style="flex:1;">取消</button>
       <button onclick="saveAnchor()" class="btn-primary" style="flex:1;">保存</button>
     </div>
   </div>
@@ -1726,29 +1703,29 @@
   <div class="modal-content" style="width:600px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h3 id="candlestick-modal-title">记录感想</h3>
-      <button onclick="closeCandlestickEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">✕</button>
+      <button onclick="closeCandlestickEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
     </div>
-    
+
     <input type="hidden" id="candlestick-edit-id" />
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">标题（可选）</label>
-      <input type="text" id="candlestick-title" placeholder="为这条感想添加一个标题" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+      <input type="text" id="candlestick-title" placeholder="为这条感想添加一个标题" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);" />
     </div>
-    
+
     <div style="margin-bottom:14px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">关联记忆桶（可选）</label>
-      <input type="text" id="candlestick-bucket-id" placeholder="输入记忆桶 ID 或留空" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;" />
+      <input type="text" id="candlestick-bucket-id" placeholder="输入记忆桶 ID 或留空" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;font-family:inherit;background:var(--surface);color:var(--text);" />
       <div style="font-size:12px;color:var(--text-light);margin-top:4px;">填写记忆桶 ID 可以建立与具体记忆的关联</div>
     </div>
-    
+
     <div style="margin-bottom:20px;">
       <label style="display:block;font-size:13px;color:var(--text-dim);margin-bottom:6px;">感悟内容</label>
-      <textarea id="candlestick-content" rows="8" placeholder="写下你对这件事的看法和感悟...&#10;&#10;可以包含：&#10;- 时间和事件描述&#10;- 你的感受和想法&#10;- 学到的经验教训&#10;- 未来的行动方向" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;"></textarea>
+      <textarea id="candlestick-content" rows="8" placeholder="写下你对这件事的看法和感悟..." style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:14px;resize:vertical;font-family:inherit;background:var(--surface);color:var(--text);"></textarea>
     </div>
-    
+
     <div style="display:flex;gap:10px;">
-      <button onclick="closeCandlestickEditor()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;">取消</button>
+      <button onclick="closeCandlestickEditor()" class="btn-secondary" style="flex:1;">取消</button>
       <button onclick="saveCandlestick()" class="btn-primary" style="flex:1;">保存</button>
     </div>
   </div>
@@ -1756,23 +1733,22 @@
 
 <script src="/dashboard.js"></script>
 
-<div id="global-ai-btn" onclick="toggleAIChat()" style="position:fixed;bottom:30px;right:30px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-light));color:white;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 24px rgba(47,79,79,0.35);transition:all 0.3s;z-index:1000;">🤖</div>
+<div id="global-ai-btn" onclick="toggleAIChat()" style="position:fixed;bottom:30px;right:30px;width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-light));color:white;font-size:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 20px rgba(47,79,79,0.3);transition:all 0.3s;z-index:1000;">AI</div>
 
-<div id="global-ai-chat" style="position:fixed;bottom:100px;right:30px;width:380px;background:var(--surface);border-radius:16px;border:1px solid var(--border);box-shadow:0 12px 48px rgba(0,0,0,0.15);display:none;flex-direction:column;z-index:999;">
+<div id="global-ai-chat" style="position:fixed;bottom:100px;right:30px;width:380px;background:var(--surface);border-radius:var(--radius-lg);border:1px solid var(--border);box-shadow:var(--shadow-lg);display:none;flex-direction:column;z-index:999;backdrop-filter:blur(16px);">
   <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
-    <div style="font-size:14px;font-weight:600;color:var(--text);">AI管家</div>
-    <button onclick="toggleAIChat();event.stopPropagation();" style="background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer;">×</button>
+    <div style="font-size:14px;font-weight:600;color:var(--text);">AI 管家</div>
+    <button onclick="toggleAIChat();event.stopPropagation();" style="background:none;border:none;color:var(--text-dim);font-size:18px;cursor:pointer;">&times;</button>
   </div>
   <div id="global-ai-messages" style="height:300px;overflow-y:auto;padding:14px;">
     <div style="text-align:center;color:var(--text-light);font-size:12px;padding:20px;">
-      <div style="font-size:28px;margin-bottom:8px;">🤖</div>
       <p>我是AI管家，随时为您服务</p>
       <p style="margin-top:6px;font-size:11px;">按 / 键快速打开</p>
     </div>
   </div>
   <div style="padding:12px;border-top:1px solid var(--border);display:flex;gap:8px;">
-    <input type="text" id="global-ai-input" placeholder="输入命令..." style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:white;font-size:13px;outline:none;" />
-    <button onclick="sendGlobalAIChat()" id="global-ai-send" style="padding:10px 16px;border-radius:10px;border:none;background:var(--accent);color:white;font-size:13px;cursor:pointer;">发送</button>
+    <input type="text" id="global-ai-input" placeholder="输入命令..." style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card-bg);font-size:13px;outline:none;font-family:inherit;color:var(--text);" />
+    <button onclick="sendGlobalAIChat()" id="global-ai-send" class="btn-primary" style="padding:10px 16px;font-size:13px;">发送</button>
   </div>
 </div>
 </body>

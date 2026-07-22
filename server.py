@@ -8208,6 +8208,10 @@ async def api_import_brain(request):
 if __name__ == "__main__":
     transport = config.get("transport", "stdio")
     logger.info(f"Ombre Brain starting | transport: {transport}")
+    if transport == "sse":
+        logger.info("MCP endpoint ready at /sse — clients connect to: https://<host>/sse")
+    elif transport == "streamable-http":
+        logger.info("MCP endpoint ready at /mcp — clients connect to: https://<host>/mcp")
 
     if transport in ("sse", "streamable-http"):
         import threading
@@ -8221,7 +8225,7 @@ if __name__ == "__main__":
             async with httpx.AsyncClient() as client:
                 while True:
                     try:
-                        await client.get(f"http://localhost:{OMBRE_PORT}/health", timeout=5)
+                        await client.get(f"http://localhost:{OMBRE_PORT}/api/health", timeout=5)
                         logger.debug("Keepalive ping OK / 保活 ping 成功")
                     except Exception as e:
                         logger.warning(f"Keepalive ping failed / 保活 ping 失败: {e}")

@@ -8,7 +8,7 @@ services:
     startCommand: python server.py
     envVars:
       - key: OMBRE_TRANSPORT
-        value: streamable-http
+        value: sse
       - key: deepseek_api_key
         sync: false          # Set in Render dashboard > Environment (DeepSeek API key)
       - key: OMBRE_BASE_URL
