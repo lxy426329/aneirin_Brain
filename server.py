@@ -4114,6 +4114,11 @@ async def ai_manage(request: str) -> str:
             {"name": "get_timelines", "description": "获取时间链（事件发展脉络）"},
             {"name": "get_memos", "description": "获取烛台备忘录"},
             {"name": "get_experiences", "description": "获取年轮经验"},
+            {"name": "get_roster", "description": "查询名册(人物)记录，支持姓名精确查找"},
+            {"name": "analytics", "description": "获取记忆库统计分析数据（情绪分布、类型统计、活跃度趋势）"},
+            {"name": "trace_chain", "description": "追溯记忆因果链（前因后果），direction=both/previous/next, max_depth=3"},
+            {"name": "link_events", "description": "建立两个事件之间的因果关系，prev_id=前因, next_id=后果"},
+            {"name": "memory_export", "description": "导出记忆数据，export_type=all/dynamic/permanent/identity/pattern/feel"},
         ]
         
         tools_json = _json_lib.dumps(tools_info, ensure_ascii=False)
