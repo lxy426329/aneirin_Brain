@@ -82,6 +82,18 @@ curl http://localhost:8000/health
 }
 ```
 
+> 如果你部署在远程服务器（如 Render），使用 `sse` 协议，客户端配置为：
+> ```json
+> {
+>   "mcpServers": {
+>     "ombre-brain": {
+>       "type": "url",
+>       "url": "https://你的域名/sse"
+>     }
+>   }
+> }
+> ```
+
 **Claude Code**（项目根目录 `.claude/settings.json`）：
 ```json
 {
@@ -94,7 +106,7 @@ curl http://localhost:8000/health
 }
 ```
 
-**Cline / 其他 MCP 客户端**：按各客户端文档配置 MCP 服务器，类型选择 `streamable-http`，URL 指向 `http://localhost:8000/mcp`（远程）或 `stdio`（本地）。重启客户端后，工具列表里应出现 `breath`、`hold`、`grow` 等。
+**Cline / 其他 MCP 客户端**：按各客户端文档配置 MCP 服务器。本地使用 `stdio` 或 `streamable-http`，远程使用 `sse` 协议（URL 指向 `https://你的域名/sse`）。重启客户端后，工具列表里应出现 `breath`、`hold`、`grow` 等。
 
 **回音壁页面**：浏览器打开 **http://localhost:8000/echo-chamber**，查看 AI 管家生成的每日/每周摘要、待审批提案和冲突检测结果。
 
@@ -438,7 +450,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml
 export OMBRE_API_KEY="your-api-key"
-OMBRE_TRANSPORT=streamable-http python server.py
+OMBRE_TRANSPORT=sse python server.py
 ```
 
 ---

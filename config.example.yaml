@@ -70,9 +70,11 @@ decay:
 # 你可以把 embedding 独立配置；若 api_key 留空，复用脱水配置的 API key 和 base_url
 embedding:
   enabled: true                   # Enable embedding / 启用向量化
-  model: "text-embedding-ada-002" # Embedding model / 向量化模型（DeepSeek 兼容）
-  base_url: "https://api.deepseek.com/v1"  # 复用 DeepSeek API
-  # api_key: ""                  # 留空复用 dehydration 的 api_key
+  model: "gemini-embedding-001"   # Embedding model / 向量化模型
+  base_url: ""                    # API base URL (leave empty to reuse dehydration.base_url)
+                                  # 留空复用 dehydration.base_url
+  # api_key: ""                  # Leave empty to reuse dehydration api_key
+                                  # 留空复用 dehydration 的 api_key
 
 # --- Scoring weights / 检索权重参数 ---
 # total = topic(×4) + emotion(×2) + time(×1.5) + importance(×1)
@@ -147,3 +149,28 @@ emotions:
     - 快乐
     - 抑郁
     - 孤独
+
+# --- Dashboard / 仪表板配置 ---
+dashboard:
+  # Password for accessing the web dashboard
+  # 仪表板访问密码
+  # Leave empty to use OMBRE_DASHBOARD_PASSWORD env var
+  # 留空则使用 OMBRE_DASHBOARD_PASSWORD 环境变量
+  password: ""
+
+# --- Echo Chamber / 回音壁配置 ---
+echo_chamber:
+  enabled: true                    # Enable echo chamber / 启用回音壁
+  storage_path: ""                 # Custom storage path (default: ./echo_chamber/)
+  auto_cleanup_days: 30            # Auto-cleanup actions older than N days / 自动清理超过N天的提案
+  max_pending_actions: 100         # Max pending actions before warning / 最大待审批提案数
+
+# --- Housekeeper / 管家任务配置 ---
+housekeeper:
+  enabled: true                    # Enable housekeeper auto-scheduling / 启用管家自动调度
+  daily_run_time: "02:00"          # Daily digest run time (UTC) / 每日摘要执行时间（UTC）
+  weekly_run_time: "03:00"         # Weekly digest run time (UTC) / 每周摘要执行时间（UTC）
+  weekly_run_day: 0                # Day of week for weekly digest (0=Sunday) / 每周摘要执行日（0=周日）
+  check_interval_minutes: 60       # How often to check if it's time to run / 检查是否需要运行的间隔（分钟）
+  conflict_detection: true         # Enable memory conflict detection / 启用记忆冲突检测
+  emotion_tracking: true           # Enable daily emotion baseline tracking / 启用日常情绪基线追踪

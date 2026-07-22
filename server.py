@@ -7481,8 +7481,9 @@ async def api_search(request):
 async def api_health(request):
     """System health check endpoint for Render."""
     from starlette.responses import JSONResponse
-    import psutil, time
+    import time
     try:
+        import psutil
         process = psutil.Process()
         memory_mb = process.memory_info().rss / 1024 / 1024
         
@@ -7502,7 +7503,7 @@ async def api_health(request):
             "uptime_seconds": int(time.time() - process.create_time()),
         })
     except ImportError:
-        # psutil not available in all environments
+        # psutil not available in all environments (e.g. Render)
         return JSONResponse({
             "status": "unknown",
             "memory_mb": -1,

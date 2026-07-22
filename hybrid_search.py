@@ -39,8 +39,14 @@ class HybridSearchEngine:
             logger.info("Hybrid Search Engine initialized")
     
     def build_bm25_index(self, buckets: list[dict]):
-        """Build BM25 index from memory buckets."""
+        """Build BM25 index from memory buckets. Skips rebuild if data unchanged."""
         if not self.enabled:
+            return
+        
+        # --- Check if data changed since last build (skip rebuild if same) ---
+        # --- 检查数据是否变更，未变更则跳过重建 ---
+        bucket_ids_set = tuple(sorted(b["id"] for b in buckets))
+        if bucket_ids_set == self._bm25_hash_key and self._bm25_index is not None:
             return
         
         corpus = []
@@ -64,7 +70,10 @@ class HybridSearchEngine:
             self._bm25_index = BM25Okapi(corpus)
             self._bm25_corpus = corpus
             self._bm25_bucket_ids = bucket_ids
+            self._bm25_hash_key = bucket_ids_set
             logger.info(f"BM25 index built with {len(bucket_ids)} buckets")
+        else:
+            self._bm25_hash_key = None
     
     def _tokenize(self, text: str) -> list[str]:
         """Chinese + English tokenization for BM25."""

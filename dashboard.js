@@ -2869,8 +2869,8 @@ function renderCandlesticks(candlesticks) {
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${candle.created ? new Date(candle.created).toLocaleString() : ''}</div>
           </div>
           <div style="display:flex;gap:6px;">
-            ${candle.bucket_id ? `<button onclick="showDetail('${candle.bucket_id}')" style="padding:6px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;color:var(--text-secondary);transition:all 0.2s;">查看记忆</button>` : ''}
-            <button onclick="deleteCandlestick('${candle.id}')" style="padding:6px 14px;border-radius:10px;border:none;background:#FF6B6B15;color:#FF6B6B;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.2s;">删除</button>
+            ${candle.bucket_id ? `<button onclick="showDetail(${JSON.stringify(candle.bucket_id)})" style="padding:6px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;color:var(--text-secondary);transition:all 0.2s;">查看记忆</button>` : ''}
+            <button onclick="deleteCandlestick(${JSON.stringify(candle.id)})" style="padding:6px 14px;border-radius:10px;border:none;background:#FF6B6B15;color:#FF6B6B;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.2s;">删除</button>
           </div>
         </div>
         <div style="font-size:14px;color:var(--text-secondary);line-height:1.7;white-space:pre-wrap;">${escapeHtml(candle.content)}</div>
@@ -4464,7 +4464,7 @@ function performSearch(query) {
         var type = r.type || 'event';
         var score = r.importance || r.score || 0;
         
-        html += '<div class="search-result-item" onclick="showDetail(\'' + r.id + '\')">' +
+        html += '<div class="search-result-item" onclick="showDetail(' + JSON.stringify(r.id) + ')">' +
           '<span class="sr-name">' + name + '</span>' +
           '<span class="sr-type">' + type + '</span>' +
           '<span class="sr-score">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</span>' +
@@ -4677,7 +4677,7 @@ function renderMemoryTimeline() {
       }).join('') + '</div>';
     }
     
-    html += '<div class="timeline-entry" onclick="showDetail(\'' + b.id + '\')">' +
+    html += '<div class="timeline-entry" onclick="showDetail(' + JSON.stringify(b.id) + ')">' +
       '<div class="tl-time">' + formatTimeAgo(timeStr) + '</div>' +
       '<div class="tl-name">' + name + '</div>' +
       (preview ? '<div class="tl-preview">' + preview + '…</div>' : '') +
