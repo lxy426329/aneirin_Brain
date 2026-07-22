@@ -6956,6 +6956,27 @@ async def dashboard(request):
         return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
 
 
+@mcp.custom_route("/echo-chamber", methods=["GET"])
+async def echo_chamber(request):
+    """Serve the echo chamber HTML page."""
+    from starlette.responses import HTMLResponse
+    import os
+    import time
+    echo_chamber_path = os.path.join(os.path.dirname(__file__), "echo_chamber.html")
+    try:
+        with open(echo_chamber_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "ETag": str(time.time()),
+        }
+        return HTMLResponse(content, headers=headers)
+    except FileNotFoundError:
+        return HTMLResponse("<h1>echo_chamber.html not found</h1>", status_code=404)
+
+
 @mcp.custom_route("/dashboard.js", methods=["GET"])
 async def dashboard_js(request):
     """Serve the dashboard JavaScript file."""
