@@ -7557,6 +7557,15 @@ async def api_health(request):
             "bucket_count": bucket_mgr._bucket_count if hasattr(bucket_mgr, '_bucket_count') else 0,
             "housekeeper_running": housekeeper._running if hasattr(housekeeper, '_running') else False,
             "uptime_seconds": int(time.time() - process.create_time()),
+            "buckets_dir": config.get("buckets_dir", ""),
+            "buckets_dir_env": os.environ.get("OMBRE_BUCKETS_DIR", "(not set)"),
+            "md_file_count": sum(
+                len([f for f in os.listdir(os.path.join(config.get("buckets_dir", ""), d)) if f.endswith(".md")])
+                for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]
+                if os.path.isdir(os.path.join(config.get("buckets_dir", ""), d))
+            ),
+            "model": dehydrator.model if dehydrator else "?",
+            "base_url": dehydrator.base_url if dehydrator else "?",
         })
     except ImportError:
         # psutil not available in all environments (e.g. Render)
@@ -7564,6 +7573,15 @@ async def api_health(request):
             "status": "unknown",
             "memory_mb": -1,
             "api_available": dehydrator.api_available if dehydrator else False,
+            "buckets_dir": config.get("buckets_dir", ""),
+            "buckets_dir_env": os.environ.get("OMBRE_BUCKETS_DIR", "(not set)"),
+            "md_file_count": sum(
+                len([f for f in os.listdir(os.path.join(config.get("buckets_dir", ""), d)) if f.endswith(".md")])
+                for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]
+                if os.path.isdir(os.path.join(config.get("buckets_dir", ""), d))
+            ),
+            "model": dehydrator.model if dehydrator else "?",
+            "base_url": dehydrator.base_url if dehydrator else "?",
         })
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
@@ -8269,6 +8287,30 @@ if __name__ == "__main__":
         logger.info("MCP endpoint ready at /sse — clients connect to: https://<host>/sse")
     elif transport == "streamable-http":
         logger.info("MCP endpoint ready at /mcp — clients connect to: https://<host>/mcp")
+
+    # --- Storage diagnostics: print actual buckets_dir + file count ---
+    # --- 存储诊断：打印实际 buckets_dir 路径和文件计数 ---
+    _buckets_dir = config.get("buckets_dir", "?")
+    _md_count = 0
+    _subdirs = {}
+    for _subdir in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]:
+        _sub_path = os.path.join(_buckets_dir, _subdir)
+        if os.path.isdir(_sub_path):
+            _files = [f for f in os.listdir(_sub_path) if f.endswith(".md")]
+            _subdirs[_subdir] = len(_files)
+            _md_count += len(_files)
+        else:
+            _subdirs[_subdir] = "DIR_MISSING"
+    logger.info(f"Storage diagnostics | buckets_dir: {_buckets_dir}")
+    logger.info(f"Storage diagnostics | total .md files: {_md_count}")
+    logger.info(f"Storage diagnostics | per-subdir: {_subdirs}")
+    logger.info(f"Storage diagnostics | OMBRE_BUCKETS_DIR env: {os.environ.get('OMBRE_BUCKETS_DIR', '(not set)')}")
+    logger.info(f"Storage diagnostics | api_available: {dehydrator.api_available if dehydrator else False}")
+    logger.info(f"Storage diagnostics | model: {dehydrator.model if dehydrator else '?'}")
+    logger.info(f"Storage diagnostics | base_url: {dehydrator.base_url if dehydrator else '?'}")
+    if _md_count == 0:
+        logger.warning("Storage diagnostics | WARNING: 0 .md files found — memory store is EMPTY!")
+        logger.warning("Storage diagnostics | If data existed before, check: (1) Render disk mount, (2) OMBRE_BUCKETS_DIR path, (3) disk was not recreated")
 
     if transport in ("sse", "streamable-http"):
         import threading
