@@ -3422,91 +3422,71 @@ async def weekly_organize() -> str:
 
 
 @mcp.tool()
-async def manage_record(action: str, record_type: str = "", record_id: str = "", **kwargs) -> str:
+async def manage_record(action: str, record_type: str = "", record_id: str = "", name: str = "", description: str = "", content: str = "", detail: str = "", text: str = "", exp_type: str = "", title: str = "", tags: str = "", importance: int = -1, source: str = "", bucket_id: str = "", relationships: str = "", triggers: str = "") -> str:
     """通用记录管理工具，替代identity_*/pattern_*/candlestick_*/experience_*等CRUD工具。
     action: create/update/get/list/delete/apply
     record_type: identity/roster/pattern/candlestick/experience/annual_ring
     record_id: 记录ID(仅get/update/delete/apply需要)
-    kwargs: 其他参数(content/detail/text/name/tags等)"""
+    create参数: name/description/relationships(identity), content/detail/text/title/exp_type(experience), name/description/triggers(pattern), content/bucket_id/title(candlestick), content/detail/text/title(annual_ring)
+    update参数: content/tags/importance"""
     try:
         if action not in ["create", "update", "get", "list", "delete", "apply"]:
             return f"未知操作: {action}"
         
         if action == "create":
             if record_type == "identity":
-                name = kwargs.get("name", "")
-                description = kwargs.get("description", "")
-                relationships = kwargs.get("relationships", [])
+                rel_list = [r.strip() for r in relationships.split(",")] if relationships else []
                 if not name:
                     return "请提供姓名"
                 identity_id = await identity_mgr.create(
                     name=name,
                     content=description,
-                    relationships=relationships,
+                    relationships=rel_list,
                 )
                 return f"👤 身份档案已创建 → {identity_id}"
             elif record_type == "pattern":
-                name = kwargs.get("name", "")
-                description = kwargs.get("description", "")
-                triggers = kwargs.get("triggers", "")
                 success = await bucket_mgr.save_pattern(name, description, triggers)
                 return f"📐 行为模式已创建 → {success['id']}" if success else "创建失败"
             elif record_type == "candlestick":
-                content = kwargs.get("content", "")
-                bucket_id = kwargs.get("bucket_id", "")
-                title = kwargs.get("title", "")
                 success = await bucket_mgr.save_candlestick(content, bucket_id, title)
                 return f"🕯️ 烛台已记录 → {success['id']}" if success else "记录失败"
             elif record_type == "experience":
-                content = kwargs.get("content", "") or kwargs.get("detail", "") or kwargs.get("text", "")
-                exp_type = kwargs.get("exp_type", "")
-                title = kwargs.get("title", "") or kwargs.get("name", "")
-                source = kwargs.get("source", "")
-                source_bucket_ids = kwargs.get("source_bucket_ids", [])
-                
-                if not content:
+                content_val = content or detail or text
+                title_val = title or name
+                if not content_val:
                     return "请提供经验内容"
-                
-                if source and source not in source_bucket_ids:
-                    source_bucket_ids.append(source)
-                
                 bucket_id = await bucket_mgr.create(
-                    content=content,
+                    content=content_val,
                     tags=[],
                     importance=8,
                     domain=["经验"],
-                    name=title or "未命名经验",
+                    name=title_val or "未命名经验",
                     bucket_type="permanent",
                 )
-                
                 await bucket_mgr.update(
                     bucket_id,
                     exp_type=exp_type,
                     source=source,
-                    source_bucket_ids=source_bucket_ids,
+                    source_bucket_ids=[],
                     apply_count=0,
                     last_applied="",
                     hit_count=0,
                     last_hit="",
                 )
-                
                 return f"📚 经验已创建 → {bucket_id}"
             elif record_type == "annual_ring":
-                content = kwargs.get("content", "") or kwargs.get("detail", "") or kwargs.get("text", "")
-                title = kwargs.get("title", "") or kwargs.get("name", "")
-                
-                if not content:
+                content_val = content or detail or text
+                title_val = title or name
+                if not content_val:
                     return "请提供年轮内容"
-                
                 bucket_id = await bucket_mgr.create(
-                    content=content,
+                    content=content_val,
                     tags=[],
                     importance=8,
                     domain=["年轮"],
-                    name=title or "未命名年轮",
+                    name=title_val or "未命名年轮",
                     bucket_type="permanent",
                 )
-                
                 return f"🌳 年轮已记录 → {bucket_id}"
             return f"不支持创建 {record_type} 类型"
         
@@ -3619,12 +3599,13 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
 
 
 @mcp.tool()
-async def manage_relation(action: str, bucket_id: str = "", target_id: str = "", **kwargs) -> str:
+async def manage_relation(action: str, bucket_id: str = "", target_id: str = "", position: int = 0, impact: int = 0, duration: int = 0, emotional_intensity: int = 0, recurrence: int = 0, interconnectedness: int = 0) -> str:
     """通用关联管理工具，替代link_buckets/set_bucket_parent/chain_events/rate_importance。
     action: link(关联)/parent(父子)/chain(事件链)/importance(重要度)
     bucket_id: 源桶ID
     target_id: 目标桶ID(link/parent/chain需要)
-    kwargs: position(事件链位置), impact/duration/emotional_intensity/recurrence/interconnectedness(重要度维度)"""
+    position: 事件链位置(chain模式)
+    impact/duration/emotional_intensity/recurrence/interconnectedness: 重要度维度0~10(importance模式)"""
     try:
         if action == "link":
             if not bucket_id or not target_id:
@@ -3641,18 +3622,18 @@ async def manage_relation(action: str, bucket_id: str = "", target_id: str = "",
         elif action == "chain":
             if not bucket_id or not target_id:
                 return "请提供bucket_id和target_id"
-            success = await bucket_mgr.add_event_sequence(bucket_id, target_id, kwargs.get("position"))
+            success = await bucket_mgr.add_event_sequence(bucket_id, target_id, position)
             return f"已添加到事件链 → {bucket_id} → {target_id}" if success else "添加事件链失败"
         
         elif action == "importance":
             if not bucket_id:
                 return "请提供bucket_id"
             details = {
-                "impact": max(0, min(10, kwargs.get("impact", 0))),
-                "duration": max(0, min(10, kwargs.get("duration", 0))),
-                "emotional_intensity": max(0, min(10, kwargs.get("emotional_intensity", 0))),
-                "recurrence": max(0, min(10, kwargs.get("recurrence", 0))),
-                "interconnectedness": max(0, min(10, kwargs.get("interconnectedness", 0))),
+                "impact": max(0, min(10, impact)),
+                "duration": max(0, min(10, duration)),
+                "emotional_intensity": max(0, min(10, emotional_intensity)),
+                "recurrence": max(0, min(10, recurrence)),
+                "interconnectedness": max(0, min(10, interconnectedness)),
             }
             success = await bucket_mgr.update_importance_details(bucket_id, details)
             if success:
@@ -3668,26 +3649,28 @@ async def manage_relation(action: str, bucket_id: str = "", target_id: str = "",
 
 
 @mcp.tool()
-async def query_memory(query: str = "", mode: str = "search", **kwargs) -> str:
+async def query_memory(query: str = "", mode: str = "search", domain: str = "", valence: float = -1, arousal: float = -1, importance_min: int = -1, max_results: int = 10, days: int = 7, detail_level: str = "medium") -> str:
     """通用记忆查询工具，替代breath/pulse/memory_directory/summarize_recent_events。
     mode: search(关键词搜索)/float(自动浮现)/status(系统状态)/directory(目录摘要)/recent(最近事件)
     query: 搜索关键词(search模式需要)
-    kwargs: domain/valence/arousal/importance_min/max_results/days/detail_level"""
+    domain/valence/arousal/importance_min/max_results: breath参数
+    days: 最近事件天数(recent模式)
+    detail_level: 目录详细程度(brief/medium/full, directory模式)"""
     try:
         if mode == "search":
-            return await breath(query=query, **kwargs)
+            return await breath(query=query, domain=domain, valence=valence, arousal=arousal, importance_min=importance_min, max_results=max_results)
         
         elif mode == "float":
-            return await breath(query="", brief=True, **kwargs)
+            return await breath(query="", brief=True)
         
         elif mode == "status":
             return await pulse()
         
         elif mode == "directory":
-            return await memory_directory(detail_level=kwargs.get("detail_level", "medium"))
+            return await memory_directory(detail_level=detail_level)
         
         elif mode == "recent":
-            return await summarize_recent_events(days=kwargs.get("days", 7), max_events=kwargs.get("max_events", 10))
+            return await summarize_recent_events(days=days)
         
         return f"未知模式: {mode}"
     except Exception as e:
