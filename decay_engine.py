@@ -297,6 +297,8 @@ class DecayEngine:
         stage_1_to_2 = 0
         stage_2_to_3 = 0
         lowest_score = float("inf")
+        ttl_deleted = 0
+        cold_marked = 0
 
         for bucket in buckets:
             meta = bucket.get("metadata", {})
@@ -309,6 +311,46 @@ class DecayEngine:
                 continue
 
             checked += 1
+
+            # --- TTL check: delete buckets that have exceeded their TTL ---
+            # --- TTL检查：删除超过生存时间的桶 ---
+            ttl_days = meta.get("ttl")
+            if ttl_days is not None:
+                created_str = meta.get("created", "")
+                try:
+                    created = datetime.fromisoformat(str(created_str))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    days_since_created = (datetime.now(timezone.utc) - created).total_seconds() / 86400
+                    if days_since_created >= ttl_days:
+                        try:
+                            success = await self.bucket_mgr.archive(bucket["id"])
+                            if success:
+                                ttl_deleted += 1
+                                logger.info(f"TTL expired / TTL过期删除: {meta.get('name', bucket['id'])} (ttl={ttl_days}d)")
+                            continue
+                        except Exception as e:
+                            logger.warning(f"TTL delete failed / TTL删除失败: {e}")
+                except (ValueError, TypeError):
+                    pass
+
+            # --- Cold memory check: mark as cold if not accessed for 30 days ---
+            # --- 冷记忆检查：30天未访问的普通记忆标记为冷记忆 ---
+            last_accessed_str = meta.get("last_accessed", meta.get("created", ""))
+            try:
+                last_accessed = datetime.fromisoformat(str(last_accessed_str))
+                if last_accessed.tzinfo is None:
+                    last_accessed = last_accessed.replace(tzinfo=timezone.utc)
+                days_since_accessed = (datetime.now(timezone.utc) - last_accessed).total_seconds() / 86400
+                if days_since_accessed >= 30 and not meta.get("cold_memory", False):
+                    try:
+                        await self.bucket_mgr.update(bucket["id"], cold_memory=True)
+                        cold_marked += 1
+                        logger.info(f"Marked as cold memory / 标记为冷记忆: {meta.get('name', bucket['id'])}")
+                    except Exception as e:
+                        logger.warning(f"Cold memory update failed / 冷记忆标记失败: {e}")
+            except (ValueError, TypeError):
+                pass
 
             current_stage = meta.get("decay_stage", 1)
             new_stage = self.calculate_decay_stage(meta)
@@ -426,6 +468,8 @@ class DecayEngine:
             "stage_1_to_2": stage_1_to_2,
             "stage_2_to_3": stage_2_to_3,
             "timelines_decayed": timelines_decayed,
+            "ttl_deleted": ttl_deleted,
+            "cold_marked": cold_marked,
             "lowest_score": lowest_score if checked > 0 else 0,
         }
         logger.info(f"Decay cycle complete / 衰减周期完成: {result}")

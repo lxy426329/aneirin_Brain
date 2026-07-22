@@ -652,6 +652,73 @@ def _extract_event_context(content: str) -> str:
     return ""
 
 
+def _detect_noise_content(content: str) -> bool:
+    """
+    Detect low-value "noise" content that should have short TTL.
+    检测低价值"噪音"内容，应设置短期 TTL。
+    
+    Returns True if content is noise.
+    """
+    if not content or not content.strip():
+        return True
+    
+    text = content.strip()
+    
+    noise_patterns = [
+        r'^(我去|我要|我先|我得)\s*(洗|吃|喝|睡|走|离开|忙|做事|干活)\s*[了吗呢]?$',
+        r'^(好|行|可以|没问题|知道了|明白了|收到)$',
+        r'^(等一下|等会儿|一会儿|马上)$',
+        r'^(拜拜|再见|晚安)$',
+        r'^(嗯嗯|啊啊|哦哦|呵呵|哈哈)$',
+        r'^(在吗|在不在|有人吗)$',
+        r'^[^\u4e00-\u9fff]{0,5}$',
+    ]
+    
+    import re
+    for pattern in noise_patterns:
+        if re.match(pattern, text):
+            return True
+    
+    if len(text) <= 5 and not re.search(r'[\u4e00-\u9fff]{2,}', text):
+        return True
+    
+    return False
+
+
+def _extract_status_key(content: str) -> str | None:
+    """
+    Extract status key for state override mechanism.
+    提取状态键，用于状态覆盖机制。
+    
+    Returns a normalized status key or None.
+    """
+    if not content or not content.strip():
+        return None
+    
+    text = content.strip()
+    
+    status_patterns = [
+        r'(肚子痛|胃痛|腹痛|痛经)',
+        r'(头痛|头晕|发烧|感冒|咳嗽)',
+        r'(身体不适|不舒服|难受)',
+        r'(病好了|不痛了|恢复了|痊愈了)',
+        r'(开心|高兴|愉快)',
+        r'(难过|伤心|沮丧)',
+        r'(生气|愤怒|烦躁)',
+        r'(疲劳|疲惫|累)',
+        r'(加班|工作中|学习中)',
+        r'(休息|睡觉|放假)',
+    ]
+    
+    import re
+    for pattern in status_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            return matches[0]
+    
+    return None
+
+
 # =============================================================
 # Internal helper: merge-or-create
 # 内部辅助：检查是否可合并，可以则合并，否则新建
@@ -672,6 +739,8 @@ async def _merge_or_create(
     task_flag: bool = False,
     dehydrator=None,
     context_metadata: dict = None,
+    ttl: int = None,
+    status_key: str = None,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -736,6 +805,8 @@ async def _merge_or_create(
         "task_flag": task_flag,
         "dehydrator": dehydrator,
         "context_metadata": context_metadata,
+        "ttl": ttl,
+        "status_key": status_key,
     }
 
     if emotions:
@@ -2099,6 +2170,27 @@ async def hold(
         context_metadata["event_context"] = _extract_event_context(content)
         context_metadata["context_provided"] = False
     
+    # --- Step 0.5: Noise detection and TTL / 噪音检测和生存时间 ---
+    ttl = None
+    if _detect_noise_content(content):
+        ttl = 7
+    
+    # --- Step 0.6: Status override / 状态覆盖 ---
+    # 如果新内容表示"已恢复/已解决"，则标记旧的同类状态为已解决
+    status_key = _extract_status_key(content)
+    if status_key:
+        if any(keyword in status_key for keyword in ["好了", "不痛了", "恢复了", "痊愈了"]):
+            try:
+                all_buckets = await bucket_mgr.list_all(include_archive=False)
+                for bucket in all_buckets:
+                    bucket_status_key = bucket["metadata"].get("status_key")
+                    if bucket_status_key and bucket_status_key in ["肚子痛", "胃痛", "腹痛", "痛经", "头痛", "头晕", "发烧", "感冒", "咳嗽", "身体不适", "不舒服", "难受"]:
+                        if not bucket["metadata"].get("resolved", False):
+                            await bucket_mgr.update(bucket["id"], resolved=True)
+                            logger.info(f"Status override: marked {bucket['id']} as resolved")
+            except Exception as e:
+                logger.warning(f"Status override failed: {e}")
+    
     # --- Step 1: auto-tagging / 自动打标 ---
     try:
         analysis = await dehydrator.analyze(content)
@@ -2149,6 +2241,8 @@ async def hold(
             pinned=True,
             task_flag=task_flag,
             context_metadata=context_metadata,
+            ttl=ttl,
+            status_key=status_key,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -2173,6 +2267,8 @@ async def hold(
         task_flag=task_flag,
         dehydrator=dehydrator,
         context_metadata=context_metadata,
+        ttl=ttl,
+        status_key=status_key,
     )
 
     action = "合并→" if is_merged else "新建→"
@@ -2500,6 +2596,107 @@ async def dream() -> str:
         logger.error(f"Dream failed to list buckets: {e}")
         return "记忆系统暂时无法访问。"
 
+    # --- Step 0: Auto-merge similar memories from the past week ---
+    # --- 步骤0：自动合并过去一周内的相似记忆 ---
+    merge_summary = ""
+    try:
+        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        recent_week_buckets = []
+        
+        for b in all_buckets:
+            meta = b["metadata"]
+            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
+                continue
+            
+            created_str = meta.get("created", "")
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created >= one_week_ago:
+                    recent_week_buckets.append(b)
+            except (ValueError, TypeError):
+                continue
+        
+        if len(recent_week_buckets) >= 3:
+            similarity_groups = {}
+            for i, b1 in enumerate(recent_week_buckets):
+                for j, b2 in enumerate(recent_week_buckets[i+1:]):
+                    try:
+                        content1 = b1["content"]
+                        content2 = b2["content"]
+                        from rapidfuzz import fuzz
+                        similarity = fuzz.ratio(content1, content2)
+                        if similarity >= 60:
+                            group_key = tuple(sorted([b1["id"], b2["id"]]))
+                            if group_key not in similarity_groups:
+                                similarity_groups[group_key] = set()
+                            similarity_groups[group_key].add(b1["id"])
+                            similarity_groups[group_key].add(b2["id"])
+                    except Exception:
+                        pass
+            
+            merged_count = 0
+            merged_groups = []
+            for group_ids in similarity_groups.values():
+                if len(group_ids) >= 3:
+                    group_buckets = [b for b in recent_week_buckets if b["id"] in group_ids]
+                    if group_buckets:
+                        merged_groups.append(group_buckets)
+            
+            for group in merged_groups:
+                contents = [b["content"] for b in group]
+                combined_content = "\n".join(contents)
+                
+                summary_prompt = f"请总结以下记忆片段，提炼成一条高密度的长效总结：\n{combined_content}\n\n总结要求：简洁、准确、保留关键信息（时间、状态、频率）"
+                
+                try:
+                    global dehydrator
+                    if dehydrator and dehydrator.api_available:
+                        response = await dehydrator.client.chat.completions.create(
+                            model=dehydrator.model,
+                            messages=[
+                                {"role": "system", "content": "你是一个记忆总结助手，擅长将多条相似记忆提炼成一条高密度总结。"},
+                                {"role": "user", "content": summary_prompt},
+                            ],
+                            max_tokens=100,
+                            temperature=0.3,
+                        )
+                        summary = response.choices[0].message.content.strip()
+                    else:
+                        summary = "相似记忆合并总结：" + combined_content[:50]
+                except Exception as e:
+                    logger.warning(f"Auto-merge LLM call failed: {e}")
+                    summary = "相似记忆合并总结：" + combined_content[:50]
+                
+                first_bucket = group[0]
+                meta = first_bucket["metadata"]
+                new_bucket_id = await bucket_mgr.create(
+                    content=summary,
+                    tags=meta.get("tags", []),
+                    importance=min(10, meta.get("importance", 5) + 1),
+                    domain=meta.get("domain", ["未分类"]),
+                    emotions=meta.get("emotions", []),
+                    dominant_emotion=meta.get("dominant_emotion", ""),
+                    emotion_metrics=meta.get("emotion_metrics", {}),
+                    name=f"合并总结: {meta.get('name', '相似记忆')}",
+                    bucket_type="dynamic",
+                )
+                
+                for b in group:
+                    try:
+                        await bucket_mgr.update(b["id"], resolved=True)
+                    except Exception:
+                        pass
+                
+                merged_count += 1
+                logger.info(f"Auto-merged {len(group)} similar memories into {new_bucket_id}")
+            
+            if merged_count > 0:
+                merge_summary = f"🔄 自动合并了 {merged_count} 组相似记忆为高密度总结。\n\n"
+    except Exception as e:
+        logger.warning(f"Auto-merge step failed: {e}")
+
     # --- Filter: recent surface-level dynamic buckets (not permanent/pinned/feel) ---
     candidates = [
         b for b in all_buckets
@@ -2540,7 +2737,8 @@ async def dream() -> str:
 
     header = (
         "=== Dreaming ===\n"
-        "以下是你最近的记忆。用第一人称想：\n"
+        + merge_summary
+        + "以下是你最近的记忆。用第一人称想：\n"
         "- 这些东西里有什么在你这里留下了重量？\n"
         "- 有什么还没想清楚？\n"
         "- 有什么可以放下了？\n"

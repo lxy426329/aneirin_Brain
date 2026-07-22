@@ -744,6 +744,8 @@ class BucketManager:
         task_flag: bool = False,
         dehydrator=None,
         context_metadata: dict = None,
+        ttl: int = None,
+        status_key: str = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -815,6 +817,7 @@ class BucketManager:
             "type": bucket_type,
             "created": now_iso(),
             "last_active": now_iso(),
+            "last_accessed": now_iso(),
             "activation_count": 0,
             "related_buckets": [],
             "parent_bucket": None,
@@ -828,6 +831,9 @@ class BucketManager:
             "previous_event_id": None,
             "next_event_id": None,
             "context_metadata": context_metadata or {},
+            "ttl": ttl,
+            "cold_memory": False,
+            "status_key": status_key,
         }
         if pinned:
             metadata["pinned"] = True
@@ -1456,7 +1462,9 @@ class BucketManager:
         try:
             post = frontmatter.load(file_path)
             post["last_active"] = now_iso()
+            post["last_accessed"] = now_iso()
             post["activation_count"] = post.get("activation_count", 0) + 1
+            post["cold_memory"] = False
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(frontmatter.dumps(post))
