@@ -484,12 +484,23 @@ function renderBuckets(buckets) {
       }
       
       var shortId = b.id.substring(0, 8);
+      var preview = esc((b.content_preview || b.content || '').replace(/\n/g, ' ').substring(0, 150));
+      var typeColors = {
+        'identity': '#4A7C59', 'pattern': '#9A7B4F', 'feel': '#8B4A4A',
+        'event': '#2F4F4F', 'experience': '#6A6A8B', 'candlestick': '#DAA520'
+      };
+      var typeColor = typeColors[bucketType] || '#888';
+
       html += '<div class="bucket-row' + (b.type === 'identity' ? ' identity-card' : b.type === 'pattern' ? ' pattern-card' : '') + '" data-bucket-id="' + b.id + '">' +
-        '<span class="name" title="' + esc(b.name) + '">' + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span></span>' +
-        '<span class="type">' + bucketType + '</span>' +
-        '<span class="domain">' + (b.domain || []).join(', ') + '</span>' +
-        '<span class="emotion">' + emotionDisplay + '</span>' +
-        '<span class="score">' + (b.score || 0).toFixed(2) + '</span>' +
+        '<div class="name">' + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span></div>' +
+        (preview ? '<div class="preview">' + preview + '</div>' : '') +
+        '<div class="row-tags">' +
+          '<span style="padding:1px 6px;border-radius:4px;background:rgba(' + hexToRgb(typeColor) + ',0.1);color:' + typeColor + ';" class="type">' + bucketType + '</span>' +
+          (b.domain && b.domain.length ? '<span class="domain">' + b.domain.join(', ') + '</span>' : '') +
+          '<span class="emotion">' + emotionDisplay + '</span>' +
+          (b.pinned ? '<span style="color:#9A7B4F;">★</span>' : '') +
+          '<span style="margin-left:auto;color:var(--text-light);font-size:11px;">' + (b.score || 0).toFixed(2) + '</span>' +
+        '</div>' +
       '</div>';
     }
     list.innerHTML = html;
@@ -1547,6 +1558,12 @@ checkAuth().then((authenticated) => {
     checkAIStatus();
   }
 });
+
+// Clear search input on load (prevents browser autofill showing password)
+setTimeout(function() {
+  var si = document.getElementById('search-input');
+  if (si) si.value = '';
+}, 100);
 
 var selectedMemories = new Set();
 
