@@ -3836,6 +3836,27 @@ async def review_digest() -> str:
             parts.append(f"\n📝 待审阅摘要 ({summary['pending_digests']}条):")
             for digest in summary["digests"]:
                 parts.append(f"  • [{digest['digest_id']}] {digest['digest_type']}")
+                
+                metadata = digest.get("metadata", {})
+                mood_tags = metadata.get("mood_tags", [])
+                mood_level = metadata.get("mood_level", "")
+                
+                if mood_tags or mood_level != "neutral":
+                    mood_display = {
+                        "low": "🔴 情绪低落",
+                        "slightly_low": "🟡 情绪偏低",
+                        "high": "🟢 情绪高涨",
+                        "slightly_high": "🟢 情绪较好",
+                        "neutral": "",
+                    }
+                    mood_text = mood_display.get(mood_level, "")
+                    tag_text = ", ".join(mood_tags) if mood_tags else ""
+                    
+                    if mood_text:
+                        parts.append(f"    {mood_text}")
+                    if tag_text:
+                        parts.append(f"    情绪标签: {tag_text}")
+                
                 parts.append(f"    {digest['content'][:200]}...")
         
         if summary["pending_actions"] > 0:
@@ -3961,10 +3982,66 @@ async def inject_context(user_input: str = "") -> str:
     except Exception as e:
         logger.warning(f"Feel context injection failed: {e}")
     
+    try:
+        mood_warning = await _check_ongoing_mood_trend()
+        if mood_warning:
+            context_parts.insert(0, mood_warning)
+    except Exception as e:
+        logger.warning(f"Mood trend check failed: {e}")
+    
     if context_parts:
         return "<context>\n" + "\n".join(context_parts) + "</context>"
     else:
         return "<context></context>"
+
+
+async def _check_ongoing_mood_trend() -> str | None:
+    """
+    Check if there's an ongoing low mood trend over consecutive days.
+    If detected, return a warning message for context injection.
+    """
+    try:
+        digests = await housekeeper.echo_chamber.get_pending_digests(digest_type="daily")
+    except Exception:
+        try:
+            digests = await housekeeper.echo_chamber.get_pending_digests(digest_type="all")
+        except Exception as e:
+            logger.warning(f"Failed to get digests for mood check: {e}")
+            return None
+    
+    low_mood_days = []
+    for digest in digests:
+        metadata = digest.get("metadata", {})
+        mood_level = metadata.get("mood_level", "")
+        
+        if mood_level in ("low", "slightly_low"):
+            low_mood_days.append({
+                "date": digest.get("digest_id", "")[-8:],
+                "tags": metadata.get("mood_tags", []),
+                "level": mood_level,
+            })
+    
+    if len(low_mood_days) >= 2:
+        tag_counts = {}
+        for day in low_mood_days:
+            for tag in day["tags"]:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        
+        most_common_tag = max(tag_counts, key=tag_counts.get) if tag_counts else "情绪低落"
+        
+        tag_display = {
+            "anxious": "焦虑",
+            "unwell": "身体不适",
+            "sad": "难过",
+            "angry": "生气",
+            "happy": "开心",
+        }
+        
+        display_tag = tag_display.get(most_common_tag, most_common_tag)
+        
+        return f"【情绪提示】检测到连续{len(low_mood_days)}天{display_tag}，请提高耐心和陪伴感"
+    
+    return None
 
 
 async def weekly_organize() -> str:

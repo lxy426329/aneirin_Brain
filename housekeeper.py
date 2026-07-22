@@ -423,7 +423,7 @@ class Housekeeper:
         return results
     
     async def _daily_summary(self) -> dict:
-        """Generate daily summary of today's buckets."""
+        """Generate daily summary of today's buckets with mood analysis."""
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         
         try:
@@ -447,20 +447,105 @@ class Housekeeper:
             return {"message": "No buckets from today"}
         
         summary_lines = []
+        all_contents = []
         for b in today_buckets:
             meta = b["metadata"]
             content_preview = b["content"][:80].replace("\n", " ")
             summary_lines.append(f"- [{meta.get('created', '')}] {meta.get('name', '')}: {content_preview}")
+            all_contents.append(b["content"])
         
         summary = "\n".join(summary_lines)
+        
+        mood_tags = self._analyze_daily_mood(today_buckets, all_contents)
         
         await self.echo_chamber.write_digest(
             digest_type="daily",
             content=summary,
-            metadata={"bucket_count": len(today_buckets)}
+            metadata={
+                "bucket_count": len(today_buckets),
+                "mood_tags": mood_tags["tags"],
+                "mood_score": mood_tags["score"],
+                "mood_level": mood_tags["level"],
+            }
         )
         
-        return {"buckets_processed": len(today_buckets)}
+        return {"buckets_processed": len(today_buckets), "mood_tags": mood_tags["tags"], "mood_level": mood_tags["level"]}
+    
+    def _analyze_daily_mood(self, buckets: list, contents: list) -> dict:
+        """
+        Analyze the emotional baseline for today's conversations.
+        Returns mood tags and score.
+        """
+        import re
+        
+        mood_patterns = {
+            "anxious": [
+                r'(焦虑|不安|烦躁|心烦|着急|紧张)',
+                r'(压力大|压力|焦虑症)',
+                r'(睡不着|失眠|睡不好)',
+            ],
+            "unwell": [
+                r'(痛|疼|难受|不舒服)',
+                r'(生病|感冒|发烧|咳嗽)',
+                r'(肚子痛|胃痛|头痛|痛经)',
+                r'(疲惫|累|疲倦)',
+            ],
+            "sad": [
+                r'(难过|伤心|悲伤|沮丧)',
+                r'(失望|失落|绝望)',
+                r'(想哭|流泪)',
+            ],
+            "happy": [
+                r'(开心|高兴|快乐|喜悦)',
+                r'(幸福|满足|满意)',
+                r'(兴奋|激动)',
+            ],
+            "angry": [
+                r'(生气|愤怒|发火)',
+                r'(讨厌|烦|烦死)',
+                r'(无语|受不了)',
+            ],
+        }
+        
+        tag_counts = {tag: 0 for tag in mood_patterns}
+        
+        for content in contents:
+            for tag, patterns in mood_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, content):
+                        tag_counts[tag] += 1
+        
+        detected_tags = [tag for tag, count in tag_counts.items() if count > 0]
+        
+        negative_tags = {"anxious", "unwell", "sad", "angry"}
+        positive_tags = {"happy"}
+        
+        negative_count = sum(tag_counts[t] for t in negative_tags if t in tag_counts)
+        positive_count = sum(tag_counts[t] for t in positive_tags if t in tag_counts)
+        
+        total_count = negative_count + positive_count
+        
+        if total_count == 0:
+            score = 0
+            level = "neutral"
+        elif negative_count > positive_count:
+            score = -negative_count
+            if negative_count >= 3:
+                level = "low"
+            else:
+                level = "slightly_low"
+        else:
+            score = positive_count
+            if positive_count >= 3:
+                level = "high"
+            else:
+                level = "slightly_high"
+        
+        return {
+            "tags": detected_tags,
+            "score": score,
+            "level": level,
+        }
     
     async def _daily_chain_update(self) -> dict:
         """Update event chains with today's relevant buckets (temporary nodes)."""
