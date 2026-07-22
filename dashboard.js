@@ -499,7 +499,7 @@ function renderBuckets(buckets) {
 
 async function searchBuckets(query) {
   try {
-    var res = await fetch(BASE + '/api/search?q=' + encodeURIComponent(query));
+    var res = await fetch(BASE + '/api/search?q=' + encodeURIComponent(query), { credentials: 'include' });
     var results = await res.json();
     renderBuckets(results);
   } catch (e) {
@@ -514,7 +514,7 @@ async function showDetail(id) {
   panel.classList.add('open');
 
   try {
-    var res = await fetch(BASE + '/api/bucket/' + id);
+    var res = await fetch(BASE + '/api/bucket/' + id, { credentials: 'include' });
     var b = await res.json();
     var meta = b.metadata || {};
     var bucketType = meta.type || 'event';
@@ -792,7 +792,7 @@ async function loadNetwork() {
   ctx.fillText('加载记忆网络…', W/2, H/2);
 
   try {
-    var res = await fetch(BASE + '/api/network');
+    var res = await fetch(BASE + '/api/network', { credentials: 'include' });
     networkData = await res.json();
     initNetworkView(canvas, ctx, W, H, networkData);
   } catch(e) {
@@ -1363,7 +1363,7 @@ document.addEventListener('keydown', function(e) {
 async function checkAIStatus() {
   var badge = document.getElementById('ai-status-badge');
   try {
-    var res = await fetch(BASE + '/api/config');
+    var res = await fetch(BASE + '/api/config', { credentials: 'include' });
     var cfg = await res.json();
     var hasKey = cfg.dehydration && cfg.dehydration.api_key_masked && cfg.dehydration.api_key_masked !== '';
     if (hasKey) {
@@ -1387,7 +1387,7 @@ async function checkAIStatus() {
 
 async function loadConfig() {
   try {
-    var res = await fetch(BASE + '/api/config');
+    var res = await fetch(BASE + '/api/config', { credentials: 'include' });
     var cfg = await res.json();
     document.getElementById('cfg-dehy-model').value = cfg.dehydration.model || '';
     document.getElementById('cfg-dehy-url').value = cfg.dehydration.base_url || '';
@@ -1441,6 +1441,7 @@ async function testAIConnection() {
     var res = await fetch(BASE + '/api/ai-test', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      credentials: 'include'
     });
     var result = await res.json();
     if (result.ok) {

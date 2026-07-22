@@ -1358,7 +1358,7 @@ async function runDailyHousekeeper() {
 
   try {
     var resp = await fetch('/api/run-housekeeper', {
-      method: 'GET',
+      method: 'POST',
       credentials: 'include'
     });
     if (!resp.ok) throw new Error('请求失败 (' + resp.status + ')');

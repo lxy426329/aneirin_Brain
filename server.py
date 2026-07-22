@@ -7611,6 +7611,30 @@ async def api_echo_chamber(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/echo-chamber", methods=["DELETE"])
+async def api_echo_chamber_clear(request):
+    """Clear all echo chamber data (digests + pending actions)."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        import os as _os
+        import shutil as _shutil
+        ec_dir = getattr(housekeeper, 'echo_chamber_dir', None)
+        if ec_dir and _os.path.isdir(ec_dir):
+            for item in _os.listdir(ec_dir):
+                item_path = _os.path.join(ec_dir, item)
+                if _os.path.isdir(item_path):
+                    _shutil.rmtree(item_path)
+                else:
+                    _os.unlink(item_path)
+            logger.info("Echo chamber cleared by user request")
+        return JSONResponse({"ok": True, "message": "已清除全部回音壁数据"})
+    except Exception as e:
+        logger.error(f"Clear echo chamber failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/echo-chamber/approve", methods=["POST"])
 async def api_echo_chamber_approve(request):
     """Approve a pending action."""
@@ -7676,7 +7700,7 @@ async def api_run_housekeeper(request):
         else:
             parts.append(f"✅ 冲突检测: 发现{conflicts.get('conflicts_found', 0)}条冲突")
         
-        return JSONResponse("\n".join(parts))
+        return JSONResponse({"ok": True, "message": "\n".join(parts)})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
