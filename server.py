@@ -7434,6 +7434,85 @@ async def api_ai_test(request):
 
 
 # =============================================================
+# /api/search — Search memories by keyword
+# /api/health — System health check
+# =============================================================
+@mcp.custom_route("/api/search", methods=["GET"])
+async def api_search(request):
+    """Search memories by keyword. Returns matching buckets."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        from urllib.parse import parse_qs
+        qs = parse_qs(request.url.query)
+        q = qs.get("q", [""])[0].strip()
+        if not q:
+            return JSONResponse({"ok": True, "results": []})
+        
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        q_lower = q.lower()
+        results = []
+        for b in all_buckets:
+            content_lower = b["content"].lower()
+            name = b["metadata"].get("name", "").lower()
+            tags = " ".join(b["metadata"].get("tags", [])).lower()
+            if q_lower in content_lower or q_lower in name or q_lower in tags:
+                results.append({
+                    "id": b["id"],
+                    "content": b["content"][:300],
+                    "created": b["metadata"].get("created", ""),
+                    "name": b["metadata"].get("name", ""),
+                    "tags": b["metadata"].get("tags", []),
+                    "type": b["metadata"].get("type", ""),
+                    "importance": b["metadata"].get("importance", 5),
+                })
+                if len(results) >= 50:
+                    break
+        
+        results.sort(key=lambda x: x.get("importance", 5), reverse=True)
+        return JSONResponse({"ok": True, "results": results, "total": len(results)})
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/health", methods=["GET"])
+async def api_health(request):
+    """System health check endpoint for Render."""
+    from starlette.responses import JSONResponse
+    import psutil, time
+    try:
+        process = psutil.Process()
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        
+        status = "healthy"
+        if memory_mb > 400:
+            status = "warning"
+        if memory_mb > 500:
+            status = "critical"
+        
+        return JSONResponse({
+            "status": status,
+            "memory_mb": round(memory_mb, 1),
+            "api_available": dehydrator.api_available if dehydrator else False,
+            "embedding_enabled": embedding_engine.enabled if embedding_engine else False,
+            "bucket_count": bucket_mgr._bucket_count if hasattr(bucket_mgr, '_bucket_count') else 0,
+            "housekeeper_running": housekeeper._running if hasattr(housekeeper, '_running') else False,
+            "uptime_seconds": int(time.time() - process.create_time()),
+        })
+    except ImportError:
+        # psutil not available in all environments
+        return JSONResponse({
+            "status": "unknown",
+            "memory_mb": -1,
+            "api_available": dehydrator.api_available if dehydrator else False,
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+# =============================================================
 # /api/echo-chamber — Echo Chamber API
 # =============================================================
 @mcp.custom_route("/api/echo-chamber", methods=["GET"])

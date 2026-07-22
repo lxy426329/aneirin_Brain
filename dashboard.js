@@ -323,16 +323,6 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-let searchTimer;
-document.getElementById('search-input').addEventListener('input', (e) => {
-  clearTimeout(searchTimer);
-  const q = e.target.value.trim();
-  searchTimer = setTimeout(() => {
-    if (q) searchBuckets(q);
-    else renderBuckets(allBuckets);
-  }, 300);
-});
-
 async function loadBuckets() {
   try {
     const cached = getCachedData('buckets');
@@ -4418,5 +4408,294 @@ async function sendGlobalAIChat() {
   }
 }
 
+// ========================================
+// Dark Mode Toggle / 深色模式切换
+// ========================================
+function toggleTheme() {
+  const body = document.body;
+  body.classList.toggle('dark');
+  const isDark = body.classList.contains('dark');
+  localStorage.setItem('ombre-brain-theme', isDark ? 'dark' : 'light');
+}
 
+// Load saved theme on page load
+(function loadTheme() {
+  const saved = localStorage.getItem('ombre-brain-theme');
+  if (saved === 'dark') {
+    document.body.classList.add('dark');
+  }
+})();
+
+// ========================================
+// Enhanced Search / 增强搜索功能
+// ========================================
+let searchDebounceTimer = null;
+
+// Enhanced search that shows results in the inline panel
+function performSearch(query) {
+  const panel = document.getElementById('search-results-panel');
+  if (!panel) return;
+  
+  if (!query || query.length < 1) {
+    panel.classList.remove('open');
+    return;
+  }
+  
+  panel.innerHTML = '<div class="search-loading">搜索中…</div>';
+  panel.classList.add('open');
+  
+  fetch(BASE + '/api/search?q=' + encodeURIComponent(query), { credentials: 'include' })
+    .then(function(resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    })
+    .then(function(data) {
+      var results = data.results || data;
+      if (!Array.isArray(results) || results.length === 0) {
+        panel.innerHTML = '<div class="search-no-results">未找到匹配的记忆</div>';
+        return;
+      }
+      
+      var html = '';
+      var maxResults = Math.min(results.length, 10);
+      for (var i = 0; i < maxResults; i++) {
+        var r = results[i];
+        var name = esc(r.name || r.topic || '未命名');
+        var type = r.type || 'event';
+        var score = r.importance || r.score || 0;
+        
+        html += '<div class="search-result-item" onclick="showDetail(\'' + r.id + '\')">' +
+          '<span class="sr-name">' + name + '</span>' +
+          '<span class="sr-type">' + type + '</span>' +
+          '<span class="sr-score">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</span>' +
+        '</div>';
+      }
+      
+      if (results.length > 10) {
+        html += '<div class="search-no-results" style="padding:8px;font-size:11px;">还有 ' + (results.length - 10) + ' 条结果…</div>';
+      }
+      
+      panel.innerHTML = html;
+    })
+    .catch(function(e) {
+      panel.innerHTML = '<div class="search-no-results">搜索失败: ' + e.message + '</div>';
+    });
+}
+
+// Override the existing search input listener to use inline panel
+document.getElementById('search-input').addEventListener('input', function(e) {
+  clearTimeout(searchDebounceTimer);
+  var q = e.target.value.trim();
+  searchDebounceTimer = setTimeout(function() {
+    if (q) {
+      performSearch(q);
+    } else {
+      var panel = document.getElementById('search-results-panel');
+      if (panel) panel.classList.remove('open');
+    }
+  }, 300);
+});
+
+document.getElementById('search-input').addEventListener('blur', function() {
+  setTimeout(function() {
+    var panel = document.getElementById('search-results-panel');
+    if (panel) panel.classList.remove('open');
+  }, 200);
+});
+
+document.getElementById('search-input').addEventListener('focus', function() {
+  var q = this.value.trim();
+  if (q) {
+    var panel = document.getElementById('search-results-panel');
+    if (panel) panel.classList.add('open');
+  }
+});
+
+// ========================================
+// Enhanced Stats Cards / 增强统计卡片
+// ========================================
+function renderStatsCards() {
+  var container = document.getElementById('stats-cards');
+  if (!container) return;
+  
+  var total = allBuckets.length;
+  var pinned = allBuckets.filter(function(b) { return b.pinned; }).length;
+  var feels = allBuckets.filter(function(b) { return b.type === 'feel'; }).length;
+  var identities = allBuckets.filter(function(b) { return b.type === 'identity'; }).length;
+  var patterns = allBuckets.filter(function(b) { return b.type === 'pattern'; }).length;
+  var events = allBuckets.filter(function(b) { return !b.type || b.type === 'event'; }).length;
+  var resolved = allBuckets.filter(function(b) { return b.resolved; }).length;
+  
+  var cards = [
+    { icon: '🧠', label: '总记忆', value: total, color: 'var(--accent)' },
+    { icon: '👤', label: '身份', value: identities, color: '#4A7C59' },
+    { icon: '🔮', label: '模式', value: patterns, color: '#6A6A8B' },
+    { icon: '📌', label: '事件', value: events, color: '#2F4F4F' },
+    { icon: '📌', label: '钉选', value: pinned, color: '#9A7B4F' },
+    { icon: '💭', label: '感受', value: feels, color: '#8B6A6A' },
+    { icon: '✓', label: '已解决', value: resolved, color: '#81C784' },
+  ];
+  
+  container.innerHTML = cards.map(function(c) {
+    return '<div class="stat-card" style="border-top:3px solid ' + c.color + ';">' +
+      '<span class="stat-icon">' + c.icon + '</span>' +
+      '<div class="stat-value" style="color:' + c.color + ';">' + c.value + '</div>' +
+      '<div class="stat-label">' + c.label + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// ========================================
+// Mood/Emotion Summary Widget / 情绪总览组件
+// ========================================
+function renderMoodWidget() {
+  var widget = document.getElementById('mood-widget');
+  var bars = document.getElementById('mood-bars');
+  var summary = document.getElementById('mood-summary');
+  var dateEl = document.getElementById('mood-date');
+  
+  if (!widget || !bars) return;
+  
+  var emotionCounts = {};
+  allBuckets.forEach(function(b) {
+    if (b.emotions && Array.isArray(b.emotions)) {
+      b.emotions.forEach(function(e) {
+        var label = e.label || e;
+        emotionCounts[label] = (emotionCounts[label] || 0) + 1;
+      });
+    }
+  });
+  
+  var entries = Object.entries(emotionCounts);
+  if (entries.length === 0) {
+    widget.style.display = 'none';
+    return;
+  }
+  
+  widget.style.display = 'block';
+  
+  var sorted = entries.sort(function(a, b) { return b[1] - a[1]; });
+  var topEmotions = sorted.slice(0, 6);
+  var maxCount = topEmotions.length > 0 ? topEmotions[0][1] : 1;
+  
+  var emotionColorMap = {
+    '喜悦': '#FFB74D', '快乐': '#FFB74D', '幸福': '#FFB74D', '满意': '#FFB74D',
+    '悲伤': '#9C27B0', '忧伤': '#9C27B0', '悲痛': '#9C27B0', '绝望': '#9C27B0',
+    '愤怒': '#F44336', '生气': '#F44336', '暴怒': '#F44336', '烦恼': '#F44336',
+    '恐惧': '#E91E63', '害怕': '#E91E63', '焦虑': '#E91E63', '不安': '#E91E63',
+    '惊讶': '#00BCD4', '震惊': '#00BCD4', '好奇': '#00BCD4', '惊愕': '#00BCD4',
+    '信任': '#4CAF50', '热爱': '#4CAF50', '接受': '#4CAF50', '迷恋': '#4CAF50',
+    '期待': '#FFC107', '希望': '#FFC107', '兴奋': '#FFC107', '狂喜': '#FFC107',
+    '厌恶': '#795548', '反感': '#795548', '憎恨': '#795548', '不悦': '#795548',
+  };
+  
+  var barsHtml = '';
+  topEmotions.forEach(function(entry) {
+    var label = entry[0];
+    var count = entry[1];
+    var pct = Math.round((count / maxCount) * 100);
+    var color = emotionColorMap[label] || '#6A6A8B';
+    
+    barsHtml += '<div class="mood-bar-row">' +
+      '<span class="mood-bar-label">' + esc(label) + '</span>' +
+      '<div class="mood-bar-track">' +
+        '<div class="mood-bar-fill" style="width:' + pct + '%;background:' + color + ';"></div>' +
+      '</div>' +
+      '<span class="mood-bar-count">' + count + '</span>' +
+    '</div>';
+  });
+  bars.innerHTML = barsHtml;
+  
+  var totalEmotions = entries.reduce(function(acc, e) { return acc + e[1]; }, 0);
+  var dominant = sorted[0] ? sorted[0][0] : '—';
+  
+  var positiveLabels = ['喜悦', '快乐', '幸福', '满意', '信任', '热爱', '期待', '希望', '兴奋'];
+  var negativeLabels = ['悲伤', '愤怒', '恐惧', '厌恶', '绝望', '焦虑', '不安'];
+  var posCount = 0, negCount = 0;
+  entries.forEach(function(e) {
+    if (positiveLabels.includes(e[0])) posCount += e[1];
+    else if (negativeLabels.includes(e[0])) negCount += e[1];
+  });
+  
+  var summaryHtml = '';
+  summaryHtml += '<div class="mood-summary-item"><span class="mood-summary-dot" style="background:' + (emotionColorMap[dominant] || '#6A6A8B') + ';"></span>主导情绪: <strong>' + esc(dominant) + '</strong></div>';
+  summaryHtml += '<div class="mood-summary-item">📊 总标记: ' + totalEmotions + '</div>';
+  if (posCount > 0 || negCount > 0) {
+    var ratio = posCount + negCount > 0 ? Math.round((posCount / (posCount + negCount)) * 100) : 50;
+    summaryHtml += '<div class="mood-summary-item">😊 正向: ' + ratio + '%</div>';
+  }
+  summaryHtml += '<div class="mood-summary-item">📅 ' + new Date().toLocaleDateString('zh-CN') + '</div>';
+  summary.innerHTML = summaryHtml;
+}
+
+// ========================================
+// Memory Timeline / 记忆时间线
+// ========================================
+function renderMemoryTimeline() {
+  var container = document.getElementById('timeline-container');
+  var countEl = document.getElementById('timeline-count');
+  var timelineEl = document.getElementById('memory-timeline');
+  
+  if (!container || !timelineEl) return;
+  
+  if (!allBuckets || allBuckets.length === 0) {
+    timelineEl.style.display = 'none';
+    return;
+  }
+  
+  // Sort buckets by created time (newest first), filter out those without timestamps
+  var withTime = allBuckets.filter(function(b) {
+    return b.created || b.last_active || b.metadata?.created || b.metadata?.last_active;
+  });
+  
+  if (withTime.length === 0) {
+    timelineEl.style.display = 'none';
+    return;
+  }
+  
+  var sorted = withTime.sort(function(a, b) {
+    var ta = a.created || a.last_active || (a.metadata && (a.metadata.created || a.metadata.last_active)) || '';
+    var tb = b.created || b.last_active || (b.metadata && (b.metadata.created || b.metadata.last_active)) || '';
+    return tb.localeCompare(ta);
+  });
+  
+  var recent = sorted.slice(0, 5);
+  timelineEl.style.display = 'block';
+  
+  if (countEl) countEl.textContent = '最近 ' + recent.length + ' 条';
+  
+  var html = '';
+  recent.forEach(function(b) {
+    var timeStr = b.created || b.last_active || (b.metadata && (b.metadata.created || b.metadata.last_active)) || '';
+    var name = esc(b.name || b.topic || '未命名');
+    var preview = esc((b.content || '').substring(0, 80));
+    var tags = b.tags || (b.metadata && b.metadata.tags) || [];
+    var tagsHtml = '';
+    if (tags.length > 0) {
+      tagsHtml = '<div class="tl-tags">' + tags.slice(0, 3).map(function(t) {
+        return '<span class="tl-tag">' + esc(t) + '</span>';
+      }).join('') + '</div>';
+    }
+    
+    html += '<div class="timeline-entry" onclick="showDetail(\'' + b.id + '\')">' +
+      '<div class="tl-time">' + formatTimeAgo(timeStr) + '</div>' +
+      '<div class="tl-name">' + name + '</div>' +
+      (preview ? '<div class="tl-preview">' + preview + '…</div>' : '') +
+      tagsHtml +
+    '</div>';
+  });
+  
+  container.innerHTML = html;
+}
+
+// ========================================
+// Override updateStats to also render new widgets / 增强updateStats
+// ========================================
+var originalUpdateStats = updateStats;
+updateStats = function() {
+  originalUpdateStats();
+  renderStatsCards();
+  renderMoodWidget();
+  renderMemoryTimeline();
+};
 
