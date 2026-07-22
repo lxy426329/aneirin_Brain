@@ -267,6 +267,29 @@ manage_relation(action, bucket_id="", target_id="", **kwargs)
 
 ---
 
+#### manage_identity_relation - 管理身份关系
+
+```python
+manage_identity_relation(action, from_id=None, to_id=None, relation_type="朋友", base_weight=5.0)
+```
+
+**参数说明：**
+- `action`: 操作类型，可选 add/query/update_weight
+  - `add`: 建立身份之间的关系
+  - `query`: 查询身份的所有关系
+  - `update_weight`: 更新关系权重
+- `from_id`: 源身份 ID（add/query/update_weight 需要）
+- `to_id`: 目标身份 ID（add/update_weight 需要）
+- `relation_type`: 关系类型（朋友/同事/家人等，默认"朋友"）
+- `base_weight`: 基础权重 1.0~10.0（默认 5.0）
+
+**使用场景：**
+- `manage_identity_relation(action="add", from_id="id1", to_id="id2", relation_type="同事")`
+- `manage_identity_relation(action="query", from_id="id1")`
+- `manage_identity_relation(action="update_weight", from_id="id1", to_id="id2", base_weight=8.0)`
+
+---
+
 #### link_events - 建立因果链
 
 ```python

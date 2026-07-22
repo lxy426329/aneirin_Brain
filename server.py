@@ -3059,11 +3059,11 @@ async def link_events(
 
 
 # =============================================================
-# Tool 32: manage_relation — 管理身份关系
-# 工具 32：manage_relation — 管理身份关系
+# Tool 32: manage_identity_relation — 管理身份关系
+# 工具 32：manage_identity_relation — 管理身份关系
 # =============================================================
 @mcp.tool()
-async def manage_relation(
+async def manage_identity_relation(
     action: str,
     from_id: str = None,
     to_id: str = None,
@@ -4108,6 +4108,7 @@ async def ai_manage(request: str) -> str:
             {"name": "weekly_organize", "description": "每周内容整理：生成本周新增记忆报告（仅报告，不调整权重）"},
             {"name": "manage_record", "description": "通用记录管理：action(create/update/get/list/delete/apply), record_type(identity/roster/pattern/candlestick/experience/annual_ring), record_id"},
             {"name": "manage_relation", "description": "通用关联管理：action(link/parent/chain/importance), bucket_id, target_id"},
+            {"name": "manage_identity_relation", "description": "管理身份关系：action(add/query/update_weight), from_id, to_id, relation_type, base_weight"},
             {"name": "query_memory", "description": "通用记忆查询：mode(search/float/status/directory/recent), query"},
             {"name": "ai_analyze", "description": "AI分析工具：task(link/find/chain/summarize/classify), bucket_id, query"},
             {"name": "get_anchors", "description": "获取行为与情绪锚点（触发词+情绪基调+行为禁忌）"},
