@@ -1490,27 +1490,28 @@ async function doExportBrain(outputPath) {
 
 async function doImportBrain() {
   var status = document.getElementById('import-status');
-  var zipPath = document.getElementById('import-path').value;
+  var fileInput = document.getElementById('import-file');
   var overwrite = document.getElementById('import-overwrite').checked;
-  
-  if (!zipPath || !zipPath.trim()) {
-    status.innerHTML = '<span style="color:var(--warning)">请输入 zip 文件路径</span>';
+
+  if (!fileInput.files || !fileInput.files[0]) {
+    status.innerHTML = '<span style="color:var(--warning)">请选择 .zip 文件</span>';
     return;
   }
-  
-  status.innerHTML = '<span style="color:var(--warning)">导入中...</span>';
-  
+
+  var file = fileInput.files[0];
+  status.innerHTML = '<span style="color:var(--warning)">导入中... (' + file.name + ')</span>';
+
   try {
+    var formData = new FormData();
+    formData.append('file', file);
+    formData.append('overwrite', overwrite ? 'true' : 'false');
+
     var res = await fetch(BASE + '/api/import-brain', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        zip_path: zipPath.trim(),
-        overwrite: overwrite,
-      }),
+      body: formData,
     });
     var result = await res.json();
-    
+
     if (result.ok) {
       status.innerHTML = '<span style="color:var(--positive)">✓ 导入成功！</span><br/>' +
         '<span style="font-size:12px;color:var(--text-dim)">' + result.message + '</span>';

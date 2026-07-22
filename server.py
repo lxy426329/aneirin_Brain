@@ -5560,13 +5560,20 @@ async def import_brain(zip_path: str, overwrite: bool = False) -> str:
                         with open(member_path, 'wb') as dst_file:
                             dst_file.write(src_file.read())
             
-            # Check extracted structure
+            # Check extracted structure — support both "buckets/" prefix and flat layout
+            # 检查解压结构——兼容 "buckets/" 前缀和扁平结构
+            _known_subdirs = ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]
             extracted_buckets = os.path.join(tmp_dir, "buckets")
+            if not os.path.isdir(extracted_buckets):
+                # Fallback: check if subdirs exist directly (flat layout from sync_to_render.py)
+                # 兜底：检查子目录是否直接存在（sync_to_render.py 的扁平打包格式）
+                if any(os.path.isdir(os.path.join(tmp_dir, d)) for d in _known_subdirs):
+                    extracted_buckets = tmp_dir
             extracted_db = os.path.join(tmp_dir, "embeddings.db")
-            
-            has_buckets = os.path.exists(extracted_buckets)
+
+            has_buckets = any(os.path.isdir(os.path.join(extracted_buckets, d)) for d in _known_subdirs)
             has_db = os.path.exists(extracted_db)
-            
+
             if not has_buckets and not has_db:
                 return "错误：zip 文件中未找到 buckets/ 目录或 embeddings.db"
             
@@ -8256,20 +8263,38 @@ async def api_export_brain(request):
 
 @mcp.custom_route("/api/import-brain", methods=["POST"])
 async def api_import_brain(request):
-    """Import brain data from zip file."""
+    """Import brain data from uploaded zip file (multipart form upload)."""
     from starlette.responses import JSONResponse
+    import tempfile
+    import os as _os
     err = _require_auth(request)
     if err: return err
     try:
-        body = await request.json()
-        zip_path = body.get("zip_path", "")
-        overwrite = body.get("overwrite", False)
-        
-        if not zip_path:
-            return JSONResponse({"ok": False, "error": "请提供 zip 文件路径"}, status_code=400)
-        
-        result = await import_brain(zip_path, overwrite)
-        
+        form = await request.form()
+        upload_file = form.get("file")
+        overwrite = form.get("overwrite", "false") == "true"
+
+        if upload_file is None:
+            return JSONResponse({"ok": False, "error": "请上传 .zip 文件"}, status_code=400)
+
+        # --- Save uploaded file to temp, then import ---
+        # --- 保存上传文件到临时路径，然后导入 ---
+        suffix = ""
+        if hasattr(upload_file, "filename") and upload_file.filename:
+            suffix = _os.path.splitext(upload_file.filename)[1]
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".zip") as tmp:
+            tmp_path = tmp.name
+            content = await upload_file.read()
+            tmp.write(content)
+
+        logger.info(f"[import-brain] Received upload: {getattr(upload_file, 'filename', '?')} ({len(content)} bytes)")
+
+        try:
+            result = await import_brain(tmp_path, overwrite)
+        finally:
+            _os.unlink(tmp_path)
+
         if result.startswith("大脑导入成功"):
             return JSONResponse({"ok": True, "message": result})
         else:
