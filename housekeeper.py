@@ -606,11 +606,13 @@ class Housekeeper:
         """
         Determine if this is a long-term event that should be in an Event Chain.
         Rules:
-        - Atomic events (一次性餐饮、即时体感等) -> NO
-        - Long-term events (病程跟进、备考、项目开发等) -> YES
+        - Atomic events (一次性事实、即时状态等) -> NO
+        - Long-term events (病程跟进、备考、项目开发、家庭健康等) -> YES
         """
         content = bucket["content"]
         meta = bucket["metadata"]
+        
+        import re
         
         atomic_patterns = [
             r'^(吃|喝|买|去)\s*[了过]$',
@@ -621,11 +623,17 @@ class Housekeeper:
             r'^我走了$',
             r'^再见$',
             r'^晚安$',
+            r'^(我室友|室友)\s*(刚才|刚刚)',
+            r'^(我同学|同学)\s*(刚才|刚刚)',
+            r'^(他|她|他们|她们)\s*(刚才|刚刚)',
+            r'^有人\s*(叫我|找我|敲门)',
+            r'^(快递|外卖)\s*(到了|来了)',
+            r'^(灯|空调|电视)\s*(开了|关了)',
         ]
         
-        import re
         for pattern in atomic_patterns:
             if re.match(pattern, content.strip()):
+                logger.info(f"[Event Classification] 一次性事件: {content[:50]} (匹配模式: {pattern})")
                 return False
         
         long_term_patterns = [
@@ -636,17 +644,26 @@ class Housekeeper:
             r'(减肥|健身|运动)',
             r'(旅行|出差)',
             r'(持续|一直|经常|频繁)',
+            r'(复查|复诊|检查|化验)',
+            r'(药|药单|开药|吃药)',
+            r'(妈妈|爸爸|家人|父母)\s*(生病|看病|住院)',
+            r'(手术|治疗|疗程)',
+            r'(病情|症状|好转|恶化)',
+            r'(关于.*的事|关于.*的问题)',
         ]
         
         for pattern in long_term_patterns:
             if re.search(pattern, content):
+                logger.info(f"[Event Classification] 长效事件: {content[:50]} (匹配模式: {pattern})")
                 return True
         
         tags = meta.get("tags", [])
-        long_term_tags = ["health", "study", "work", "project", "relationship"]
+        long_term_tags = ["health", "study", "work", "project", "relationship", "family"]
         if any(tag.lower() in long_term_tags for tag in tags):
+            logger.info(f"[Event Classification] 长效事件(标签): {content[:50]}")
             return True
         
+        logger.info(f"[Event Classification] 默认归类为一次性事件: {content[:50]}")
         return False
     
     async def _daily_conflict_detection(self) -> dict:

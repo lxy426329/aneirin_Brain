@@ -3767,8 +3767,10 @@ async def reject_cleanup_proposal(proposal_id: str) -> str:
 
 @mcp.tool()
 async def run_housekeeper() -> str:
-    """手动触发管家管线执行（每日总结 + 时间链更新）。"""
+    """手动触发管家管线执行（每日总结 + 时间链更新 + 冲突检测）。"""
     await housekeeper.ensure_started()
+    
+    logger.info("[Housekeeper] 手动触发 Daily Job...")
     
     try:
         results = await housekeeper.run_daily_job()
@@ -3779,6 +3781,11 @@ async def run_housekeeper() -> str:
             parts.append(f"❌ 每日总结失败: {daily_summary['error']}")
         else:
             parts.append(f"✅ 每日总结: 处理{daily_summary.get('buckets_processed', 0)}条记忆")
+            mood_tags = daily_summary.get("mood_tags", [])
+            mood_level = daily_summary.get("mood_level", "")
+            if mood_tags or mood_level != "neutral":
+                parts.append(f"   情绪标签: {', '.join(mood_tags) if mood_tags else '无'}")
+                parts.append(f"   情绪等级: {mood_level}")
         
         chain_updates = results.get("chain_updates", {})
         if "error" in chain_updates:
@@ -3786,10 +3793,55 @@ async def run_housekeeper() -> str:
         else:
             parts.append(f"✅ 时间链更新: 更新{chain_updates.get('chains_updated', 0)}条链")
         
+        conflicts = results.get("conflicts", {})
+        if "error" in conflicts:
+            parts.append(f"❌ 冲突检测失败: {conflicts['error']}")
+        else:
+            parts.append(f"✅ 冲突检测: 发现{conflicts.get('conflicts_found', 0)}条冲突")
+        
+        logger.info(f"[Housekeeper] Daily Job 完成: {results}")
+        
         return "\n".join(parts)
     except Exception as e:
         logger.error(f"run_housekeeper failed: {e}")
         return f"管家执行失败: {e}"
+
+
+@mcp.tool()
+async def check_echo_chamber() -> str:
+    """检查回音壁数据库内容，查看已生成的每日/每周摘要和待审批提案。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        summary = await housekeeper.review_digest()
+        
+        parts = ["=== 回音壁数据库检查 ===\n"]
+        
+        parts.append(f"\n📂 存储目录: {housekeeper.echo_chamber_dir}")
+        
+        parts.append(f"\n📝 待审阅摘要 ({summary['pending_digests']}条):")
+        for digest in summary["digests"]:
+            parts.append(f"  • [{digest['digest_id']}] {digest['digest_type']}")
+            parts.append(f"    创建时间: {digest.get('created', '')}")
+            parts.append(f"    已审阅: {digest.get('reviewed', False)}")
+            metadata = digest.get("metadata", {})
+            if metadata:
+                parts.append(f"    元数据: {json.dumps(metadata, ensure_ascii=False)}")
+            parts.append(f"    内容预览: {digest.get('content', '')[:150]}...")
+        
+        parts.append(f"\n📋 待审批提案 ({summary['pending_actions']}条):")
+        for action in summary["actions"]:
+            parts.append(f"  • [{action['action_id']}] {action['action_type']}")
+            parts.append(f"    状态: {action.get('status', '')}")
+            parts.append(f"    创建时间: {action.get('created', '')}")
+            data = action.get("data", {})
+            if data:
+                parts.append(f"    数据: {json.dumps(data, ensure_ascii=False)[:200]}...")
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"check_echo_chamber failed: {e}")
+        return f"检查回音壁失败: {e}"
 
 
 @mcp.tool()
@@ -3925,10 +3977,14 @@ async def inject_context(user_input: str = "") -> str:
     await decay_engine.ensure_started()
     await housekeeper.ensure_started()
     
+    logger.info(f"[Middleware] 拦截用户输入: {user_input[:50]}...")
+    
     context_parts = []
     
     try:
         chains = await housekeeper.get_event_chains()
+        logger.info(f"[Middleware] 检索到 {len(chains)} 条事件链")
+        
         relevant_chains = []
         
         for chain in chains:
@@ -3942,16 +3998,22 @@ async def inject_context(user_input: str = "") -> str:
                 try:
                     from rapidfuzz import fuzz
                     similarity = fuzz.ratio(user_input, chain_text)
+                    logger.debug(f"[Middleware] 事件链 '{chain.topic}' 相似度: {similarity}")
                     if similarity >= 40:
-                        relevant_chains.append(chain)
+                        relevant_chains.append((chain, similarity))
                 except ImportError:
                     if user_input and any(keyword in chain.topic for keyword in user_input[:20]):
-                        relevant_chains.append(chain)
+                        relevant_chains.append((chain, 100))
             else:
                 if user_input and any(keyword in chain.topic for keyword in user_input[:20]):
-                    relevant_chains.append(chain)
+                    relevant_chains.append((chain, 100))
         
-        for chain in relevant_chains[:3]:
+        relevant_chains.sort(key=lambda x: x[1], reverse=True)
+        
+        logger.info(f"[Middleware] 匹配到 {len(relevant_chains)} 条相关事件链")
+        
+        for chain, score in relevant_chains[:3]:
+            logger.info(f"[Middleware] 注入事件链: {chain.topic} (相似度: {score})")
             context_parts.append(f"【事件链】{chain.topic}")
             context_parts.append(f"   状态: {chain.status}")
             context_parts.append(f"   摘要: {chain.summary}")
@@ -3963,11 +4025,14 @@ async def inject_context(user_input: str = "") -> str:
     
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
+        
         recent_feels = [
             b for b in all_buckets
             if b["metadata"].get("type") == "feel"
         ]
         recent_feels.sort(key=lambda x: x["metadata"].get("created", ""), reverse=True)
+        
+        logger.info(f"[Middleware] 检索到 {len(recent_feels)} 条感觉状态记忆")
         
         for feel in recent_feels[:3]:
             meta = feel["metadata"]
@@ -3979,6 +4044,7 @@ async def inject_context(user_input: str = "") -> str:
                 feel_entry += f" {event_context}"
             feel_entry += f"\n   {feel['content'][:100]}"
             context_parts.append(feel_entry)
+            logger.info(f"[Middleware] 注入感觉状态: {feel['content'][:50]}")
     except Exception as e:
         logger.warning(f"Feel context injection failed: {e}")
     
