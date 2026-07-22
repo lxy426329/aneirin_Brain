@@ -272,6 +272,7 @@ class EchoChamber:
 class Housekeeper:
     """
     Memory housekeeper service with daily/weekly pipeline.
+    Auto-starts on initialization and runs scheduled tasks automatically.
     """
     
     def __init__(self, config: dict, bucket_mgr):
@@ -280,8 +281,10 @@ class Housekeeper:
         data_dir = config.get("buckets_dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"))
         self.event_chains_dir = os.path.join(data_dir, "event_chains")
         self.echo_chamber_dir = os.path.join(data_dir, "echo_chamber")
+        self._state_file = os.path.join(self.echo_chamber_dir, ".housekeeper_state.json")
         
         os.makedirs(self.event_chains_dir, exist_ok=True)
+        os.makedirs(self.echo_chamber_dir, exist_ok=True)
         
         self.echo_chamber = EchoChamber(self.echo_chamber_dir)
         
@@ -289,6 +292,51 @@ class Housekeeper:
         self._running = False
         self._last_daily_run = None
         self._last_weekly_run = None
+        
+        self._load_state()
+        
+        asyncio.create_task(self.start())
+    
+    def _load_state(self):
+        """Load last run times from state file."""
+        if os.path.exists(self._state_file):
+            try:
+                with open(self._state_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                
+                if state.get("last_daily_run"):
+                    try:
+                        self._last_daily_run = datetime.fromisoformat(state["last_daily_run"])
+                        if self._last_daily_run.tzinfo is None:
+                            self._last_daily_run = self._last_daily_run.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        self._last_daily_run = None
+                
+                if state.get("last_weekly_run"):
+                    try:
+                        self._last_weekly_run = datetime.fromisoformat(state["last_weekly_run"])
+                        if self._last_weekly_run.tzinfo is None:
+                            self._last_weekly_run = self._last_weekly_run.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        self._last_weekly_run = None
+                
+                logger.info(f"Loaded housekeeper state: daily={self._last_daily_run}, weekly={self._last_weekly_run}")
+            except Exception as e:
+                logger.error(f"Failed to load housekeeper state: {e}")
+    
+    def _save_state(self):
+        """Save last run times to state file."""
+        try:
+            state = {
+                "last_daily_run": self._last_daily_run.isoformat() if self._last_daily_run else None,
+                "last_weekly_run": self._last_weekly_run.isoformat() if self._last_weekly_run else None,
+                "saved_at": datetime.now(timezone.utc).isoformat()
+            }
+            with open(self._state_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+            logger.debug("Housekeeper state saved")
+        except Exception as e:
+            logger.error(f"Failed to save housekeeper state: {e}")
     
     @property
     def is_running(self) -> bool:
@@ -356,11 +404,13 @@ class Housekeeper:
             logger.info("Starting daily housekeeper job...")
             await self.run_daily_job()
             self._last_daily_run = now
+            self._save_state()
         
         if should_weekly:
             logger.info("Starting weekly housekeeper job...")
             await self.run_weekly_job()
             self._last_weekly_run = now
+            self._save_state()
     
     async def run_daily_job(self) -> dict:
         """
