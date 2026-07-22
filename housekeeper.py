@@ -592,7 +592,7 @@ class Housekeeper:
         # Summarize atomic buckets (isolated events)
         if atomic_buckets:
             # Further group atomic buckets by semantic similarity using _extract_topics
-            atomic_groups = self._extract_topics(atomic_buckets)
+            atomic_groups = await self._extract_topics(atomic_buckets)
             for topic_label, topic_buckets in atomic_groups.items():
                 summary = await _summarize_group(topic_label, topic_buckets)
                 group_summaries.append(f"【{topic_label}】\n{summary}")
@@ -1231,7 +1231,7 @@ class Housekeeper:
             }
         )
     
-    def _extract_topics(self, buckets: list) -> dict:
+    async def _extract_topics(self, buckets: list) -> dict:
         """Extract topics from buckets by finding semantically similar content."""
         if not HAS_RAPIDFUZZ:
             return self._extract_topics_simple(buckets)
@@ -1252,7 +1252,7 @@ class Housekeeper:
                         break
             
             if not assigned:
-                topic = self._generate_topic_name(content1)
+                topic = await self._generate_topic_name(content1)
                 topic_groups[topic] = [b1]
         
         return topic_groups

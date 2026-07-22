@@ -7213,16 +7213,18 @@ async def api_timeline(request):
         logger.error(f"Timeline API error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
+# =============================================================
+# Static file serving helper + routes
+# =============================================================
 
-@mcp.custom_route("/dashboard", methods=["GET"])
-async def dashboard(request):
-    """Serve the dashboard HTML page."""
-    from starlette.responses import HTMLResponse
-    import os
-    import time
-    dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+def _serve_static(request, filename: str, media_type: str = "text/html",
+                  fallback_content: str = ""):
+    """Serve a static file with no-cache headers."""
+    from starlette.responses import Response, HTMLResponse
+    import os, time
+    file_path = os.path.join(os.path.dirname(__file__), filename)
     try:
-        with open(dashboard_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -7230,51 +7232,34 @@ async def dashboard(request):
             "Expires": "0",
             "ETag": str(time.time()),
         }
-        return HTMLResponse(content, headers=headers)
+        if media_type == "text/html":
+            return HTMLResponse(content, headers=headers)
+        return Response(content, media_type=media_type, headers=headers)
     except FileNotFoundError:
-        return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
+        logger.warning(f"Static file not found: {file_path}")
+        if media_type == "text/html":
+            return HTMLResponse(fallback_content or f"<h1>{filename} not found</h1>",
+                                status_code=404)
+        return Response(fallback_content or f"// {filename} not found",
+                        media_type=media_type, status_code=404)
+
+
+@mcp.custom_route("/dashboard", methods=["GET"])
+async def dashboard_route(request):
+    return _serve_static(request, "dashboard.html", "text/html",
+                         "<h1>dashboard.html not found</h1>")
 
 
 @mcp.custom_route("/echo-chamber", methods=["GET"])
-async def echo_chamber(request):
-    """Serve the echo chamber HTML page."""
-    from starlette.responses import HTMLResponse
-    import os
-    import time
-    echo_chamber_path = os.path.join(os.path.dirname(__file__), "echo_chamber.html")
-    try:
-        with open(echo_chamber_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            "ETag": str(time.time()),
-        }
-        return HTMLResponse(content, headers=headers)
-    except FileNotFoundError:
-        return HTMLResponse("<h1>echo_chamber.html not found</h1>", status_code=404)
+async def echo_chamber_route(request):
+    return _serve_static(request, "echo_chamber.html", "text/html",
+                         "<h1>echo_chamber.html not found</h1>")
 
 
 @mcp.custom_route("/dashboard.js", methods=["GET"])
-async def dashboard_js(request):
-    """Serve the dashboard JavaScript file."""
-    from starlette.responses import Response
-    import os
-    import time
-    js_path = os.path.join(os.path.dirname(__file__), "dashboard.js")
-    try:
-        with open(js_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            "ETag": str(time.time()),
-        }
-        return Response(content, media_type="application/javascript", headers=headers)
-    except FileNotFoundError:
-        return Response("console.error('dashboard.js not found');", media_type="application/javascript", status_code=404)
+async def dashboard_js_route(request):
+    return _serve_static(request, "dashboard.js", "application/javascript",
+                         "console.error('dashboard.js not found');")
 
 
 @mcp.custom_route("/api/config", methods=["GET"])
