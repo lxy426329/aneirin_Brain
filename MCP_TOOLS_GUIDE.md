@@ -603,3 +603,186 @@ summarize_recent_events(days=7, max_events=10)
 | 因果链 | `trace_chain` / `link_events` | 事件间的因果关系 |
 | 感受 | `hold(feel=True)` | AI 的第一人称感受记录 |
 | 任务 | `hold(task_flag=True)` | 需要完成的待办事项 |
+
+---
+
+## 新增工具说明（回音壁与管家系统）
+
+### 11. 回音壁管理类
+
+#### review_digest - 审阅回音壁提案
+
+```python
+review_digest()
+```
+
+**功能描述：**
+获取回音壁中的待办提案，包括记忆冲突、清理提案、合并提案等，供主 AI 终审裁决。
+
+**返回内容：**
+- `digests`: 每日/每周摘要列表
+- `pending_actions`: 待审批提案数量
+- `actions`: 待审批提案详情（冲突检测、清理、合并等）
+
+**使用场景：**
+- `review_digest()` - 审阅所有待办提案
+
+---
+
+#### approve_action - 批准提案
+
+```python
+approve_action(action_id)
+```
+
+**参数说明：**
+- `action_id`: 提案 ID（必填）
+
+**功能描述：**
+批准回音壁中的待审批提案，执行相应操作（如接受新记忆、标记旧记忆为过时、清理记忆等）。
+
+**使用场景：**
+- `approve_action(action_id="abc12345")` - 批准提案
+
+---
+
+#### reject_action - 驳回提案
+
+```python
+reject_action(action_id)
+```
+
+**参数说明：**
+- `action_id`: 提案 ID（必填）
+
+**功能描述：**
+驳回回音壁中的待审批提案，不执行任何操作（保留旧记忆、忽略清理建议等）。
+
+**使用场景：**
+- `reject_action(action_id="abc12345")` - 驳回提案
+
+---
+
+### 12. 管家任务类
+
+#### run_housekeeper - 运行每日管家
+
+```python
+run_housekeeper()
+```
+
+**功能描述：**
+手动触发每日管家任务，执行以下操作：
+1. 对当日对话做轻量总结
+2. 提炼关键事实并追加到对应 Event Chain 的临时节点
+3. 检测记忆冲突
+4. 分析当日情绪基调
+
+**使用场景：**
+- `run_housekeeper()` - 手动运行每日管家
+
+---
+
+#### run_weekly_housekeeper - 运行每周管家
+
+```python
+run_weekly_housekeeper()
+```
+
+**功能描述：**
+手动触发每周管家任务，执行以下操作：
+1. 对一周内的 Event Chain 进行去重与融合
+2. 扫描过期且无关联的低权重记忆
+3. 生成清理草案提交至回音壁
+
+**使用场景：**
+- `run_weekly_housekeeper()` - 手动运行每周管家
+
+---
+
+### 13. 静默预处理类
+
+#### inject_context - 静默预处理中间件
+
+```python
+inject_context(user_input)
+```
+
+**参数说明：**
+- `user_input`: 用户输入文本（必填）
+
+**功能描述：**
+静默预处理中间件，自动执行以下操作：
+1. 拦截用户输入，后台自动执行 Query 改写与混合检索
+2. 自动匹配并拉取最新的相关时间链与感官/状态标签
+3. 将检索到的背景记忆以 `<context>` 结构静默拼接到用户 Prompt 头部
+
+**返回内容：**
+- `context`: 注入的上下文内容，包含事件链、感觉状态、情绪提示等
+
+**使用场景：**
+- `inject_context(user_input="我肚子痛")` - 自动检索并注入相关上下文
+
+---
+
+### 14. 事件链类
+
+#### get_event_chains - 获取事件链
+
+```python
+get_event_chains()
+```
+
+**功能描述：**
+获取所有事件链列表，用于查阅事件发展脉络。
+
+**返回内容：**
+- `chains`: 事件链列表，每条包含 chain_id、topic、status、timeline、summary
+
+**使用场景：**
+- `get_event_chains()` - 获取所有事件链
+
+---
+
+#### approve_event_chain - 批准事件链结案
+
+```python
+approve_event_chain(chain_id)
+```
+
+**参数说明：**
+- `chain_id`: 事件链 ID（必填）
+
+**功能描述：**
+批准事件链，将其状态从"进行中"标记为"已结案"。
+
+**使用场景：**
+- `approve_event_chain(chain_id="chain_mum_illness")` - 批准事件链结案
+
+---
+
+## 回音壁工作流程
+
+### 管家生成提案
+1. 每日/每周管家自动运行
+2. 检测记忆冲突、过期记忆、需要合并的相似记忆
+3. 将提案写入回音壁的待审批区域
+
+### 主 AI 终审裁决
+1. 使用 `review_digest()` 获取待办提案
+2. 分析每个提案的合理性
+3. 使用 `approve_action()` 批准或 `reject_action()` 驳回
+
+### 冲突检测示例
+```
+⚠️ 记忆冲突 (preference)
+   偏好冲突：之前说过'不喜欢喝太甜的'，但今天说'点了全糖奶茶'
+   旧记录: [2026-07-15] 我不喜欢喝太甜的饮料
+   新记录: [2026-07-22] 今天点了一杯全糖奶茶，很好喝
+```
+
+### 情绪提示机制
+当检测到连续 2 天以上情绪指数偏低时，`inject_context()` 会在上下文中注入情绪提示：
+```
+【情绪提示】检测到连续3天焦虑，请提高耐心和陪伴感
+```
