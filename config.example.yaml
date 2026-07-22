@@ -80,6 +80,31 @@ scoring_weights:
   time_proximity: 1.5
   importance: 1.0
 
+# --- Hybrid Search / 混合检索配置 ---
+# BM25 + Vector + Rerank 混合检索模式
+# - BM25: 关键词精确匹配（锁死实体词：特定外号、地点、设备名）
+# - Vector: 语义向量匹配（情绪、意图、抽象概念）
+# - Rerank: 重排序模型过滤（只截取 Top 3~5 条）
+hybrid_search:
+  enabled: true                    # Enable hybrid search / 启用混合检索
+  exact_query_keywords:            # Keywords that trigger exact matching
+    - 烛台
+    - 名册
+    - 年轮
+    - 锚点
+    - 时间链
+    - 模式
+    - 经验
+    - 感受
+    - 记忆
+    - 事件
+  exact_threshold: 0.2            # Minimum score threshold for exact matches (0-1)
+  semantic_threshold: 0.1         # Minimum score threshold for semantic matches (0-1)
+  vector_weight_scale: 0.2        # Vector weight scale in exact mode (0-1)
+  keyword_weight_scale: 2.0       # Keyword weight scale in exact mode
+  rerank_top_k: 5                 # Number of results after reranking / Rerank后保留条数
+  rerank_model: "BAAI/bge-reranker-base"  # Rerank model name / 重排序模型
+
 # --- Fuzzy matching / 模糊匹配参数 ---
 matching:
   fuzzy_threshold: 50             # Minimum match score (0-100) / 最低匹配分数

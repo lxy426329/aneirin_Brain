@@ -1359,8 +1359,9 @@ async def breath(
     brief: bool = True,
     type: str = "",
     summary_report: bool = True,
+    force_keyword: bool = False,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1583,6 +1584,7 @@ async def breath(
             query_valence=q_valence,
             query_arousal=q_arousal,
             mask_tasks=mask_tasks,
+            force_keyword=force_keyword,
         )
     except Exception as e:
         logger.error(f"Search failed / 检索失败: {e}")

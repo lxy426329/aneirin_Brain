@@ -40,6 +40,13 @@ from rapidfuzz import fuzz
 
 from utils import generate_bucket_id, sanitize_name, sanitize_filename, safe_path, now_iso
 
+try:
+    from hybrid_search import HybridSearchEngine
+    HAS_HYBRID_SEARCH = True
+except ImportError:
+    HAS_HYBRID_SEARCH = False
+    logger.warning("Hybrid search module not found, using legacy search")
+
 logger = logging.getLogger("ombre_brain.bucket")
 
 # ---------------------------------------------------------
@@ -104,6 +111,13 @@ class BucketManager:
 
         # --- Optional embedding engine for pre-filtering / 可选 embedding 引擎，用于预筛候选集 ---
         self.embedding_engine = embedding_engine
+
+        # --- Hybrid search engine (BM25 + Vector + Rerank) ---
+        # --- 混合检索引擎（BM25关键词 + 向量语义 + Rerank重排序）---
+        self.hybrid_search = None
+        if HAS_HYBRID_SEARCH:
+            hybrid_cfg = config.get("hybrid_search", {})
+            self.hybrid_search = HybridSearchEngine(hybrid_cfg, embedding_engine)
 
         # --- Anchor storage / 锚点存储目录 ---
         self.anchor_dir = os.path.join(self.base_dir, "anchor")
@@ -1586,6 +1600,7 @@ class BucketManager:
         query_valence: float = None,
         query_arousal: float = None,
         mask_tasks: bool = False,
+        force_keyword: bool = False,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -1596,6 +1611,7 @@ class BucketManager:
         mask_tasks: If True, filter out task_flag=True buckets
                     (used when user is in a vulnerable state).
                     当用户处于脆弱状态时设为 True，屏蔽任务桶。
+        force_keyword: If True, force exact keyword matching mode
         """
         if not query or not query.strip():
             return []
@@ -1620,6 +1636,7 @@ class BucketManager:
 
         # --- Layer 1: domain pre-filter (fast scope reduction) ---
         # --- 第一层：主题域预筛（快速缩小范围）---
+        candidates = all_buckets
         if domain_filter:
             filter_set = {d.lower() for d in domain_filter}
             candidates = [
@@ -1633,10 +1650,24 @@ class BucketManager:
         else:
             candidates = all_buckets
 
+        # --- Hybrid Search Strategy (BM25 + Vector + Rerank) ---
+        # --- 混合检索策略（BM25关键词 + 向量语义 + Rerank重排序）---
+        if self.hybrid_search and self.hybrid_search.enabled:
+            try:
+                results = await self.hybrid_search.search(query, candidates, limit=limit, force_keyword=force_keyword)
+                return results
+            except Exception as e:
+                logger.warning(f"Hybrid search failed, falling back to legacy search: {e}")
+        
+        # --- Legacy search fallback ---
+        # --- 传统搜索降级方案 ---
+        is_exact_query = force_keyword or self._is_exact_match_query(query)
+        
         # --- Layer 1.5: embedding pre-filter (optional, reduces multi-dim ranking set) ---
         # --- 第1.5层：embedding 预筛（可选，缩小精排候选集）---
+        # For exact queries, skip embedding pre-filter to avoid missing exact matches
         vector_similarity_map = {}
-        if self.embedding_engine and self.embedding_engine.enabled:
+        if self.embedding_engine and self.embedding_engine.enabled and not is_exact_query:
             try:
                 vector_results = await self.embedding_engine.search_similar(query, top_k=50)
                 if vector_results:
@@ -1650,7 +1681,8 @@ class BucketManager:
 
         # --- Layer 2: Multi-dimensional continuous scoring system ---
         # --- 第二层：多维连续评分系统 ---
-        # Final_Score = (W1 * Emotion_Arousal) + (W2 * Explicit_Priority) + (W3 * Vector_Similarity) + (W4 * Topic_Relevance) + (W5 * Time_Proximity)
+        # Hybrid Search: For exact queries, use exact keyword matching with higher weight
+        #                For semantic queries, use fuzzy + vector similarity
         scored = []
         for bucket in candidates:
             meta = bucket.get("metadata", {})
@@ -1668,9 +1700,12 @@ class BucketManager:
                 # 向量语义相似度
                 vector_similarity = vector_similarity_map.get(bucket["id"], 0.0)
 
-                # Dim 4: Topic Relevance (0.0~1.0 continuous)
-                # 主题相关性：与查询命令的匹配度
-                topic_score = self._calc_topic_score(query, bucket)
+                # Dim 4: Topic Relevance / Exact Keyword Match (0.0~1.0 continuous)
+                # 主题相关性 / 精确关键字匹配
+                if is_exact_query:
+                    topic_score = self._exact_keyword_match(query, bucket)
+                else:
+                    topic_score = self._calc_topic_score(query, bucket)
 
                 # Dim 5: Time Proximity (0.0~1.0 continuous)
                 # 时间亲近度：越近时间的记忆优先
@@ -1678,23 +1713,30 @@ class BucketManager:
 
                 # --- Final weighted score calculation ---
                 # --- 最终加权得分计算 ---
-                # Formula: Final_Score = (W1 * Emotion_Arousal) + (W2 * Explicit_Priority) + (W3 * Vector_Similarity) + (W4 * Topic_Relevance) + (W5 * Time_Proximity)
-                # Normalize to [0, 1] by dividing by sum of weights
-                # 公式：Final_Score = 0.3*Emotion + 0.2*Priority + 0.4*Vector + 0.5*Topic + 0.15*Time (after normalization)
-                total_weight = (
-                    self.w_emotion_arousal
-                    + self.w_explicit_priority
-                    + self.w_vector_similarity
-                    + self.w_topic
-                    + self.w_time
-                )
+                # Hybrid Search weights:
+                #   Exact query mode: reduce vector weight, increase keyword weight
+                #   Semantic query mode: use normal weights
+                if is_exact_query:
+                    w_emotion = self.w_emotion_arousal
+                    w_priority = self.w_explicit_priority
+                    w_vector = self.w_vector_similarity * 0.2
+                    w_topic = self.w_topic * 2.0
+                    w_time = self.w_time
+                else:
+                    w_emotion = self.w_emotion_arousal
+                    w_priority = self.w_explicit_priority
+                    w_vector = self.w_vector_similarity
+                    w_topic = self.w_topic
+                    w_time = self.w_time
+                
+                total_weight = w_emotion + w_priority + w_vector + w_topic + w_time
                 
                 raw_score = (
-                    emotion_arousal * self.w_emotion_arousal
-                    + explicit_priority * self.w_explicit_priority
-                    + vector_similarity * self.w_vector_similarity
-                    + topic_score * self.w_topic
-                    + time_score * self.w_time
+                    emotion_arousal * w_emotion
+                    + explicit_priority * w_priority
+                    + vector_similarity * w_vector
+                    + topic_score * w_topic
+                    + time_score * w_time
                 )
                 
                 # Normalize to [0, 1] range
@@ -1708,13 +1750,14 @@ class BucketManager:
                     "vector_similarity": round(vector_similarity, 3),
                     "topic_relevance": round(topic_score, 3),
                     "time_proximity": round(time_score, 3),
+                    "search_mode": "exact" if is_exact_query else "semantic",
                 }
 
                 # Threshold check uses normalized score so resolved buckets
                 # remain reachable by keyword
                 # 使用归一化后的得分进行阈值检查
-                # normalized_threshold = 0.1 - allows buckets with moderate relevance
-                normalized_threshold = 0.1
+                # For exact queries, use higher threshold to filter noise
+                normalized_threshold = 0.2 if is_exact_query else 0.1
                 if final_score >= normalized_threshold:
                     if meta.get("resolved", False):
                         final_score *= 0.3
@@ -1761,6 +1804,77 @@ class BucketManager:
         content_score = fuzz.partial_ratio(query, bucket.get("content", "")[:1000]) * self.content_weight
 
         return (name_score + domain_score + tag_score + content_score) / (100 * (3 + 2.5 + 2 + self.content_weight))
+
+    def _is_exact_match_query(self, query: str) -> bool:
+        """
+        Detect if query requires exact keyword matching (vs semantic matching).
+        判断查询是否需要精确关键字匹配（而非语义匹配）。
+        
+        Triggers for exact matching:
+        - Short queries (1-2 chars): e.g., "烛台", "名册", "0426"
+        - Numeric patterns: dates "2026-03", IDs "abc123", codes "04261221"
+        - Special keywords: "烛台", "名册", "年轮", "锚点", "时间链", "模式", "经验", "感受"
+        - Wikilink patterns: [[...]]
+        """
+        q = query.strip()
+        
+        if len(q) <= 2:
+            return True
+        
+        if re.match(r'^\d{4}-\d{2}(-\d{2})?$', q):
+            return True
+        
+        if re.match(r'^[\da-fA-F]{4,}$', q):
+            return True
+        
+        exact_keywords = {"烛台", "名册", "年轮", "锚点", "时间链", "模式", "经验", "感受", "记忆", "事件"}
+        if q in exact_keywords:
+            return True
+        
+        if q.startswith("[[") and q.endswith("]]"):
+            return True
+        
+        return False
+
+    def _exact_keyword_match(self, query: str, bucket: dict) -> float:
+        """
+        Exact keyword matching score (0~1).
+        精确关键字匹配得分（0~1）。
+        
+        Checks: name, domain, tags, content for exact substring matches.
+        检查：名称、主题域、标签、正文中的精确子串匹配。
+        """
+        q = query.lower().strip()
+        if not q:
+            return 0.0
+
+        meta = bucket.get("metadata", {})
+        score = 0.0
+        matches = 0
+
+        name = meta.get("name", "").lower()
+        if q in name:
+            score += 3.0
+            matches += 1
+
+        for d in meta.get("domain", []):
+            if q in d.lower():
+                score += 2.5
+                matches += 1
+
+        for tag in meta.get("tags", []):
+            if q in tag.lower():
+                score += 2.0
+                matches += 1
+
+        content = bucket.get("content", "").lower()[:2000]
+        if q in content:
+            score += 1.5
+            matches += 1
+
+        if matches == 0:
+            return 0.0
+        return min(1.0, score / 3.0)
 
     # ---------------------------------------------------------
     # Emotion intensity score:
