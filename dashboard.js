@@ -1340,16 +1340,29 @@ function escapeHtml(s) {
   return esc(s);
 }
 
+function hexToRgb(hex) {
+  var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? parseInt(result[1], 16) + ',' + parseInt(result[2], 16) + ',' + parseInt(result[3], 16) : '0,0,0';
+}
+
 function formatTimeAgo(iso) {
   if (!iso) return '—';
   var d = new Date(iso);
   var now = new Date();
-  var hours = Math.floor((now - d) / 3600000);
-  if (hours < 1) return '刚刚';
-  if (hours < 24) return hours + 'h前';
+  var diffMs = now - d;
+  var hours = Math.floor(diffMs / 3600000);
+  
+  if (hours < 1) {
+    var mins = Math.floor(diffMs / 60000);
+    return mins < 1 ? '刚刚' : mins + '分钟前';
+  }
+  if (hours < 24) return hours + '小时前';
+  
   var days = Math.floor(hours / 24);
-  if (days < 30) return days + 'd前';
-  return Math.floor(days/30) + 'mo前';
+  if (days === 1) return '昨天';
+  if (days < 7) return days + '天前';
+  
+  return d.getMonth() + 1 + '/' + d.getDate() + ' ' + d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
 }
 
 document.addEventListener('keydown', function(e) {
@@ -4466,7 +4479,7 @@ function performSearch(query) {
         var type = r.type || 'event';
         var score = r.importance || r.score || 0;
         
-        html += '<div class="search-result-item" onclick="showDetail(' + JSON.stringify(r.id) + ')">' +
+        html += '<div class="search-result-item" onclick="document.getElementById(\'search-results-panel\').classList.remove(\'open\');showDetail(' + JSON.stringify(r.id) + ')">' +
           '<span class="sr-name">' + name + '</span>' +
           '<span class="sr-type">' + type + '</span>' +
           '<span class="sr-score">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</span>' +
@@ -4510,6 +4523,14 @@ document.getElementById('search-input').addEventListener('focus', function() {
   if (q) {
     var panel = document.getElementById('search-results-panel');
     if (panel) panel.classList.add('open');
+  }
+});
+
+document.addEventListener('click', function(e) {
+  var panel = document.getElementById('search-results-panel');
+  var searchBar = document.querySelector('.search-bar');
+  if (panel && panel.classList.contains('open') && !searchBar.contains(e.target)) {
+    panel.classList.remove('open');
   }
 });
 
@@ -4670,20 +4691,26 @@ function renderMemoryTimeline() {
   recent.forEach(function(b) {
     var timeStr = b.created || b.last_active || (b.metadata && (b.metadata.created || b.metadata.last_active)) || '';
     var name = esc(b.name || b.topic || '未命名');
-    var preview = esc((b.content || '').substring(0, 80));
-    var tags = b.tags || (b.metadata && b.metadata.tags) || [];
-    var tagsHtml = '';
-    if (tags.length > 0) {
-      tagsHtml = '<div class="tl-tags">' + tags.slice(0, 3).map(function(t) {
-        return '<span class="tl-tag">' + esc(t) + '</span>';
-      }).join('') + '</div>';
-    }
+    var preview = esc((b.content || '').substring(0, 100));
+    var bucketType = b.type || (b.metadata && b.metadata.type) || 'event';
+    var typeColors = {
+      'identity': '#4A7C59', 'pattern': '#9A7B4F', 'feel': '#8B4A4A',
+      'event': '#2F4F4F', 'archive': '#6A6A8B', 'permanent': '#4A7C59', 'dynamic': '#2F4F4F'
+    };
+    var typeLabels = {
+      'identity': '身份', 'pattern': '模式', 'feel': '感受',
+      'event': '事件', 'archive': '归档', 'permanent': '永久', 'dynamic': '动态'
+    };
+    var typeColor = typeColors[bucketType] || '#888';
+    var typeLabel = typeLabels[bucketType] || bucketType;
     
     html += '<div class="timeline-entry" onclick="showDetail(' + JSON.stringify(b.id) + ')">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
       '<div class="tl-time">' + formatTimeAgo(timeStr) + '</div>' +
+      '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(' + hexToRgb(typeColor) + ',0.1);color:' + typeColor + ';">' + typeLabel + '</span>' +
+      '</div>' +
       '<div class="tl-name">' + name + '</div>' +
       (preview ? '<div class="tl-preview">' + preview + '…</div>' : '') +
-      tagsHtml +
     '</div>';
   });
   
