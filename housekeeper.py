@@ -481,13 +481,13 @@ class Housekeeper:
     
     async def _daily_summary(self) -> dict:
         """Generate daily summary of today's buckets with mood analysis using AI.
-        
+
         Improvements:
-        1. Strict time window: only buckets from today (>= 00:00:00 UTC)
+        1. Strict time window: only buckets from last 24 hours (now - 24h)
         2. NULL created_at filtering: skip buckets without timestamps
         3. Topic isolation: group by chain_id before sending to LLM
         """
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(timezone.utc) - timedelta(hours=24)
         
         try:
             all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -709,7 +709,7 @@ class Housekeeper:
     
     async def _daily_chain_update(self) -> dict:
         """Update event chains with today's relevant buckets (temporary nodes)."""
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(timezone.utc) - timedelta(hours=24)
         
         try:
             all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -833,7 +833,7 @@ class Housekeeper:
         Detect memory conflicts between today's memories and historical memories.
         If conflicts found, submit to echo_chamber for main AI review.
         """
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(timezone.utc) - timedelta(hours=24)
         
         try:
             all_buckets = await self.bucket_mgr.list_all(include_archive=False)

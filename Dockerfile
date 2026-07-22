@@ -28,9 +28,9 @@ COPY config.example.yaml ./config.yaml
 # 持久化挂载点：记忆数据
 VOLUME ["/app/buckets"]
 
-# Default to sse for container (remote access)
-# 容器场景默认用 sse
-ENV OMBRE_TRANSPORT=sse
+# Default to streamable-http for container (remote access)
+# 容器场景默认用 streamable-http
+ENV OMBRE_TRANSPORT=streamable-http
 ENV OMBRE_BUCKETS_DIR=/app/buckets
 
 EXPOSE 8000

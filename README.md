@@ -82,13 +82,13 @@ curl http://localhost:8000/health
 }
 ```
 
-> 如果你部署在远程服务器（如 Render），使用 `sse` 协议，客户端配置为：
+> 如果你部署在远程服务器（如 Render），使用 `streamable-http` 协议，客户端配置为：
 > ```json
 > {
 >   "mcpServers": {
 >     "ombre-brain": {
->       "type": "url",
->       "url": "https://你的域名/sse"
+>       "type": "streamable-http",
+>       "url": "https://你的域名/mcp"
 >     }
 >   }
 > }

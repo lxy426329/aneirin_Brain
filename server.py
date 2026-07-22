@@ -5132,14 +5132,70 @@ async def ai_manage(request: str) -> str:
         logger.debug(f"[ai_manage] System prompt: {system_prompt[:300]}...")
         logger.debug(f"[ai_manage] User message: {request[:300]}...")
         
-        response = await dehydrator.client.chat.completions.create(
-            model=dehydrator.model,
-            messages=messages,
-            tools=tools_schema,
-            tool_choice="auto",
-            max_tokens=2000,
-            temperature=0.3,
-        )
+        # --- Try tools API first; fallback to text prompt if unsupported ---
+        # --- 优先使用 tools API；若不支持则降级为纯文本 prompt ---
+        try:
+            response = await dehydrator.client.chat.completions.create(
+                model=dehydrator.model,
+                messages=messages,
+                tools=tools_schema,
+                tool_choice="auto",
+                max_tokens=2000,
+                temperature=0.3,
+            )
+        except Exception as tools_err:
+            err_msg = str(tools_err).lower()
+            if "does not support tools" in err_msg or ("tools" in err_msg and "not" in err_msg):
+                # --- Fallback: convert tools schema to text prompt ---
+                # --- 降级：将 tools schema 转为纯文本说明，二次重试 ---
+                logger.warning(f"[ai_manage] Tools API not supported, falling back to text prompt: {tools_err}")
+
+                tool_descriptions = []
+                for t in tools_schema:
+                    fn = t["function"]
+                    params = fn.get("parameters", {})
+                    props = params.get("properties", {})
+                    required = params.get("required", [])
+                    param_strs = []
+                    for pname, pinfo in props.items():
+                        ptype = pinfo.get("type", "any")
+                        pdesc = pinfo.get("description", "")
+                        req_mark = "必填" if pname in required else "可选"
+                        param_strs.append(f"  - {pname} ({ptype}, {req_mark}): {pdesc}")
+                    params_text = "\n".join(param_strs) if param_strs else "  (无参数)"
+                    tool_descriptions.append(f"### {fn['name']}\n{fn['description']}\n参数:\n{params_text}")
+
+                tools_text = "\n\n".join(tool_descriptions)
+
+                fallback_prompt = system_prompt + f"""
+
+## 可用工具（纯文本模式）
+由于当前 API 不支持 function calling，请用 JSON 格式返回工具调用。
+
+可用工具列表：
+{tools_text}
+
+## 返回格式要求
+请返回以下 JSON 格式之一（不要用 markdown 代码块包裹）：
+- 调用工具：{{"action":"call_tools","steps":[{{"tool_name":"工具名","parameters":{{参数}}}}]}}
+- 直接回答：{{"action":"direct_answer","answer":"回答内容"}}
+- 任务总结：{{"action":"summarize","summary":"总结","steps":["步骤1","步骤2"],"result":"结果"}}"""
+
+                fallback_messages = [
+                    {"role": "system", "content": fallback_prompt},
+                    {"role": "user", "content": request},
+                ]
+
+                logger.info(f"[ai_manage] Fallback: sending {len(tools_schema)} tools as text prompt")
+                response = await dehydrator.client.chat.completions.create(
+                    model=dehydrator.model,
+                    messages=fallback_messages,
+                    max_tokens=2000,
+                    temperature=0.3,
+                )
+                logger.info("[ai_manage] Fallback text prompt request completed")
+            else:
+                raise
         
         if not response.choices:
             return f"AI管家无法理解您的请求: {request}"

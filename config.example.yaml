@@ -6,12 +6,12 @@
 
 # --- Transport / 传输方式 ---
 # stdio: local use (Claude Desktop, direct pipe)
-# sse: remote use with SSE (recommended for Render / Cloudflare Tunnel)
-# streamable-http: remote use, Streamable HTTP (alternative)
+# streamable-http: remote use (recommended for Render / Cloudflare Tunnel)
+# sse: remote use, SSE mode (alternative)
 # stdio: 本地使用（Claude Desktop，直接管道通信）
-# sse: 远程使用，SSE 模式（推荐用于 Render / Cloudflare Tunnel）
-# streamable-http: 远程使用，Streamable HTTP 模式（备选）
-transport: stdio"
+# streamable-http: 远程使用（推荐用于 Render / Cloudflare Tunnel）
+# sse: 远程使用，SSE 模式（备选）
+transport: stdio
 
 # --- Log level / 日志级别 ---
 log_level: "INFO"

@@ -18,7 +18,7 @@ services:
       - "18001:8000"                        # Local debug port (optional) / 本地调试端口
     environment:
       - OMBRE_API_KEY=${OMBRE_API_KEY}      # From .env file / 从 .env 文件读取
-      - OMBRE_TRANSPORT=sse               # Remote access via SSE / 远程使用 SSE
+      - OMBRE_TRANSPORT=streamable-http     # Remote access via streamable-http / 远程使用 streamable-http
       - OMBRE_BUCKETS_DIR=/data             # Container-internal bucket path / 容器内路径
     volumes:
       # Mount your Obsidian vault (or any host directory) for persistent storage.
