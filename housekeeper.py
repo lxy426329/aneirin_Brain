@@ -366,6 +366,7 @@ class Housekeeper:
         """
         Daily job: lightweight summary of today's conversations.
         Append key facts to corresponding Event Chains as temporary nodes.
+        Detect and report memory conflicts.
         Do NOT delete any data.
         """
         logger.info("Running daily housekeeper job...")
@@ -382,6 +383,12 @@ class Housekeeper:
         except Exception as e:
             logger.error(f"Daily chain update failed: {e}")
             results["chain_updates"] = {"error": str(e)}
+        
+        try:
+            results["conflicts"] = await self._daily_conflict_detection()
+        except Exception as e:
+            logger.error(f"Conflict detection failed: {e}")
+            results["conflicts"] = {"error": str(e)}
         
         logger.info(f"Daily job complete: {results}")
         return results
@@ -556,6 +563,153 @@ class Housekeeper:
             return True
         
         return False
+    
+    async def _daily_conflict_detection(self) -> dict:
+        """
+        Detect memory conflicts between today's memories and historical memories.
+        If conflicts found, submit to echo_chamber for main AI review.
+        """
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            return {"error": str(e)}
+        
+        today_buckets = []
+        history_buckets = []
+        
+        for b in all_buckets:
+            meta = b["metadata"]
+            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
+                continue
+            
+            created_str = meta.get("created", "")
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created >= today_start:
+                    today_buckets.append(b)
+                else:
+                    history_buckets.append(b)
+            except (ValueError, TypeError):
+                continue
+        
+        if not today_buckets or not history_buckets:
+            return {"message": "Not enough data for conflict detection"}
+        
+        conflicts_found = 0
+        
+        for today_bucket in today_buckets:
+            today_content = today_bucket["content"]
+            
+            for history_bucket in history_buckets:
+                history_content = history_bucket["content"]
+                
+                conflict_result = self._detect_conflict(today_content, history_content)
+                if conflict_result:
+                    conflicts_found += 1
+                    
+                    await self.echo_chamber.add_pending_action(
+                        action_type="conflict",
+                        data={
+                            "new_bucket_id": today_bucket["id"],
+                            "old_bucket_id": history_bucket["id"],
+                            "new_content": today_content[:200],
+                            "old_content": history_content[:200],
+                            "conflict_type": conflict_result["type"],
+                            "conflict_reason": conflict_result["reason"],
+                            "new_metadata": {
+                                "created": today_bucket["metadata"].get("created", ""),
+                                "name": today_bucket["metadata"].get("name", ""),
+                            },
+                            "old_metadata": {
+                                "created": history_bucket["metadata"].get("created", ""),
+                                "name": history_bucket["metadata"].get("name", ""),
+                            },
+                        }
+                    )
+                    
+                    logger.info(f"Conflict detected: {conflict_result['reason']}")
+        
+        return {"conflicts_found": conflicts_found}
+    
+    def _detect_conflict(self, new_content: str, old_content: str) -> dict | None:
+        """
+        Detect semantic conflicts between two memory contents.
+        Returns conflict info dict or None if no conflict.
+        """
+        import re
+        
+        conflict_patterns = [
+            {
+                "type": "preference",
+                "patterns": [
+                    (r'(不喜欢|讨厌|不想|不要|不爱)', r'(喜欢|爱|想|要)'),
+                    (r'(不吃|不喝|不用)', r'(吃|喝|用)'),
+                    (r'(不买|不想要)', r'(买|想要)'),
+                    (r'(太甜|太咸|太辣|太苦)', r'(全糖|很甜|很甜)'),
+                    (r'(清淡|少油|少盐|无糖)', r'(重口味|油腻|全糖|很甜)'),
+                ],
+                "reason_template": "偏好冲突：之前说过'{old_match}'，但今天说'{new_match}'",
+            },
+            {
+                "type": "health",
+                "patterns": [
+                    (r'(病好了|康复了|不痛了|没事了)', r'(生病|不舒服|痛|难受)'),
+                    (r'(痊愈|恢复正常)', r'(发烧|感冒|咳嗽|胃痛)'),
+                    (r'(已经好了|不难受了)', r'(痛经|头痛|头晕)'),
+                ],
+                "reason_template": "健康状态冲突：之前记录'{old_match}'，但今天记录'{new_match}'",
+            },
+            {
+                "type": "status",
+                "patterns": [
+                    (r'(不在|走了|离开了)', r'(在|来了|到达)'),
+                    (r'(完成了|做完了|结束了)', r'(开始|正在做|进行中)'),
+                    (r'(放弃|取消|不做了)', r'(计划|打算|准备)'),
+                ],
+                "reason_template": "状态冲突：之前记录'{old_match}'，但今天记录'{new_match}'",
+            },
+            {
+                "type": "fact",
+                "patterns": [
+                    (r'(没有|从未|从没)', r'(有|曾经|以前)'),
+                    (r'(不是|并非)', r'(是|确实是)'),
+                    (r'(不知道|不清楚)', r'(知道|清楚|了解)'),
+                ],
+                "reason_template": "事实冲突：之前说'{old_match}'，但今天说'{new_match}'",
+            },
+        ]
+        
+        for conflict_type_info in conflict_patterns:
+            for old_pattern, new_pattern in conflict_type_info["patterns"]:
+                old_match = re.search(old_pattern, old_content)
+                new_match = re.search(new_pattern, new_content)
+                
+                if old_match and new_match:
+                    return {
+                        "type": conflict_type_info["type"],
+                        "reason": conflict_type_info["reason_template"].format(
+                            old_match=old_match.group(0),
+                            new_match=new_match.group(0)
+                        ),
+                    }
+                
+                old_match_rev = re.search(old_pattern, new_content)
+                new_match_rev = re.search(new_pattern, old_content)
+                
+                if old_match_rev and new_match_rev:
+                    return {
+                        "type": conflict_type_info["type"],
+                        "reason": conflict_type_info["reason_template"].format(
+                            old_match=new_match_rev.group(0),
+                            new_match=old_match_rev.group(0)
+                        ),
+                    }
+        
+        return None
     
     async def _should_create_chain(self, topic: str) -> bool:
         """Check if a new chain should be created (topic mentioned across multiple days)."""

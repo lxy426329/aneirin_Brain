@@ -3842,10 +3842,19 @@ async def review_digest() -> str:
             parts.append(f"\n📋 待审批提案 ({summary['pending_actions']}条):")
             for action in summary["actions"]:
                 data = action.get("data", {})
-                parts.append(f"  • [{action['action_id']}] {action['action_type']}")
-                if action["action_type"] == "cleanup":
+                action_type = action["action_type"]
+                
+                if action_type == "conflict":
+                    parts.append(f"  ⚠️ [{action['action_id']}] 记忆冲突 ({data.get('conflict_type', 'unknown')})")
+                    parts.append(f"    {data.get('conflict_reason', '')}")
+                    parts.append(f"    旧记录: [{data.get('old_metadata', {}).get('created', '')[:10]}] {data.get('old_content', '')[:100]}")
+                    parts.append(f"    新记录: [{data.get('new_metadata', {}).get('created', '')[:10]}] {data.get('new_content', '')[:100]}")
+                elif action_type == "cleanup":
+                    parts.append(f"  • [{action['action_id']}] 清理提案")
                     parts.append(f"    Bucket: {data.get('bucket_id', '')}")
                     parts.append(f"    Reason: {data.get('reason', '')}")
+                else:
+                    parts.append(f"  • [{action['action_id']}] {action_type}")
         
         return "\n".join(parts)
     except Exception as e:
