@@ -56,6 +56,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from bucket_manager import BucketManager
 from dehydrator import Dehydrator
 from decay_engine import DecayEngine
+from housekeeper import Housekeeper
 from embedding_engine import EmbeddingEngine
 from emotion_manager import EmotionManager
 from identity_manager import IdentityManager
@@ -117,6 +118,7 @@ embedding_engine = EmbeddingEngine(config)            # Embedding engine first (
 bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket manager / 记忆桶管理器
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
+housekeeper = Housekeeper(config, bucket_mgr)         # Housekeeper / 记忆管家
 identity_mgr = IdentityManager(config)               # Identity manager / 身份管理器
 emotion_mgr = EmotionManager(config)                 # Emotion manager / 情绪管理器
 pattern_mgr = PatternManager(config)                 # Pattern manager / 模式管理器
@@ -1516,8 +1518,20 @@ async def breath(
 ) -> str:
     """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。"""
     await decay_engine.ensure_started()
+    await housekeeper.ensure_started()
+    
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
+
+    # --- Housekeeper prefetch: pull event chain drafts and cleanup proposals ---
+    # --- 管家预取：拉取事件链草案和清理提案 ---
+    housekeeper_prefetch = ""
+    try:
+        proposals = await housekeeper.get_cleanup_proposals(status="pending")
+        if proposals != "暂无待清理提案。":
+            housekeeper_prefetch = f"\n管家提案:\n{proposals[:500]}"
+    except Exception as e:
+        logger.warning(f"Housekeeper prefetch failed: {e}")
 
     # --- Vulnerable state detection (auto-mask task_flag buckets) ---
     # --- 脆弱状态检测（自动屏蔽 task_flag 桶，防止 KPI 机器式催任务）---
@@ -2085,6 +2099,10 @@ async def breath(
         return "未找到相关记忆。"
 
     final_text = "\n".join(results)
+    
+    if housekeeper_prefetch:
+        final_text += housekeeper_prefetch
+    
     await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "shown": shown_count, "summarized": len(summarized_buckets), "chars": len(final_text)})
     return final_text
 
@@ -3643,6 +3661,137 @@ async def smart_organize(days: int = 30, importance_drop: int = 2) -> str:
     except Exception as e:
         logger.error(f"smart_organize failed: {e}")
         return f"智能整理失败: {e}"
+
+
+# =============================================================
+# Housekeeper tools - Event Chain and Cleanup Proposal management
+# 管家工具 - 事件链和清理提案管理
+# =============================================================
+@mcp.tool()
+async def get_event_chains() -> str:
+    """获取所有事件链草案，供主AI终审裁决。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        chains = await housekeeper.get_event_chains()
+        if not chains:
+            return "暂无事件链草案。"
+        
+        parts = ["=== 事件链草案 ===\n"]
+        for chain in chains:
+            status_icon = "🔄" if chain.status == "in_progress" else "✅"
+            parts.append(f"{status_icon} [{chain.chain_id}] {chain.topic}")
+            parts.append(f"   状态: {chain.status}")
+            parts.append(f"   摘要: {chain.summary}")
+            parts.append(f"   时间线节点数: {len(chain.timeline)}")
+            parts.append(f"   更新时间: {chain.updated}\n")
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"get_event_chains failed: {e}")
+        return f"获取事件链失败: {e}"
+
+
+@mcp.tool()
+async def approve_event_chain(chain_id: str) -> str:
+    """批准事件链，标记为已结案。chain_id=事件链ID。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        success = await housekeeper.approve_chain(chain_id)
+        if success:
+            return f"✅ 已批准事件链: {chain_id}"
+        else:
+            return f"❌ 未找到事件链: {chain_id}"
+    except Exception as e:
+        logger.error(f"approve_event_chain failed: {e}")
+        return f"批准事件链失败: {e}"
+
+
+@mcp.tool()
+async def get_cleanup_proposals() -> str:
+    """获取待清理提案，供主AI终审裁决。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        proposals = await housekeeper.get_cleanup_proposals(status="pending")
+        if not proposals:
+            return "暂无待清理提案。"
+        
+        parts = ["=== 待清理提案 ===\n"]
+        for proposal in proposals:
+            info = proposal.bucket_info
+            parts.append(f"📋 [{proposal.proposal_id}] {info.get('name', proposal.bucket_id)}")
+            parts.append(f"   原因: {proposal.reason}")
+            parts.append(f"   重要度: {info.get('importance', '?')}")
+            parts.append(f"   创建时间: {info.get('created', '?')}")
+            parts.append(f"   最后访问: {info.get('last_accessed', '?')}\n")
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"get_cleanup_proposals failed: {e}")
+        return f"获取清理提案失败: {e}"
+
+
+@mcp.tool()
+async def approve_cleanup_proposal(proposal_id: str) -> str:
+    """批准清理提案，标记为待执行。proposal_id=提案ID。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        success = await housekeeper.approve_proposal(proposal_id)
+        if success:
+            return f"✅ 已批准清理提案: {proposal_id}（将在下次衰减周期执行）"
+        else:
+            return f"❌ 未找到提案: {proposal_id}"
+    except Exception as e:
+        logger.error(f"approve_cleanup_proposal failed: {e}")
+        return f"批准清理提案失败: {e}"
+
+
+@mcp.tool()
+async def reject_cleanup_proposal(proposal_id: str) -> str:
+    """驳回清理提案，保留该记忆。proposal_id=提案ID。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        success = await housekeeper.reject_proposal(proposal_id)
+        if success:
+            return f"✅ 已驳回清理提案: {proposal_id}（记忆已保留）"
+        else:
+            return f"❌ 未找到提案: {proposal_id}"
+    except Exception as e:
+        logger.error(f"reject_cleanup_proposal failed: {e}")
+        return f"驳回清理提案失败: {e}"
+
+
+@mcp.tool()
+async def run_housekeeper() -> str:
+    """手动触发管家管线执行（时间链归拢 + 废旧记忆扫描）。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        results = await housekeeper.run_pipeline()
+        parts = ["=== 管家管线执行结果 ===\n"]
+        
+        event_chains = results.get("event_chains", {})
+        if "error" in event_chains:
+            parts.append(f"❌ 时间链归拢失败: {event_chains['error']}")
+        else:
+            parts.append(f"✅ 时间链归拢: 发现{event_chains.get('topics_found', 0)}个主题, "
+                        f"更新{event_chains.get('chains_updated', 0)}条, "
+                        f"创建{event_chains.get('chains_created', 0)}条")
+        
+        cleanup = results.get("cleanup_proposals", {})
+        if "error" in cleanup:
+            parts.append(f"❌ 废旧记忆扫描失败: {cleanup['error']}")
+        else:
+            parts.append(f"✅ 废旧记忆扫描: 生成{cleanup.get('proposals_created', 0)}条清理提案")
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"run_housekeeper failed: {e}")
+        return f"管家执行失败: {e}"
 
 
 async def weekly_organize() -> str:
