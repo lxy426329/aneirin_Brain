@@ -203,6 +203,8 @@ async function saveHostVault() {
 
 // authFetch: wraps fetch, shows auth overlay on 401
 async function authFetch(url, options) {
+  options = options || {};
+  options.credentials = 'include';
   const resp = await fetch(url, options);
   if (resp.status === 401) {
     doLogout();

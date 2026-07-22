@@ -560,14 +560,16 @@ class Housekeeper:
                 return "\n".join([f"- {b['content'][:100]}" for b in group_buckets])
             
             try:
-                prompt = f"""你是一个AI记忆管家。请根据以下记忆内容，生成一段简洁的主题摘要。
+                prompt = f"""你是一个AI记忆管家。请根据以下记忆内容，生成一段有信息量的主题摘要。
 
 主题：{group_label}
 
 要求：
-1. 用中文，简洁明了
-2. 提炼核心事实
-3. 不超过100字
+1. 用中文，语言自然流畅
+2. 提炼核心事实：谁做了什么、结果如何、有什么感受或决定
+3. 不要简单罗列条目，要整合成连贯的一段话
+4. 突出关键信息和变化，去掉无关细节
+5. 80-150字
 
 内容：
 {contents[:2000]}
@@ -576,7 +578,7 @@ class Housekeeper:
                     model=self.dehydrator.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
-                    max_tokens=150,
+                    max_tokens=300,
                 )
                 return response.choices[0].message.content.strip()
             except Exception as e:
@@ -1168,14 +1170,15 @@ class Housekeeper:
                     content_preview = d.get("content", "")[:300]
                     daily_summaries_text += f"\n--- {date_str} (情绪: {mood}, {count}条记忆) ---\n{content_preview}\n"
                 
-                prompt = f"""你是一个AI记忆管家。请根据过去7天的每日摘要，生成一份简洁的每周总结报告。
+                prompt = f"""你是一个AI记忆管家。请根据过去7天的每日摘要，生成一份有深度的每周总结报告。
 
 要求：
-1. 用中文，语气温和亲切
-2. 总结本周的主要事件主题和变化趋势
-3. 识别情绪变化轨迹
-4. 提取关键待办和持续关注事项
-5. 保持在300字以内
+1. 用中文，语气温和亲切，像朋友在回顾一周
+2. 梳理本周的关键事件：哪些事很重要、哪些有进展、哪些还没做完
+3. 分析情绪变化轨迹：这周整体心情如何，有什么波动
+4. 列出需要持续关注的事项和待办
+5. 如果发现某些反复出现的主题或模式，点出来
+6. 200-400字
 
 过去7天每日摘要：
 {daily_summaries_text[:4000]}"""
@@ -1184,7 +1187,7 @@ class Housekeeper:
                     model=self.dehydrator.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
-                    max_tokens=400,
+                    max_tokens=600,
                 )
                 
                 ai_summary = response.choices[0].message.content.strip()
@@ -1287,7 +1290,12 @@ class Housekeeper:
         """Generate a concise topic name from content using AI."""
         if self.dehydrator and self.dehydrator.client:
             try:
-                prompt = f"""你是一个AI记忆管家。请为以下记忆内容生成一个简短、准确的主题名称（4-8个字）。
+                prompt = f"""你是一个AI记忆管家。请为以下记忆内容生成一个简短、准确的主题名称。
+
+要求：
+1. 6-12个字
+2. 要具体到实际内容，不要用"日常记录""今日事件"等笼统词
+3. 包含关键人物、事件或主题
 
 记忆内容：
 {content[:500]}
@@ -1298,7 +1306,7 @@ class Housekeeper:
                     model=self.dehydrator.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    max_tokens=20,
+                    max_tokens=30,
                 )
                 
                 topic = response.choices[0].message.content.strip()
@@ -1394,23 +1402,28 @@ class Housekeeper:
             try:
                 bucket_contents = "\n".join([f"- {b['content'][:200]}" for b in buckets[:20]])
                 
-                prompt = f"""你是一个AI记忆管家。请为以下事件链生成一个简洁的摘要，概括事件的背景、进展和关键信息。
+                prompt = f"""你是一个AI记忆管家。请为以下事件链生成一个有信息量的摘要。
 
 事件主题：{topic}
 
 相关记忆内容：
 {bucket_contents}
 
-请用中文撰写，保持在100字以内："""
+要求：
+1. 用中文，语言流畅
+2. 概括事件背景、关键进展和当前状态
+3. 突出重要的变化节点和决策
+4. 80-150字
+5. 不要简单罗列条目，要整合成连贯叙述"""
                 
                 response = await self.dehydrator.client.chat.completions.create(
                     model=self.dehydrator.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
-                    max_tokens=150,
+                    max_tokens=300,
                 )
-                
-                return response.choices[0].message.content.strip()[:200]
+
+                return response.choices[0].message.content.strip()[:400]
             except Exception as e:
                 logger.error(f"AI chain summary failed: {e}")
         
