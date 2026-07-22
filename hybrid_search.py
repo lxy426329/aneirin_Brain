@@ -2,9 +2,7 @@ import logging
 import re
 import jieba
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
 import asyncio
-import os
 
 logger = logging.getLogger("ombre_brain.hybrid_search")
 
@@ -20,32 +18,22 @@ class HybridSearchEngine:
         self.vector_weight_scale = config.get("vector_weight_scale", 0.2)
         self.keyword_weight_scale = config.get("keyword_weight_scale", 2.0)
         
-        self.rerank_top_k = config.get("rerank_top_k", 5)
-        self.rerank_model_name = config.get("rerank_model", "BAAI/bge-reranker-base")
-        
+        # NOTE: No local CrossEncoder model loaded to avoid OOM in 512MB containers.
+        # Rerank is done via weighted scoring (BM25 + vector + time + emotion + priority).
         self._bm25_index = None
         self._bm25_corpus = []
         self._bm25_bucket_ids = []
-        self._rerank_model = None
         self._is_initialized = False
         
         self._lock = asyncio.Lock()
     
     async def initialize(self):
-        """Initialize BM25 index and Rerank model."""
+        """Initialize BM25 index. No local model loading."""
         async with self._lock:
             if self._is_initialized:
                 return
             
-            logger.info("Initializing Hybrid Search Engine...")
-            
-            try:
-                from sentence_transformers import CrossEncoder
-                self._rerank_model = CrossEncoder(self.rerank_model_name)
-                logger.info(f"Rerank model loaded: {self.rerank_model_name}")
-            except Exception as e:
-                logger.warning(f"Failed to load rerank model, using simple scoring fallback: {e}")
-                self._rerank_model = None
+            logger.info("Initializing Hybrid Search Engine (no local models)...")
             
             self._is_initialized = True
             logger.info("Hybrid Search Engine initialized")
@@ -178,28 +166,8 @@ class HybridSearchEngine:
         if not candidate_buckets:
             return []
         
-        if self._rerank_model and len(candidate_buckets) > 1:
-            try:
-                pairs = [[query, self._get_bucket_text(b)] for b in candidate_buckets]
-                scores = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    self._rerank_model.predict,
-                    pairs
-                )
-                
-                scored = list(zip(candidate_buckets, scores))
-                scored.sort(key=lambda x: x[1], reverse=True)
-                
-                final_results = [b for b, _ in scored[:limit]]
-                
-                for i, b in enumerate(final_results[:3]):
-                    b["score"] = round(scored[i][1], 4)
-                    b["search_mode"] = "hybrid_rerank"
-                
-                return final_results
-            except Exception as e:
-                logger.warning(f"Rerank failed, falling back to weighted scoring: {e}")
-        
+        # NOTE: No local CrossEncoder rerank model to avoid OOM.
+        # Using weighted scoring (BM25 + vector + time + emotion + priority) instead.
         final_scored = []
         for bid in candidate_bucket_ids[:limit * 2]:
             bucket = bucket_map.get(bid)
@@ -252,15 +220,6 @@ class HybridSearchEngine:
         
         final_scored.sort(key=lambda x: x.get("score", 0), reverse=True)
         return final_scored[:limit]
-    
-    def _get_bucket_text(self, bucket: dict) -> str:
-        """Get full text content of a bucket for reranking."""
-        meta = bucket.get("metadata", {})
-        name = meta.get("name", "")
-        domain = " ".join(meta.get("domain", []))
-        tags = " ".join(meta.get("tags", []))
-        content = bucket.get("content", "")[:1000]
-        return f"{name} {domain} {tags} {content}".strip()
     
     def _calc_time_score(self, meta: dict) -> float:
         """Calculate time proximity score (0~1)."""

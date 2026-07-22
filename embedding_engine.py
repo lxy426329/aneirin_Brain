@@ -2,13 +2,16 @@
 # Module: Embedding Engine (embedding_engine.py)
 # 模块：向量化引擎
 #
-# Generates embeddings via API or local model (sentence-transformers),
+# Generates embeddings via API,
 # stores them in SQLite, and provides cosine similarity search.
-# 通过 API 或本地模型（sentence-transformers）生成 embedding，
+# 通过 API 生成 embedding，
 # 存储在 SQLite 中，提供余弦相似度搜索。
 #
 # Depended on by: server.py, bucket_manager.py
 # 被谁依赖：server.py, bucket_manager.py
+#
+# NOTE: No local model loading (prevents OOM in 512MB containers).
+# All embedding is done via HTTP API calls.
 # ============================================================
 
 import os
@@ -23,19 +26,15 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
-try:
-    from sentence_transformers import SentenceTransformer
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-
 logger = logging.getLogger("ombre_brain.embedding")
 
 
 class EmbeddingEngine:
     """
-    Embedding generation + SQLite vector storage + cosine search.
-    向量生成 + SQLite 向量存储 + 余弦搜索。
+    Embedding generation via API + SQLite vector storage + cosine search.
+    No local model loading — all embedding is done via API to minimize memory usage.
+    通过 API 生成向量 + SQLite 向量存储 + 余弦搜索。
+    不加载本地模型，所有向量化通过 API 完成，以降低内存占用。
     """
 
     def __init__(self, config: dict):
@@ -55,9 +54,8 @@ class EmbeddingEngine:
         db_path = os.path.join(config["buckets_dir"], "embeddings.db")
         self.db_path = db_path
 
-        # --- Initialize clients ---
+        # --- Initialize API client only (no local model) ---
         self.client = None
-        self.local_model = None
         
         use_api = embed_cfg.get("use_api", True)
         
@@ -72,16 +70,8 @@ class EmbeddingEngine:
             except Exception as e:
                 logger.warning(f"Failed to initialize API client: {e}")
         
-        if SENTENCE_TRANSFORMERS_AVAILABLE and not self.client:
-            try:
-                self.local_model = SentenceTransformer("all-MiniLM-L6-v2")
-                logger.info("Embedding: Using local sentence-transformers model")
-                self.enabled = True
-            except Exception as e:
-                logger.warning(f"Failed to initialize local model: {e}")
-        
-        if not self.client and not self.local_model:
-            logger.warning("Embedding: Neither API nor local model available, embedding disabled")
+        if not self.client:
+            logger.warning("Embedding: No API client available, embedding disabled")
             self.enabled = False
 
         # --- Initialize SQLite ---
@@ -136,7 +126,7 @@ class EmbeddingEngine:
             return False
 
     async def _generate_embedding(self, text: str) -> list[float]:
-        """Call API or local model to generate embedding vector."""
+        """Call API to generate embedding vector. No local model fallback."""
         # Truncate to avoid token limits
         truncated = text[:2000]
         
@@ -149,16 +139,7 @@ class EmbeddingEngine:
                 if response.data and len(response.data) > 0:
                     return response.data[0].embedding
             except Exception as e:
-                logger.warning(f"Embedding API call failed: {e}, falling back to local model")
-        
-        if self.local_model:
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                embedding = await loop.run_in_executor(None, self.local_model.encode, truncated)
-                return embedding.tolist()
-            except Exception as e:
-                logger.warning(f"Local embedding generation failed: {e}")
+                logger.warning(f"Embedding API call failed: {e}")
         
         return []
 
