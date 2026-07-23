@@ -13,6 +13,11 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
   };
 }
 
+function hexToRgb(hex) {
+  var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? parseInt(result[1], 16) + ',' + parseInt(result[2], 16) + ',' + parseInt(result[3], 16) : '0,0,0';
+}
+
 // ========================================
 // Auth system / 认证系统
 // ========================================
@@ -1353,11 +1358,6 @@ function escapeHtml(s) {
   return esc(s);
 }
 
-function hexToRgb(hex) {
-  var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result ? parseInt(result[1], 16) + ',' + parseInt(result[2], 16) + ',' + parseInt(result[3], 16) : '0,0,0';
-}
-
 function formatTimeAgo(iso) {
   if (!iso) return '—';
   var d = new Date(iso);
@@ -1560,10 +1560,105 @@ checkAuth().then((authenticated) => {
 });
 
 // Clear search input on load (prevents browser autofill showing password)
-setTimeout(function() {
+function clearSearchAutofill() {
   var si = document.getElementById('search-input');
-  if (si) si.value = '';
-}, 100);
+  if (si && si.value) {
+    si.value = '';
+  }
+}
+setTimeout(clearSearchAutofill, 100);
+setTimeout(clearSearchAutofill, 500);
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) {
+    setTimeout(clearSearchAutofill, 100);
+  }
+});
+
+async function doRegenerateNames() {
+  var status = document.getElementById('regenerate-status');
+  if (!confirm('确定要重新生成所有记忆名称吗？这将覆盖现有名称，建议先导出备份。')) return;
+
+  var bucketIds = allBuckets.map(function(b) { return b.id; });
+  if (!bucketIds.length) {
+    status.innerHTML = '<span style="color:var(--text-dim)">没有记忆桶需要处理</span>';
+    return;
+  }
+
+  var total = bucketIds.length;
+  var completed = 0;
+  var succeeded = 0;
+  var failed = 0;
+
+  status.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px;">' +
+    '<span style="color:var(--warning)">正在重新生成名称...</span>' +
+    '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">' +
+    '<div id="regenerate-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width 0.3s ease;border-radius:2px;"></div>' +
+    '</div>' +
+    '<span style="font-size:12px;color:var(--text-dim);">处理进度: <span id="regenerate-counter">0</span>/' + total + '</span>' +
+    '<span style="font-size:12px;color:var(--text-dim);" id="regenerate-details">准备开始...</span>' +
+    '</div>';
+
+  try {
+    var results = [];
+    for (var i = 0; i < bucketIds.length; i++) {
+      var bid = bucketIds[i];
+      var bucket = null;
+      
+      try {
+        var bucketResp = await authFetch('/api/bucket/' + bid);
+        if (bucketResp) bucket = await bucketResp.json();
+      } catch(e) {
+        console.warn('Failed to get bucket:', bid);
+      }
+
+      if (!bucket || !bucket.content) {
+        completed++;
+        failed++;
+      } else {
+        try {
+          var resp = await authFetch('/api/regenerate-names', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({bucket_ids: [bid]})
+          });
+
+          if (resp) {
+            var result = await resp.json();
+            if (result.ok && result.succeeded > 0) {
+              succeeded++;
+              var newName = result.results && result.results[0] ? result.results[0].new_name : '';
+              document.getElementById('regenerate-details').innerHTML = '正在处理: <span style="color:var(--accent);">' + (newName || bid.substring(0,8)) + '</span>';
+            } else {
+              failed++;
+            }
+          } else {
+            failed++;
+          }
+        } catch(e) {
+          failed++;
+        }
+        completed++;
+      }
+
+      var progress = Math.round((completed / total) * 100);
+      document.getElementById('regenerate-progress-bar').style.width = progress + '%';
+      document.getElementById('regenerate-counter').textContent = completed;
+    }
+
+    status.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px;">' +
+      '<span style="color:var(--positive)">✓ 完成！</span>' +
+      '<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">' +
+      '<div style="height:100%;background:var(--accent);width:100%;border-radius:2px;"></div>' +
+      '</div>' +
+      '<span style="font-size:12px;color:var(--text-dim);">总处理: ' + total + ' | 成功: <span style="color:var(--positive);">' + succeeded + '</span> | 失败: <span style="color:var(--negative);">' + failed + '</span></span>' +
+      '</div>';
+
+    invalidateCache('buckets');
+    loadBuckets();
+  } catch(e) {
+    status.innerHTML = '<span style="color:var(--negative)">✗ 请求失败: ' + e.message + '</span>';
+  }
+}
 
 var selectedMemories = new Set();
 
