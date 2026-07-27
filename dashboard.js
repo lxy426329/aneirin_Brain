@@ -223,6 +223,7 @@ async function authFetch(url, options) {
 const BASE = location.origin;
 let allBuckets = [];
 let currentFilter = 'all';
+var selectedBuckets = new Set();
 
 const apiCache = {
   buckets: { data: null, timestamp: 0, ttl: 60000 },
@@ -334,28 +335,101 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 async function loadBuckets() {
   try {
-    const cached = getCachedData('buckets');
-    if (cached) {
-      allBuckets = cached;
-      updateStats();
-      buildFilters();
-      renderBuckets(allBuckets);
-      return;
+    showLoading('bucket-list');
+    var timeRangeEl = document.getElementById('timeRange');
+    var days = timeRangeEl ? timeRangeEl.value : '0';
+
+    if (days === '0') {
+      const cached = getCachedData('buckets');
+      if (cached) {
+        allBuckets = cached;
+        updateStats();
+        buildFilters();
+        renderBuckets(allBuckets);
+        return;
+      }
     }
-    
-    const res = await fetch(BASE + '/api/buckets');
+
+    var url = BASE + '/api/buckets';
+    if (days && days !== '0') {
+      url += '?days=' + encodeURIComponent(days);
+    }
+
+    const res = await fetch(url);
     const data = await res.json();
     if (!res.ok) {
       throw new Error((data && data.error) ? data.error : `HTTP ${res.status}`);
     }
     const buckets = data.buckets || data;
     allBuckets = buckets;
-    setCachedData('buckets', buckets);
+    if (days === '0') {
+      setCachedData('buckets', buckets);
+    }
     updateStats();
     buildFilters();
     renderBuckets(allBuckets);
   } catch (e) {
-    document.getElementById('bucket-list').innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+    showError('bucket-list', e.message);
+  }
+}
+
+async function loadExpiringMemories() {
+  var card = document.getElementById('expiring-memories');
+  var listEl = document.getElementById('expiring-list');
+  var countEl = document.getElementById('expiring-count');
+  if (!card || !listEl) return;
+
+  try {
+    var res = await authFetch(BASE + '/api/buckets?expiring=1&limit=1000');
+    if (!res) return;
+    var data = await res.json();
+    var buckets = data.buckets || data;
+    var expiring = buckets.filter(function(b) { return (b.score || 0) < 0.3; });
+
+    card.style.display = 'block';
+
+    if (!expiring.length) {
+      listEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim);padding:8px 0;">暂无</div>';
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+
+    if (countEl) countEl.textContent = expiring.length + ' 项';
+
+    var html = '';
+    for (var i = 0; i < expiring.length; i++) {
+      var b = expiring[i];
+      var shortId = b.id.substring(0, 8);
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--card-bg);border-radius:var(--radius-sm);border:1px solid var(--border);margin-bottom:6px;">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(b.name) + '</div>' +
+          '<div style="font-size:11px;color:var(--text-light);">得分 ' + (b.score || 0).toFixed(2) + ' · #' + shortId + '</div>' +
+        '</div>' +
+        '<button onclick="keepMemory(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-glow);color:var(--accent);cursor:pointer;font-size:12px;flex-shrink:0;">保留</button>' +
+      '</div>';
+    }
+    listEl.innerHTML = html;
+  } catch(e) {
+    console.error('loadExpiringMemories failed:', e);
+  }
+}
+
+async function keepMemory(bucketId) {
+  try {
+    var resp = await authFetch(BASE + '/api/bucket/' + bucketId, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({importance: 8})
+    });
+    if (resp && resp.ok) {
+      invalidateCache('buckets');
+      loadExpiringMemories();
+      loadBuckets();
+    } else {
+      alert('保留失败');
+    }
+  } catch(e) {
+    alert('保留失败: ' + e.message);
   }
 }
 
@@ -497,15 +571,18 @@ function renderBuckets(buckets) {
         'event': '#2F4F4F', 'experience': '#6A6A8B', 'candlestick': '#DAA520'
       };
       var typeColor = typeColors[bucketType] || '#888';
+      var lockBadge = b.is_private ? '<span style="display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:4px;background:rgba(220,120,120,0.12);color:#C0392B;font-size:10px;font-weight:500;">隐私</span>' : '';
+      var checkedAttr = selectedBuckets.has(b.id) ? 'checked' : '';
+      var checkboxHtml = '<input type="checkbox" class="bucket-checkbox" ' + checkedAttr + ' onclick="event.stopPropagation();toggleBucketSelection(\'' + b.id + '\')" style="margin-right:8px;">';
 
       html += '<div class="bucket-row' + (b.type === 'identity' ? ' identity-card' : b.type === 'pattern' ? ' pattern-card' : '') + '" data-bucket-id="' + b.id + '">' +
-        '<div class="name">' + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span></div>' +
+        '<div class="name">' + checkboxHtml + lockBadge + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span></div>' +
         (preview ? '<div class="preview">' + preview + '</div>' : '') +
         '<div class="row-tags">' +
           '<span style="padding:1px 6px;border-radius:4px;background:rgba(' + hexToRgb(typeColor) + ',0.1);color:' + typeColor + ';" class="type">' + bucketType + '</span>' +
           (b.domain && b.domain.length ? '<span class="domain">' + b.domain.join(', ') + '</span>' : '') +
           '<span class="emotion">' + emotionDisplay + '</span>' +
-          (b.pinned ? '<span style="color:#9A7B4F;">★</span>' : '') +
+          (b.pinned ? '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#9A7B4F;margin-right:4px;"></span>' : '') +
           '<span style="margin-left:auto;color:var(--text-light);font-size:11px;">' + (b.score || 0).toFixed(2) + '</span>' +
         '</div>' +
       '</div>';
@@ -527,17 +604,40 @@ async function searchBuckets(query) {
   }
 }
 
-async function showDetail(id) {
+async function showDetail(id, prefetched) {
   var panel = document.getElementById('detail-panel');
   var content = document.getElementById('detail-content');
   content.innerHTML = '<div class="loading">加载中…</div>';
   panel.classList.add('open');
 
   try {
-    var res = await fetch(BASE + '/api/bucket/' + id, { credentials: 'include' });
-    var b = await res.json();
+    var b = prefetched;
+    if (!b) {
+      var res = await fetch(BASE + '/api/bucket/' + id, { credentials: 'include' });
+      b = await res.json();
+    }
     var meta = b.metadata || {};
     var bucketType = meta.type || 'event';
+
+    // --- Handle locked private buckets ---
+    // --- 处理隐私锁定的记忆桶 ---
+    if (b.locked) {
+      var detailHtml = '<h2>' + esc(meta.name || id) + '</h2>';
+      detailHtml += '<div style="text-align:center;padding:40px 20px;">';
+      detailHtml += '<div style="font-size:14px;color:var(--text-dim);margin-bottom:20px;">这是一条隐私记忆，请输入密码查看完整内容</div>';
+      detailHtml += '<input type="password" id="privacy-unlock-input" placeholder="输入密码" style="width:200px;padding:10px 14px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:inherit;text-align:center;margin-bottom:12px;" />';
+      detailHtml += '<div id="privacy-unlock-error" style="color:var(--negative);font-size:12px;margin-bottom:12px;min-height:16px;"></div>';
+      detailHtml += '<button onclick="unlockPrivacyBucket(\'' + id + '\')" style="padding:10px 24px;border:none;background:var(--accent);color:white;border-radius:12px;cursor:pointer;font-size:13px;">查看内容</button>';
+      detailHtml += '</div>';
+      content.innerHTML = detailHtml;
+
+      var unlockInput = document.getElementById('privacy-unlock-input');
+      unlockInput.focus();
+      unlockInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') unlockPrivacyBucket(id);
+      });
+      return;
+    }
     
     // Build emotion display
     var emotionHtml = '';
@@ -691,13 +791,126 @@ async function showDetail(id) {
     
     detailHtml += '<div class="detail-content">' + esc(b.content) + '</div>';
     
-    detailHtml += '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">';
-    detailHtml += '<button onclick="showAddRelationModal(\'' + id + '\')" style="width:100%;padding:10px;border:none;background:var(--accent);color:white;border-radius:12px;cursor:pointer;font-size:13px;">+ 添加关联记忆</button>';
+    detailHtml += '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);display:flex;gap:12px;">';
+    detailHtml += '<button onclick="showAddRelationModal(\'' + id + '\')" style="flex:1;padding:10px;border:none;background:var(--accent);color:white;border-radius:12px;cursor:pointer;font-size:13px;">+ 添加关联记忆</button>';
+    if (meta.is_private) {
+      detailHtml += '<button onclick="togglePrivacyLock(\'' + id + '\', false)" style="padding:10px 16px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;cursor:pointer;font-size:13px;">解除锁定</button>';
+    } else {
+      detailHtml += '<button onclick="showPrivacyLockDialog(\'' + id + '\')" style="padding:10px 16px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;cursor:pointer;font-size:13px;">设为隐私</button>';
+    }
     detailHtml += '</div>';
     
     content.innerHTML = detailHtml;
   } catch (e) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+  }
+}
+
+async function unlockPrivacyBucket(id) {
+  var input = document.getElementById('privacy-unlock-input');
+  var errorEl = document.getElementById('privacy-unlock-error');
+  if (!input) return;
+
+  var password = input.value;
+  if (!password) {
+    errorEl.textContent = '请输入密码';
+    return;
+  }
+
+  try {
+    var res = await fetch(BASE + '/api/bucket/' + id + '?password=' + encodeURIComponent(password), { credentials: 'include' });
+    var b = await res.json();
+    if (b.locked) {
+      errorEl.textContent = '密码错误';
+      input.value = '';
+      input.focus();
+      return;
+    }
+    // Password correct — re-render detail with full content
+    showDetail(id, b);
+  } catch (e) {
+    errorEl.textContent = '解锁失败: ' + e.message;
+  }
+}
+
+function showPrivacyLockDialog(bucketId) {
+  var modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div style="background:var(--surface-solid);border-radius:24px;padding:24px;width:400px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <h3 style="margin:0;">设为隐私记忆</h3>
+        <button onclick="this.closest('.modal-overlay').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
+      </div>
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">设置密码后，前端列表中将隐藏内容预览，查看完整内容需要输入密码。</p>
+      <input type="password" id="privacy-lock-password" placeholder="设置密码（至少3位）" style="width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--border);margin-bottom:8px;background:var(--surface);color:var(--text);font-family:inherit;" />
+      <input type="password" id="privacy-lock-confirm" placeholder="确认密码" style="width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--border);margin-bottom:12px;background:var(--surface);color:var(--text);font-family:inherit;" />
+      <div id="privacy-lock-error" style="color:var(--negative);font-size:12px;margin-bottom:12px;min-height:16px;"></div>
+      <button onclick="confirmPrivacyLock('${bucketId}')" style="width:100%;padding:10px;border:none;background:var(--accent);color:white;border-radius:12px;cursor:pointer;font-size:13px;">确认锁定</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('#privacy-lock-password').focus();
+}
+
+async function confirmPrivacyLock(bucketId) {
+  var pwd = document.getElementById('privacy-lock-password').value;
+  var confirmPwd = document.getElementById('privacy-lock-confirm').value;
+  var errorEl = document.getElementById('privacy-lock-error');
+
+  if (!pwd || pwd.length < 3) {
+    errorEl.textContent = '密码至少3位';
+    return;
+  }
+  if (pwd !== confirmPwd) {
+    errorEl.textContent = '两次密码不一致';
+    return;
+  }
+
+  try {
+    var res = await authFetch('/api/bucket/' + bucketId + '/privacy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_private: true, password: pwd })
+    });
+    if (!res) return;
+    var data = await res.json();
+    if (data.success) {
+      document.querySelector('.modal-overlay').remove();
+      showDetail(bucketId);
+      loadBuckets();
+    } else {
+      errorEl.textContent = data.error || '锁定失败';
+    }
+  } catch (e) {
+    errorEl.textContent = '锁定失败: ' + e.message;
+  }
+}
+
+async function togglePrivacyLock(bucketId, lock) {
+  if (lock) {
+    showPrivacyLockDialog(bucketId);
+    return;
+  }
+  // Unlock
+  if (!confirm('确定要解除这条记忆的隐私锁定吗？')) return;
+  try {
+    var res = await authFetch('/api/bucket/' + bucketId + '/privacy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_private: false, password: '' })
+    });
+    if (!res) return;
+    var data = await res.json();
+    if (data.success) {
+      showDetail(bucketId);
+      loadBuckets();
+    } else {
+      alert('解锁失败: ' + (data.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('解锁失败: ' + e.message);
   }
 }
 
@@ -1360,6 +1573,16 @@ function escapeHtml(s) {
   return esc(s);
 }
 
+function showLoading(container) {
+  if (typeof container === 'string') container = document.getElementById(container);
+  if (container) container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);">加载中...</div>';
+}
+
+function showError(container, msg) {
+  if (typeof container === 'string') container = document.getElementById(container);
+  if (container) container.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">加载失败: ' + escapeHtml(msg) + '</div>';
+}
+
 function formatTimeAgo(iso) {
   if (!iso) return '—';
   var d = new Date(iso);
@@ -1557,6 +1780,7 @@ async function doImportBrain() {
 checkAuth().then((authenticated) => {
   if (authenticated) {
     loadBuckets();
+    loadExpiringMemories();
     checkAIStatus();
   }
 });
@@ -1662,6 +1886,65 @@ async function doRegenerateNames() {
   }
 }
 
+// ========================================
+// Bucket list batch operations / 记忆桶批量操作
+// ========================================
+function toggleBucketSelection(bucketId) {
+  if (selectedBuckets.has(bucketId)) {
+    selectedBuckets.delete(bucketId);
+  } else {
+    selectedBuckets.add(bucketId);
+  }
+  updateBatchToolbar();
+}
+
+function clearBatchSelection() {
+  selectedBuckets.clear();
+  var checkboxes = document.querySelectorAll('.bucket-checkbox');
+  checkboxes.forEach(function(cb) { cb.checked = false; });
+  updateBatchToolbar();
+}
+
+function updateBatchToolbar() {
+  var toolbar = document.getElementById('batchToolbar');
+  var countEl = document.getElementById('batchCount');
+  if (!toolbar) return;
+  if (selectedBuckets.size > 0) {
+    toolbar.style.display = 'flex';
+    if (countEl) countEl.textContent = '已选 ' + selectedBuckets.size + ' 项';
+  } else {
+    toolbar.style.display = 'none';
+  }
+}
+
+async function batchSetResolved() {
+  if (selectedBuckets.size === 0) return;
+  var ids = Array.from(selectedBuckets);
+  var succeeded = 0;
+  var failed = 0;
+  for (var i = 0; i < ids.length; i++) {
+    try {
+      var resp = await authFetch(BASE + '/api/bucket/' + ids[i], {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({resolved: 1})
+      });
+      if (resp && resp.ok) {
+        succeeded++;
+      } else {
+        failed++;
+      }
+    } catch(e) {
+      failed++;
+    }
+  }
+  alert('批量沉底完成：成功 ' + succeeded + ' 项，失败 ' + failed + ' 项');
+  clearBatchSelection();
+  invalidateCache('buckets');
+  loadBuckets();
+  loadExpiringMemories();
+}
+
 var selectedMemories = new Set();
 
 function toggleSelect(id) {
@@ -1705,34 +1988,50 @@ function updateBatchDeleteButton() {
 }
 
 async function batchDelete() {
-  if (selectedMemories.size === 0) return;
-  
-  if (!confirm(`确定要删除选中的 ${selectedMemories.size} 条记忆吗？`)) {
+  var ids = Array.from(selectedBuckets);
+  var fromMemories = false;
+  if (ids.length === 0) {
+    ids = Array.from(selectedMemories);
+    fromMemories = true;
+  }
+  if (ids.length === 0) return;
+
+  if (!confirm('确定要删除选中的 ' + ids.length + ' 条记忆吗？')) {
     return;
   }
-  
+
   var btn = document.getElementById('batch-delete-btn');
   if (btn) btn.innerHTML = '删除中...';
-  
-  var deleted = 0;
-  var errors = 0;
-  
-  for (var id of selectedMemories) {
-    try {
-      await fetch(BASE + '/api/bucket/' + id, { method: 'DELETE' });
-      deleted++;
-    } catch {
-      errors++;
+
+  try {
+    var resp = await authFetch(BASE + '/api/buckets/batch', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids: ids})
+    });
+    if (!resp) return;
+    var data = await resp.json();
+    if (data.success) {
+      selectedBuckets.clear();
+      selectedMemories.clear();
+      updateBatchDeleteButton();
+      updateBatchToolbar();
+      invalidateCache('buckets');
+      if (btn) btn.innerHTML = '删除完成';
+      if (fromMemories) {
+        setTimeout(function() { loadDirectory(); }, 300);
+      } else {
+        loadBuckets();
+        loadExpiringMemories();
+      }
+    } else {
+      alert('删除失败: ' + (data.error || '未知错误'));
+      if (btn) btn.innerHTML = '🗑️ 删除选中';
     }
+  } catch(e) {
+    alert('删除失败: ' + e.message);
+    if (btn) btn.innerHTML = '🗑️ 删除选中';
   }
-  
-  selectedMemories.clear();
-  updateBatchDeleteButton();
-  
-  if (btn) btn.innerHTML = '删除完成';
-  setTimeout(function() {
-    loadDirectory();
-  }, 500);
 }
 
 function renderDirectory(data) {
@@ -1841,8 +2140,8 @@ function renderDirectory(data) {
               <span style="width:6px;height:6px;border-radius:50%;background:${decayColors[decayStage-1]};"></span>
               <span style="color:${decayColors[decayStage-1]};font-weight:500;">${decayLabels[decayStage-1]}</span>
             </span>
-            ${entry.activation_count > 0 ? `<span style="display:flex;align-items:center;gap:2px;">🔄 ${entry.activation_count}次</span>` : ''}
-            ${entry.created ? `<span>📅 ${entry.created.slice(0,10)}</span>` : ''}
+            ${entry.activation_count > 0 ? `<span style="display:flex;align-items:center;gap:2px;">${entry.activation_count}次</span>` : ''}
+            ${entry.created ? `<span>${entry.created.slice(0,10)}</span>` : ''}
           </div>
           <div style="height:2px;background:var(--border);border-radius:1px;overflow:hidden;margin-bottom:8px;">
             <div style="height:100%;width:${importanceWidth}%;background:linear-gradient(90deg, ${importanceColor}, ${importanceColor}80);border-radius:1px;transition:width 0.5s;"></div>
@@ -2977,7 +3276,7 @@ function renderCandlesticks(candlesticks) {
   
   stats.innerHTML = `
     <div style="background:linear-gradient(135deg,#FFB74D15,#FFB74D08);border-radius:14px;padding:18px 24px;border:1px solid #FFB74D20;display:flex;align-items:center;gap:14px;">
-      <div style="width:44px;height:44px;border-radius:12px;background:#FFB74D;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:600;">🕯️</div>
+      <div style="width:44px;height:44px;border-radius:12px;background:#FFB74D;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:600;">${candlesticks.length}</div>
       <div>
         <div style="font-size:14px;font-weight:500;">总感想</div>
         <div style="font-size:11px;color:var(--text-dim);">${candlesticks.length} 条感悟记录</div>
@@ -2996,7 +3295,7 @@ function renderCandlesticks(candlesticks) {
       <div style="background:var(--surface);border-radius:16px;padding:20px;border:1px solid var(--border);margin-bottom:14px;transition:all 0.2s;border-left:4px solid #FFB74D;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
           <div>
-            ${candle.title ? `<h3 style="margin:0;font-size:17px;font-weight:600;color:var(--text);">${escapeHtml(candle.title)}</h3>` : ''}
+            <h3 style="margin:0;font-size:17px;font-weight:600;color:var(--text);">${escapeHtml(candle.title || candle.content.substring(0, 20))}</h3>
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${candle.created ? new Date(candle.created).toLocaleString() : ''}</div>
           </div>
           <div style="display:flex;gap:6px;">
@@ -3015,6 +3314,7 @@ function renderCandlesticks(candlesticks) {
 async function loadCandlesticks() {
   const list = document.getElementById('candlestick-list');
   try {
+    showLoading('candlestick-list');
     const cached = getCachedData('candlesticks');
     if (cached) {
       renderCandlesticks(cached);
@@ -3028,7 +3328,7 @@ async function loadCandlesticks() {
     setCachedData('candlesticks', candlesticks);
     renderCandlesticks(candlesticks);
   } catch(e) {
-    list.innerHTML = `<div class="loading">加载失败: ${e.message}</div>`;
+    showError('candlestick-list', e.message);
   }
 }
 
@@ -3083,6 +3383,11 @@ async function deleteCandlestick(candlestickId) {
       method: 'DELETE'
     });
     if (!resp) return;
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert('删除失败: ' + (errData.error || `HTTP ${resp.status}`));
+      return;
+    }
     
     invalidateCache('candlesticks');
     loadCandlesticks();
@@ -3105,7 +3410,7 @@ async function loadCycle() {
     renderCycleSummary(data.summary);
     renderCycleList(data.records);
   } catch(e) {
-    list.innerHTML = `<div class="loading">加载失败: ${e.message}</div>`;
+    showError('cycle-list', e.message);
   }
 }
 
@@ -3114,21 +3419,21 @@ function renderCycleSummary(summary) {
   const daysUntil = summary.days_until_next;
   let statusColor = 'var(--text)';
   let statusText = '---';
-  let statusIcon = '📅';
+  let statusBadge = '';
   
   if (daysUntil !== null) {
     if (daysUntil === 0) {
       statusColor = 'var(--negative)';
       statusText = '今天';
-      statusIcon = '🩸';
+      statusBadge = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--negative);margin-right:8px;"></span>';
     } else if (daysUntil === 1) {
       statusColor = 'var(--warning)';
       statusText = '明天';
-      statusIcon = '⚠️';
+      statusBadge = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warning);margin-right:8px;"></span>';
     } else if (daysUntil <= 5) {
       statusColor = 'var(--warning)';
       statusText = daysUntil + '天后';
-      statusIcon = '⏳';
+      statusBadge = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warning);margin-right:8px;"></span>';
     } else {
       statusText = daysUntil + '天后';
     }
@@ -3137,7 +3442,7 @@ function renderCycleSummary(summary) {
   container.innerHTML = `
     <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">距离下次</div>
-      <div style="font-size:28px;font-weight:600;color:${statusColor};">${statusIcon} ${statusText}</div>
+      <div style="font-size:28px;font-weight:600;color:${statusColor};display:flex;align-items:center;">${statusBadge}${statusText}</div>
     </div>
     <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">平均周期</div>
@@ -3177,7 +3482,7 @@ function renderCycleList(records) {
     }[record.flow_level] || record.flow_level;
     
     html += `
-      <div style="background:var(--surface);border-radius:var(--radius-md);padding:16px;border:1px solid var(--border);margin-bottom:10px;position:relative;">
+      <div style="background:var(--surface);border-radius:var(--radius-md);padding:16px;border:1px solid var(--border);margin-bottom:10px;position:relative;border-left:3px solid var(--negative);">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">
           <div>
             <div style="font-weight:600;font-size:14px;color:var(--text);">${record.start_date}</div>
@@ -3186,7 +3491,12 @@ function renderCycleList(records) {
               ${record.pain_level > 0 ? ' · 疼痛 ' + record.pain_level + '/10' : ''}
             </div>
           </div>
-          <div style="font-size:24px;">🩸</div>
+          <button onclick="deleteCycleRecord(decodeURIComponent('${encodeURIComponent(record.start_date)}'))" 
+            style="background:none;border:none;color:var(--text-dim);cursor:pointer;padding:4px 8px;border-radius:var(--radius-sm);transition:all 0.2s;"
+            onmouseover="this.style.color='var(--negative)';this.style.background='rgba(255,100,100,0.1)'"
+            onmouseout="this.style.color='var(--text-dim)';this.style.background='none'">
+            删除
+          </button>
         </div>
         ${record.symptoms ? `<div style="font-size:13px;color:var(--text);margin-bottom:8px;">症状: ${record.symptoms}</div>` : ''}
         ${record.notes ? `<div style="font-size:12px;color:var(--text-dim);background:var(--surface-solid);padding:8px;border-radius:var(--radius-sm);">${record.notes}</div>` : ''}
@@ -3195,6 +3505,22 @@ function renderCycleList(records) {
   });
   
   list.innerHTML = html;
+}
+
+async function deleteCycleRecord(startDate) {
+  if (!confirm('确定要删除这条记录吗？')) return;
+  try {
+    const res = await authFetch(`/api/cycle/${startDate}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      renderCycleSummary(data.summary);
+      loadCycle();
+    } else {
+      alert('删除失败: ' + (data.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
 }
 
 function showCycleEditor() {
@@ -3849,6 +4175,7 @@ function renderExperiences(data) {
 async function loadExperiences() {
   const list = document.getElementById('experience-list');
   try {
+    showLoading('experience-list');
     const cached = getCachedData('experiences');
     if (cached) {
       const filtered = currentExpFilter ? cached.filter(e => e.exp_type === currentExpFilter) : cached;
@@ -3863,7 +4190,7 @@ async function loadExperiences() {
     const filtered = currentExpFilter ? data.filter(e => e.exp_type === currentExpFilter) : data;
     renderExperiences(filtered);
   } catch(e) {
-    list.innerHTML = `<div class="loading">加载失败: ${e.message}</div>`;
+    showError('experience-list', e.message);
   }
 }
 
@@ -4922,12 +5249,12 @@ function renderMoodWidget() {
   
   var summaryHtml = '';
   summaryHtml += '<div class="mood-summary-item"><span class="mood-summary-dot" style="background:' + (emotionColorMap[dominant] || '#6A6A8B') + ';"></span>主导情绪: <strong>' + esc(dominant) + '</strong></div>';
-  summaryHtml += '<div class="mood-summary-item">📊 总标记: ' + totalEmotions + '</div>';
+  summaryHtml += '<div class="mood-summary-item">总标记: ' + totalEmotions + '</div>';
   if (posCount > 0 || negCount > 0) {
     var ratio = posCount + negCount > 0 ? Math.round((posCount / (posCount + negCount)) * 100) : 50;
-    summaryHtml += '<div class="mood-summary-item">😊 正向: ' + ratio + '%</div>';
+    summaryHtml += '<div class="mood-summary-item">正向: ' + ratio + '%</div>';
   }
-  summaryHtml += '<div class="mood-summary-item">📅 ' + new Date().toLocaleDateString('zh-CN') + '</div>';
+  summaryHtml += '<div class="mood-summary-item">' + new Date().toLocaleDateString('zh-CN') + '</div>';
   summary.innerHTML = summaryHtml;
 }
 

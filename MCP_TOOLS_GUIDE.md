@@ -1,818 +1,125 @@
-# Ombre Brain MCP 工具使用说明
+# Ombre Brain MCP 工具指南
 
-## 概述
-
-Ombre Brain 是一个基于 FastMCP 的记忆系统服务，提供记忆的存储、检索、关联和分析功能。本说明文档面向 AI 模型，介绍如何调用每个 MCP 工具。
+你（AI）通过以下工具管理用户的长期记忆。记忆桶是基本单元，含正文+元数据（情感坐标、标签、重要度）。非永久记忆随时间衰减。
 
 ---
 
-## 工具分类总览
+## 检索
 
-| 分类 | 工具名称 | 功能描述 |
-|------|----------|----------|
-| **记忆检索** | breath, query_memory | 关键词搜索、自动浮现、按条件筛选 |
-| **记忆存储** | hold, grow | 存储单条记忆、日记归档 |
-| **周期追踪** | record_cycle | 记录例假周期、自动预测、提醒 |
-| **记忆管理** | trace, manage_record | 修改元数据、CRUD 操作 |
-| **批量操作** | memory_batch_delete, smart_organize, weekly_organize | 批量删除、智能整理 |
-| **关系管理** | manage_relation, manage_identity_relation, link_events | 建立因果链、身份关系 |
-| **专项查询** | get_roster, get_experiences, get_memos, get_anchors, get_timelines, get_event_chains | 名册、经验、备忘录、锚点、时间链、事件链 |
-| **AI 分析** | ai_analyze, ai_manage | AI 关联、智能管家 |
-| **系统状态** | pulse, analytics, memory_directory | 系统状态、统计分析、目录摘要 |
-| **数据导入导出** | memory_export, export_brain, import_brain | 数据导出、大脑备份恢复 |
-| **回音壁管理** | review_digest, approve_action, reject_action | 审阅提案、批准/驳回提案 |
-| **管家任务** | run_housekeeper, run_weekly_housekeeper | 手动触发每日/每周管家任务 |
-| **静默预处理** | inject_context | 自动检索并注入上下文 |
+breath(query, domain, valence, arousal, importance_min, brief, type, max_results, max_tokens)
+  空 query=浮现高权重记忆；有 query=三步检索。valence/arousal 0~1 筛选情感，importance_min>=1 按重要度降序。
+  联动: inject_context()→breath()→回复→hold()
 
----
+query_memory(query, mode)
+  mode=search/float/status/directory/recent，通用入口。
 
-## 详细工具说明
+## 存储
 
-### 1. 记忆检索类
+hold(content, importance, tags, pinned, feel, task_flag, source_bucket, valence, arousal)
+  自动情感打标+查重合并。pinned=永久不衰减。feel=True 存AI感受（配合source_bucket标记源记忆已消化）。task_flag=True 在用户脆弱时屏蔽。
 
-#### breath - 检索/浮现记忆
+grow(content) 长文本自动拆分存储。
 
-```python
-breath(query="", max_tokens=5000, domain="", valence=-1, arousal=-1, 
-       max_results=10, importance_min=-1, brief=True, type="", summary_report=True)
-```
+## 管理
 
-**参数说明：**
-- `query`: 搜索关键词，不传或传空=自动浮现模式，有值=关键词检索模式
-- `max_tokens`: 返回总 token 上限（默认 5000，最大 20000）
-- `domain`: 按主题域筛选，逗号分隔（如"工作,生活"）
-- `valence`: 效价坐标 0~1（-1 忽略），0=负面，1=正面
-- `arousal`: 唤醒度坐标 0~1（-1 忽略），0=平静，1=兴奋
-- `max_results`: 返回数量上限（默认 10，最大 50）
-- `importance_min`: >=1 时按重要度降序返回（不走语义搜索）
-- `brief`: 返回格式，true=简洁格式（元数据+摘要），false=完整格式
-- `type`: 按层过滤，可选 identity/pattern/event/feel，不传全层返回
-- `summary_report`: 对未完全展示的记忆生成快速总结
+trace(bucket_id, resolved, importance, pinned, digested, content, delete, ...)
+  日常维护最常用。resolved=1沉底，delete=True删除（移入回收站，24h可恢复）。
 
-**使用场景：**
-- `breath()` - 自动浮现最近记忆
-- `breath(query="工作项目")` - 关键词搜索
-- `breath(domain="工作", importance_min=8)` - 按领域和重要度筛选
-- `breath(valence=0.8, arousal=0.6)` - 按情感坐标筛选
+manage_record(action, record_type, record_id, ...)
+  CRUD操作。record_type: identity/pattern/candlestick/experience/annual_ring。标题为空时自动从内容生成。
 
----
+## 隐私
 
-#### query_memory - 通用记忆查询
+lock_memory(bucket_id, password) 锁定，前端需密码查看，AI检索不受影响。密码SHA256存储。
+unlock_memory(bucket_id) 解锁。
 
-```python
-query_memory(query="", mode="search", **kwargs)
-```
+## 周期
 
-**参数说明：**
-- `mode`: 模式，可选 search/float/status/directory/recent
-  - `search`: 关键词搜索（调用 breath）
-  - `float`: 自动浮现（调用 breath，brief=True）
-  - `status`: 系统状态（调用 pulse）
-  - `directory`: 目录摘要（调用 memory_directory）
-  - `recent`: 最近事件（调用 summarize_recent_events）
-- `query`: 搜索关键词（search 模式需要）
-- `kwargs`: 传递给对应工具的额外参数
+record_cycle(start_date, symptoms, duration, flow_level, pain_level)
+  记录例假，自动预测下次日期。距预测0-5天时breath()自动追加提醒。至少2次记录才开始预测。
 
-**使用场景：**
-- `query_memory(mode="status")` - 获取系统状态
-- `query_memory(query="会议", mode="search")` - 搜索会议相关记忆
+## 每日日志
 
----
+complete_journal(date, mood_comment, emotion_tags)
+  主AI为指定日期日记补充情绪点评和心情标签。date留空默认今天。管家已生成事件摘要，此工具补充情感层面。
+  日记与记忆桶完全隔离，不参与breath()/inject_context()。
 
-### 2. 记忆存储类
+query_journal(date, keyword, limit)
+  按日期精确查询或关键词搜索日记。date优先；无date和keyword时返回最近条目列表。
+  日记不自动浮现，仅在用户询问具体日期或相关话题时主动调用此工具查询。
 
-#### hold - 存储单条记忆
+## 批量
 
-```python
-hold(content, tags="", importance=5, pinned=False, feel=False, 
-     task_flag=False, source_bucket="", valence=-1, arousal=-1)
-```
+memory_batch_delete(bucket_ids) 批量删除。
+smart_organize(days, importance_drop) 降低过期记忆权重。
+weekly_organize() 生成周报告。
+tag_normalize(action) 标签归一化。
 
-**参数说明：**
-- `content`: 记忆内容（必填）
-- `tags`: 标签，逗号分隔
-- `importance`: 重要度 1~10（默认 5）
-- `pinned`: 是否钉选（创建永久钉选桶）
-- `feel`: 是否存储为 AI 感受模式（不参与普通浮现）
-- `task_flag`: 是否标记为任务类记忆（用户脆弱状态时自动屏蔽）
-- `source_bucket`: 源记忆桶 ID（feel 模式下标记源记忆为已消化）
-- `valence`: 情感效价 0~1（仅 feel 模式有效）
-- `arousal`: 情感唤醒度 0~1（仅 feel 模式有效）
+## 关系
 
-**使用场景：**
-- `hold(content="今天完成了项目文档")` - 存储普通记忆
-- `hold(content="用户现在心情不太好", feel=True, valence=0.3, arousal=0.4)` - 存储 AI 感受
-- `hold(content="完成周报", task_flag=True)` - 存储任务类记忆
+link_events(prev_id, next_id) 建立因果链（prev=前因, next=后果）。
+manage_relation(action, bucket_id, target_id) link/parent chain/importance。
+manage_identity_relation(action, from_id, to_id, relation_type) 人物关系。
+trace_chain(bucket_id, direction) 追溯因果链, direction=previous/next/both。
+
+## 查询
+
+get_roster(name) get_experiences() get_memos() get_anchors(active_only) get_timelines() get_event_chains()
+
+## AI分析
+
+ai_analyze(task, bucket_id, query) task=link/find/chain/summarize/classify。
+ai_manage(request) 自然语言请求，自动调用工具。
+
+## 系统
+
+pulse() 系统概览。analytics() 统计分析。memory_directory(detail_level) 目录摘要。
+
+## 管家与回音壁
+
+管家仅生成提案，不直接执行任何破坏性操作。所有提案需主AI审批后才执行。记忆衰减是自动机制，无需审批。
+
+run_housekeeper() 每日管家：事件摘要写入日记、冲突检测、情绪分析。生成提案到回音壁。
+run_weekly_housekeeper() 每周管家：事件链合并提案、过期记忆清理提案。仅提案不执行。
+review_digest() 查看待办提案。
+approve_action(action_id) 批准并执行（cleanup→删除记忆, conflict→标记旧记忆已解决, chain_merge→合并事件链）。
+reject_action(action_id) 驳回。
+approve_event_chain(chain_id) 事件链结案。
+
+## 其他
+
+dream() 读取最近记忆供自省，读后hold(feel=True, source_bucket=ID)消化或trace(resolved=1)沉底。
+summarize_recent_events(days) 最近事件概括。
+inject_context(user_input) 静默预处理，自动注入相关记忆到Prompt。
+memory_export(export_type) export_brain(output_path) import_brain(zip_path, overwrite)
 
 ---
 
-#### grow - 日记归档
+## 典型工作流
 
-```python
-grow(content)
-```
-
-**参数说明：**
-- `content`: 日记内容（必填）
-
-**功能描述：**
-自动将长文本日记拆分为多个记忆桶，短内容（<30字）走快速路径。
-
-**使用场景：**
-- `grow(content="今天上午开了会议，下午写了代码，晚上和朋友聚餐...")`
-
----
-
-#### record_cycle - 记录例假周期数据
-
-```python
-record_cycle(start_date, symptoms="", duration=5, notes="", flow_level="normal", pain_level=0)
-```
-
-**参数说明：**
-- `start_date`: 开始日期（必填，格式：YYYY-MM-DD 或 YYYY/MM/DD）
-- `symptoms`: 症状描述（如：腹痛、腰酸、头晕）
-- `duration`: 持续天数（默认 5 天，范围 1-14）
-- `notes`: 备注信息
-- `flow_level`: 流量级别，可选 light（少量）/normal（正常）/heavy（大量）
-- `pain_level`: 疼痛程度（0-10，0=无痛，10=剧痛）
-
-**功能描述：**
-记录每次例假的详细信息。系统会根据历史记录自动计算平均周期长度，预测下次例假日期。当距离预测日期还有 0-5 天时，调用 `breath()` 会自动显示提醒。
-
-**注意事项：**
-- 至少需要 2 次记录才能开始预测下次日期
-- 预测算法会过滤异常周期（20-45天范围之外）
-- 数据存储在独立的 JSON 文件中，不占用记忆桶配额
-
-**使用场景：**
-- `record_cycle(start_date="2026-07-03", symptoms="腹痛、腰酸", duration=5)` - 记录常规例假
-- `record_cycle(start_date="2026-08-01", symptoms="轻微腹痛", flow_level="light", pain_level=3)` - 记录流量较少的情况
-- `record_cycle(start_date="2026-09-05", symptoms="严重腹痛、头晕", flow_level="heavy", pain_level=8, notes="这次特别难受，请了一天假")` - 记录严重症状
+1. 日常对话: inject_context()→breath()→回复→hold()→视情况lock_memory()
+2. 长日记: grow()→ai_analyze(task="link")→run_housekeeper()
+3. 事件链: hold(A)→hold(B)→link_events(A,B)→trace_chain()追溯→approve_event_chain()结案→manage_record(create,experience)提炼
+4. 冲突处理: run_housekeeper()检测→review_digest()查看→approve_action()/reject_action()
+5. 人物管理: manage_record(create,identity)→manage_identity_relation(add)→get_roster()
+6. 记忆清理: run_weekly_housekeeper()→review_digest()→approve_action()或memory_batch_delete()
+7. 敏感信息: hold()→lock_memory()→breath()仍可读取用于关怀
+8. 例假关怀: record_cycle()记录→breath()临近时自动提醒→调整回复风格
+9. 情感关怀: hold(feel=True)→analytics()→breath(valence=0.2)→主动关怀
+10. 自省消化: dream()→hold(feel=True,source_bucket=ID)→trace(resolved=1)
+11. 每日日志: run_housekeeper()生成事件摘要→complete_journal()补充情绪点评→后续query_journal()按需查询
 
 ---
 
-### 3. 记忆管理类
-
-#### trace - 修改记忆元数据或内容
-
-```python
-trace(bucket_id, name="", domain="", valence=-1, arousal=-1, importance=-1, 
-      tags="", resolved=-1, force_resolved=-1, pinned=-1, digested=-1, 
-      task_flag=-1, content="", delete=False)
-```
-
-**参数说明：**
-- `bucket_id`: 记忆桶 ID（必填）
-- `name`: 修改名称
-- `domain`: 修改主题域（逗号分隔）
-- `valence`: 修改效价 0~1（-1=不改）
-- `arousal`: 修改唤醒度 0~1（-1=不改）
-- `importance`: 修改重要度 1~10（-1=不改）
-- `tags`: 修改标签（逗号分隔）
-- `resolved`: 1=沉底/0=激活（-1=不改）
-- `force_resolved`: 强制沉底（用于 task_flag=True 的桶）
-- `pinned`: 1=钉选/0=取消（-1=不改）
-- `digested`: 1=隐藏/0=取消隐藏（-1=不改）
-- `task_flag`: 1=标记任务类/0=取消（-1=不改）
-- `content`: 替换桶正文
-- `delete`: True=删除该记忆桶
-
-**使用场景：**
-- `trace(bucket_id="xxx", resolved=1)` - 沉底记忆
-- `trace(bucket_id="xxx", importance=8)` - 提升重要度
-- `trace(bucket_id="xxx", delete=True)` - 删除记忆
-
----
-
-#### manage_record - 通用记录管理
-
-```python
-manage_record(action, record_type="", record_id="", **kwargs)
-```
-
-**参数说明：**
-- `action`: 操作类型，可选 create/update/get/list/delete/apply
-- `record_type`: 记录类型，可选 identity/roster/pattern/candlestick/experience/annual_ring
-- `record_id`: 记录 ID（仅 get/update/delete/apply 需要）
-- `kwargs`: 其他参数，根据 record_type 不同
-
-**支持的 record_type：**
-
-| record_type | 说明 | create 参数 |
-|-------------|------|------------|
-| `identity` | 身份档案 | name, description, relationships |
-| `roster` | 名册（identity 别名） | 同 identity |
-| `pattern` | 行为模式 | name, description, triggers |
-| `candlestick` | 烛台备忘录 | content, bucket_id, title |
-| `experience` | 经验 | content/detail/text, exp_type, title/name, source |
-| `annual_ring` | 年轮 | content/detail/text, title/name |
-
-**使用场景：**
-- `manage_record(action="create", record_type="identity", name="张三", description="同事")`
-- `manage_record(action="list", record_type="experience")`
-- `manage_record(action="apply", record_type="experience", record_id="xxx")`
-
----
-
-### 4. 批量操作类
-
-#### memory_batch_delete - 批量删除
-
-```python
-memory_batch_delete(bucket_ids)
-```
-
-**参数说明：**
-- `bucket_ids`: 多个记忆桶 ID，逗号分隔
-
-**使用场景：**
-- `memory_batch_delete(bucket_ids="id1,id2,id3")`
-
----
-
-#### smart_organize - 智能整理
-
-```python
-smart_organize(days=30, importance_drop=2)
-```
-
-**参数说明：**
-- `days`: 超过多少天未激活视为过期（默认 30）
-- `importance_drop`: 权重降低幅度 1~5（默认 2）
-
-**规则：**
-- 跳过钉选、已解决、永久型记忆
-- 跳过重要度 ≤2 的记忆
-- 跳过最近激活的记忆
-
----
-
-#### weekly_organize - 每周内容整理
-
-```python
-weekly_organize()
-```
-
-**功能描述：**
-生成本周新增记忆报告（仅报告，不调整权重）
-
----
-
-#### tag_normalize - 标签归一化
-
-```python
-tag_normalize(action="run")
-```
-
-**参数说明：**
-- `action`: run(立即执行), status(查看状态)
-
-**功能描述：**
-将非标准标签映射到泛化标签树，后台自动每周或每 50 条记录运行一次
-
----
-
-### 5. 关系管理类
-
-#### manage_relation - 通用关联管理
-
-```python
-manage_relation(action, bucket_id="", target_id="", **kwargs)
-```
-
-**参数说明：**
-- `action`: 操作类型，可选 link/parent/chain/importance
-  - `link`: 建立双向关联
-  - `parent`: 建立父子层级
-  - `chain`: 添加到事件链
-  - `importance`: 评估重要度维度
-- `bucket_id`: 源桶 ID
-- `target_id`: 目标桶 ID（link/parent/chain 需要）
-- `kwargs`: 
-  - `position`: 事件链位置（chain 模式）
-  - `impact/duration/emotional_intensity/recurrence/interconnectedness`: 重要度维度（0~10）
-
-**使用场景：**
-- `manage_relation(action="link", bucket_id="id1", target_id="id2")`
-- `manage_relation(action="parent", bucket_id="child", target_id="parent")`
-- `manage_relation(action="importance", bucket_id="id1", impact=8, duration=5)`
-
----
-
-#### manage_identity_relation - 管理身份关系
-
-```python
-manage_identity_relation(action, from_id=None, to_id=None, relation_type="朋友", base_weight=5.0)
-```
-
-**参数说明：**
-- `action`: 操作类型，可选 add/query/update_weight
-  - `add`: 建立身份之间的关系
-  - `query`: 查询身份的所有关系
-  - `update_weight`: 更新关系权重
-- `from_id`: 源身份 ID（add/query/update_weight 需要）
-- `to_id`: 目标身份 ID（add/update_weight 需要）
-- `relation_type`: 关系类型（朋友/同事/家人等，默认"朋友"）
-- `base_weight`: 基础权重 1.0~10.0（默认 5.0）
-
-**使用场景：**
-- `manage_identity_relation(action="add", from_id="id1", to_id="id2", relation_type="同事")`
-- `manage_identity_relation(action="query", from_id="id1")`
-- `manage_identity_relation(action="update_weight", from_id="id1", to_id="id2", base_weight=8.0)`
-
----
-
-#### link_events - 建立因果链
-
-```python
-link_events(prev_id, next_id)
-```
-
-**参数说明：**
-- `prev_id`: 前因事件 ID（更早发生）
-- `next_id`: 后果事件 ID（更晚发生）
-
-**使用场景：**
-- `link_events(prev_id="cause_id", next_id="effect_id")`
-
----
-
-#### manage_relation (身份关系) - 管理身份关系
-
-```python
-manage_relation(action, from_id=None, to_id=None, relation_type="朋友", base_weight=5.0)
-```
-
-**参数说明：**
-- `action`: add(建立关系)/query(查询关系)/update_weight(更新权重)
-- `from_id`: 源身份 ID
-- `to_id`: 目标身份 ID（query 时可省略）
-- `relation_type`: 关系类型（朋友/同事/家人等）
-- `base_weight`: 基础权重 1.0~10.0
-
-**使用场景：**
-- `manage_relation(action="add", from_id="id1", to_id="id2", relation_type="同事")`
-- `manage_relation(action="query", from_id="id1")`
-
----
-
-### 6. 专项查询类
-
-#### get_roster - 查询名册
-
-```python
-get_roster(name=None)
-```
-
-**参数说明：**
-- `name`: 可选，人物姓名或别名，不传返回所有人
-
-**使用场景：**
-- `get_roster()` - 获取所有人
-- `get_roster(name="张三")` - 精确查找
-
----
-
-#### get_experiences - 获取经验
-
-```python
-get_experiences()
-```
-
-**功能描述：**
-获取所有经验（年轮）记录，包含应用次数、来源等信息
-
----
-
-#### get_memos - 获取烛台备忘录
-
-```python
-get_memos()
-```
-
-**功能描述：**
-获取所有烛台（备忘录）记录
-
----
-
-#### get_anchors - 获取行为与情绪锚点
-
-```python
-get_anchors(active_only=False)
-```
-
-**参数说明：**
-- `active_only`: 是否只返回正在生效的锚点
-
-**功能描述：**
-获取所有行为与情绪锚点（触发词+情绪基调+行为禁忌）
-
----
-
-#### get_timelines - 获取时间链
-
-```python
-get_timelines()
-```
-
-**功能描述：**
-获取所有时间链列表，用于查阅事件发展脉络
-
----
-
-### 7. AI 分析类
-
-#### ai_analyze - AI 分析工具
-
-```python
-ai_analyze(task, bucket_id="", query="")
-```
-
-**参数说明：**
-- `task`: 任务类型，可选 link/find/chain/summarize/classify
-  - `link`: AI 自动建立记忆关联
-  - `find`: 查找语义相关记忆
-  - `chain`: 构建事件链
-  - `summarize`: 总结记忆
-  - `classify`: 分类记忆
-- `bucket_id`: 记忆桶 ID（link/summarize/classify 需要）
-- `query`: 搜索关键词（find 模式需要）
-
-**使用场景：**
-- `ai_analyze(task="link", bucket_id="xxx")` - 自动建立关联
-- `ai_analyze(task="summarize", bucket_id="xxx")` - 总结记忆
-
----
-
-#### ai_manage - AI 管家
-
-```python
-ai_manage(request)
-```
-
-**参数说明：**
-- `request`: 自然语言请求
-
-**功能描述：**
-智能分析用户需求并自动调用合适的工具，支持多轮工具调用和任务总结
-
-**使用场景：**
-- `ai_manage(request="帮我整理一下最近30天的过期记忆")`
-
----
-
-### 8. 系统状态类
-
-#### pulse - 系统状态
-
-```python
-pulse(include_archive=False)
-```
-
-**参数说明：**
-- `include_archive`: 是否包含归档记忆
-
-**功能描述：**
-返回系统状态概览 + 所有记忆桶列表
-
----
-
-#### analytics - 统计分析
-
-```python
-analytics()
-```
-
-**功能描述：**
-获取记忆库统计分析数据（情绪分布、类型统计、活跃度趋势）
-
----
-
-#### memory_directory - 记忆目录
-
-```python
-memory_directory(detail_level="medium")
-```
-
-**参数说明：**
-- `detail_level`: brief(仅统计)/medium(详细分类)/full(完整目录)
-
-**功能描述：**
-生成记忆库的简洁目录摘要
-
----
-
-### 9. 数据导入导出类
-
-#### memory_export - 导出记忆
-
-```python
-memory_export(export_type="all")
-```
-
-**参数说明：**
-- `export_type`: 导出类型，可选 all/dynamic/permanent/identity/pattern/feel
-
-**使用场景：**
-- `memory_export(export_type="identity")` - 导出所有身份档案
-
----
-
-#### export_brain - 导出大脑数据
-
-```python
-export_brain(output_path="")
-```
-
-**参数说明：**
-- `output_path`: 输出 zip 文件路径，不指定则自动生成
-
-**功能描述：**
-将 buckets/ 目录和 embeddings.db 打包为 zip 文件
-
----
-
-#### import_brain - 导入大脑数据
-
-```python
-import_brain(zip_path, overwrite=False)
-```
-
-**参数说明：**
-- `zip_path`: zip 文件路径
-- `overwrite`: 是否覆盖现有数据
-
----
-
-### 10. 特殊功能类
-
-#### dream - 自省读取
-
-```python
-dream()
-```
-
-**功能描述：**
-读取最近新增的记忆桶，供 AI 自省。读完后可以 `trace(resolved=1)` 放下，或 `hold(feel=True)` 写感受。
-
----
-
-#### trace_chain - 追溯因果链
-
-```python
-trace_chain(bucket_id, direction="both", max_depth=3)
-```
-
-**参数说明：**
-- `bucket_id`: 记忆桶 ID
-- `direction`: 遍历方向，previous(前因)/next(后果)/both(双向)
-- `max_depth`: 最大遍历深度（默认 3）
-
-**功能描述：**
-追溯某条记忆的因果链，通过指针直接调出关联事件
-
----
-
-#### summarize_recent_events - 最近事件概括
-
-```python
-summarize_recent_events(days=7, max_events=10)
-```
-
-**参数说明：**
-- `days`: 天数（默认 7）
-- `max_events`: 最大事件数（默认 10）
-
-**功能描述：**
-获取最近一段时间内的记忆事件概括，包含 AI 生成的总结
-
----
-
-## 使用最佳实践
-
-### 1. 检索优先原则
-- 先使用 `breath()` 或 `query_memory()` 了解记忆库状态
-- 再根据检索结果进行精确操作
-
-### 2. 记忆生命周期管理
-- **存储**: `hold()` 或 `grow()`
-- **检索**: `breath()` 或 `query_memory()`
-- **整理**: `smart_organize()` 或 `weekly_organize()`
-- **回顾**: `dream()` 或 `summarize_recent_events()`
-- **归档**: `trace(resolved=1)` 或 `trace(digested=1)`
-
-### 3. 关联建立流程
-- 使用 `link_events()` 建立事件间因果关系
-- 使用 `manage_relation(action="link")` 建立记忆间关联
-- 使用 `ai_analyze(task="link")` AI 自动建立语义关联
-
-### 4. 脆弱状态保护
-- 系统会自动检测用户脆弱状态（抑郁、生病、疲惫）
-- `task_flag=True` 的记忆桶在脆弱状态下会被自动屏蔽
-- AI 使用 `feel` 模式存储感受时，会标记源记忆为已消化
-
-### 5. 工具选择建议
-- **简单存储**: `hold()`
-- **长文本归档**: `grow()`
-- **通用查询**: `query_memory()`
-- **精确操作**: `trace()` 或 `manage_record()`
-- **复杂任务**: `ai_manage()`
-
----
-
-## 概念映射
-
-| 概念 | 工具/record_type | 说明 |
-|------|------------------|------|
-| 年轮 | `annual_ring` / `experience` | 从事件中获得的经验教训 |
-| 烛台 | `candlestick` / `get_memos` | 重要备忘事项 |
-| 名册 | `roster` / `identity` / `get_roster` | 人物身份档案 |
-| 锚点 | `get_anchors` | 行为触发条件与情绪边界 |
-| 时间链 | `get_timelines` | 事件发展的时间脉络 |
-| 因果链 | `trace_chain` / `link_events` | 事件间的因果关系 |
-| 感受 | `hold(feel=True)` | AI 的第一人称感受记录 |
-| 任务 | `hold(task_flag=True)` | 需要完成的待办事项 |
-
----
-
-## 新增工具说明（回音壁与管家系统）
-
-### 11. 回音壁管理类
-
-#### review_digest - 审阅回音壁提案
-
-```python
-review_digest()
-```
-
-**功能描述：**
-获取回音壁中的待办提案，包括记忆冲突、清理提案、合并提案等，供主 AI 终审裁决。
-
-**返回内容：**
-- `digests`: 每日/每周摘要列表
-- `pending_actions`: 待审批提案数量
-- `actions`: 待审批提案详情（冲突检测、清理、合并等）
-
-**使用场景：**
-- `review_digest()` - 审阅所有待办提案
-
----
-
-#### approve_action - 批准提案
-
-```python
-approve_action(action_id)
-```
-
-**参数说明：**
-- `action_id`: 提案 ID（必填）
-
-**功能描述：**
-批准回音壁中的待审批提案，执行相应操作（如接受新记忆、标记旧记忆为过时、清理记忆等）。
-
-**使用场景：**
-- `approve_action(action_id="abc12345")` - 批准提案
-
----
-
-#### reject_action - 驳回提案
-
-```python
-reject_action(action_id)
-```
-
-**参数说明：**
-- `action_id`: 提案 ID（必填）
-
-**功能描述：**
-驳回回音壁中的待审批提案，不执行任何操作（保留旧记忆、忽略清理建议等）。
-
-**使用场景：**
-- `reject_action(action_id="abc12345")` - 驳回提案
-
----
-
-### 12. 管家任务类
-
-#### run_housekeeper - 运行每日管家
-
-```python
-run_housekeeper()
-```
-
-**功能描述：**
-手动触发每日管家任务，执行以下操作：
-1. 对当日对话做轻量总结
-2. 提炼关键事实并追加到对应 Event Chain 的临时节点
-3. 检测记忆冲突
-4. 分析当日情绪基调
-
-**使用场景：**
-- `run_housekeeper()` - 手动运行每日管家
-
----
-
-#### run_weekly_housekeeper - 运行每周管家
-
-```python
-run_weekly_housekeeper()
-```
-
-**功能描述：**
-手动触发每周管家任务，执行以下操作：
-1. 对一周内的 Event Chain 进行去重与融合
-2. 扫描过期且无关联的低权重记忆
-3. 生成清理草案提交至回音壁
-
-**使用场景：**
-- `run_weekly_housekeeper()` - 手动运行每周管家
-
----
-
-### 13. 静默预处理类
-
-#### inject_context - 静默预处理中间件
-
-```python
-inject_context(user_input)
-```
-
-**参数说明：**
-- `user_input`: 用户输入文本（必填）
-
-**功能描述：**
-静默预处理中间件，自动执行以下操作：
-1. 拦截用户输入，后台自动执行 Query 改写与混合检索
-2. 自动匹配并拉取最新的相关时间链与感官/状态标签
-3. 将检索到的背景记忆以 `<context>` 结构静默拼接到用户 Prompt 头部
-
-**返回内容：**
-- `context`: 注入的上下文内容，包含事件链、感觉状态、情绪提示等
-
-**使用场景：**
-- `inject_context(user_input="我肚子痛")` - 自动检索并注入相关上下文
-
----
-
-### 14. 事件链类
-
-#### get_event_chains - 获取事件链
-
-```python
-get_event_chains()
-```
-
-**功能描述：**
-获取所有事件链列表，用于查阅事件发展脉络。
-
-**返回内容：**
-- `chains`: 事件链列表，每条包含 chain_id、topic、status、timeline、summary
-
-**使用场景：**
-- `get_event_chains()` - 获取所有事件链
-
----
-
-#### approve_event_chain - 批准事件链结案
-
-```python
-approve_event_chain(chain_id)
-```
-
-**参数说明：**
-- `chain_id`: 事件链 ID（必填）
-
-**功能描述：**
-批准事件链，将其状态从"进行中"标记为"已结案"。
-
-**使用场景：**
-- `approve_event_chain(chain_id="chain_mum_illness")` - 批准事件链结案
-
----
-
-## 回音壁工作流程
-
-### 管家生成提案
-1. 每日/每周管家自动运行
-2. 检测记忆冲突、过期记忆、需要合并的相似记忆
-3. 将提案写入回音壁的待审批区域
-
-### 主 AI 终审裁决
-1. 使用 `review_digest()` 获取待办提案
-2. 分析每个提案的合理性
-3. 使用 `approve_action()` 批准或 `reject_action()` 驳回
-
-### 冲突检测示例
-```
-⚠️ 记忆冲突 (preference)
-   偏好冲突：之前说过'不喜欢喝太甜的'，但今天说'点了全糖奶茶'
-   旧记录: [2026-07-15] 我不喜欢喝太甜的饮料
-   新记录: [2026-07-22] 今天点了一杯全糖奶茶，很好喝
-```
-
-### 情绪提示机制
-当检测到连续 2 天以上情绪指数偏低时，`inject_context()` 会在上下文中注入情绪提示：
-```
-【情绪提示】检测到连续3天焦虑，请提高耐心和陪伴感
-```
+## 原则
+
+1. 操作前先breath()避免重复存储
+2. 单条用hold()，长文本用grow()，备忘用manage_record(candlestick)
+3. 敏感信息存储后lock_memory()，AI不受限
+4. task_flag=True的记忆在用户脆弱时自动屏蔽
+5. link_events: prev=先发生(前因), next=后发生(后果)
+6. hold(feel=True,source_bucket=ID)自动标记源记忆已消化
+7. 删除走回收站，24h内可restore
+8. 记忆过期提醒: breath()浮现模式和inject_context()会自动返回权重<0.3的记忆，AI应在合适时机提醒用户是否保留（trace提升重要度或pinned钉选）
+9. 管家仅提案不执行: 所有破坏性操作（删除/合并/清理）需主AI通过approve_action()审批后执行，记忆衰减除外
+10. 日记隔离: 每日日志与记忆桶系统完全隔离，不参与breath()/inject_context()，仅通过query_journal()主动查询

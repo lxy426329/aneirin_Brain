@@ -291,7 +291,7 @@ breath(query="今天很累")
 - **SQLite WAL 模式**：`embeddings.db` 所有连接启用 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`，允许多个写操作并发执行，消除 "database is locked" 错误
 - **Markdown 文件锁**：`bucket_manager.update()` 使用 `threading.Lock` 包裹完整读-改-写周期（`frontmatter.load` → 修改元数据 → `frontmatter.dumps` 写回），确保两个进程同时写入同一文件时互斥
 
-### 例假周期追踪 🩸
+### 例假周期追踪
 
 系统内置例假周期追踪功能，支持记录、预测和自动提醒：
 
@@ -320,6 +320,23 @@ record_cycle(start_date="2026-08-01", symptoms="轻微腹痛", flow_level="light
 - 距离预测日期 0 天：红色紧急提醒
 - 距离预测日期 1 天：橙色警告提醒
 - 距离预测日期 2-5 天：黄色提示提醒
+
+### 隐私记忆库
+
+支持将敏感记忆设为隐私锁定，前端无法直接查看内容：
+
+- **MCP 锁定/解锁**：AI 调用者可使用 `lock_memory(bucket_id, password)` 锁定记忆，使用 `unlock_memory(bucket_id)` 解除锁定
+- **前端密码查看**：隐私记忆在列表中显示为 `[隐私记忆]`，点击查看时需输入正确密码才能显示完整内容
+- **前端管理**：也可在前端详情页直接设置/解除隐私锁定
+- **MCP 完全访问**：AI 调用者通过 `breath`、`get_memos` 等工具仍可正常读取完整内容，不受锁定限制
+
+```python
+# 锁定记忆
+lock_memory(bucket_id="xxx", password="mypassword")
+
+# 解除锁定
+unlock_memory(bucket_id="xxx")
+```
 
 ### 数据导出/导入
 
@@ -370,9 +387,35 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 
 - **每日摘要**：管家自动生成的当日记忆总结
 - **每周摘要**：管家自动生成的当周事件链合并报告
-- **待审批提案**：记忆冲突、清理提案等需要主 AI 裁决的事项
+- **待审批提案**：记忆冲突、清理提案、事件链合并提案等需要主 AI 裁决的事项
+- **批准即执行**：批准提案时会自动执行对应操作（cleanup 删除过期记忆，conflict 标记旧记忆已解决，chain_merge 合并事件链）
 
 访问地址：**http://localhost:8000/echo-chamber**
+
+### 每日日志系统
+
+独立于记忆桶系统的每日日记存储区域，采用 AI 管家与主 AI 协作生成模式：
+
+**协作流程**：
+1. **AI 管家**（每日自动运行）：生成当日事件摘要（事实层面），保存为日记草稿
+2. **主 AI**（对话中调用）：通过 `complete_journal(date, mood_comment, emotion_tags)` 补充情绪点评和心情标签（情感层面）
+3. **查询**：通过 `query_journal(date, keyword)` 按日期或关键词查询，仅在需要时调出
+
+**隔离设计**：
+- 日记存储在独立的 `journals/` 目录，与记忆桶系统完全隔离
+- **不参与** `breath()` 浮现、`inject_context()` 上下文注入、`list_all()` 列表
+- 仅通过显式日期查询或关键词搜索访问
+
+**日记结构**：
+
+| 字段 | 说明 |
+|---|---|
+| `date` | 日期（YYYY-MM-DD） |
+| `event_summary` | 事件摘要（管家生成） |
+| `mood_comment` | 情绪点评（主 AI 生成） |
+| `emotion_tags` | 情绪标签（主 AI 生成） |
+| `housekeeper_generated_at` | 管家生成时间 |
+| `ai_completed_at` | 主 AI 补充时间 |
 
 ### 静默预处理中间件
 
@@ -399,18 +442,20 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 
 ### 日/周两级管家任务
 
+> **核心原则**：AI 管家仅生成提案，不直接执行任何破坏性操作。所有删除、合并、清理操作需主 AI 通过 `approve_action()` 审批后才执行。记忆衰减是自动机制，无需审批。
+
 **每日管家（自动运行）**：
 - 每天凌晨运行
-- 对当日对话做轻量总结
+- 对当日对话做轻量总结，写入每日日志（事件摘要）
 - 提炼关键事实并追加到对应 Event Chain
 - 检测记忆冲突并提交到回音壁
-- **不删除任何数据**
+- **不删除任何数据，不直接修改记忆**
 
 **每周管家（自动运行）**：
 - 每周日凌晨运行
-- 对一周内的 Event Chain 进行去重与融合
-- 扫描过期且无关联的低权重记忆，打上 `pending_delete` 标记
-- 生成清理草案，提交至回音壁供主 AI 终审
+- 扫描相似 Event Chain，生成合并提案（不直接合并）
+- 扫描过期且无关联的低权重记忆，生成清理提案
+- 所有提案提交至回音壁，由主 AI 终审决定执行或驳回
 
 ---
 
@@ -461,10 +506,15 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 | `run_housekeeper` | 手动触发每日管家任务 |
 | `run_weekly_housekeeper` | 手动触发每周管家任务 |
 | `review_digest` | 审阅回音壁中的待办提案 |
-| `approve_action` | 批准管家提案（执行清理/合并） |
+| `approve_action` | 批准管家提案并自动执行操作（清理/合并/冲突解决） |
 | `reject_action` | 驳回管家提案 |
 | `get_event_chains` | 获取所有事件链 |
 | `approve_event_chain` | 批准事件链结案 |
+| `lock_memory` | 将记忆桶标记为隐私，设置密码锁定 |
+| `unlock_memory` | 解除记忆桶的隐私锁定 |
+| `record_cycle` | 记录例假周期数据，自动预测下次日期 |
+| `complete_journal` | 主AI为指定日期日记补充情绪点评和心情标签 |
+| `query_journal` | 按日期或关键词查询每日日志 |
 
 ---
 

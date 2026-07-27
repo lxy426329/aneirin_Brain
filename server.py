@@ -64,6 +64,7 @@ from import_memory import ImportEngine
 from pattern_manager import PatternManager
 from tag_normalizer import TagNormalizer
 from cycle_tracker import CycleTracker
+from journal_manager import JournalManager
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, detect_vulnerable_state
 
 # --- Load .env file / 加载 .env 文件 ---
@@ -126,6 +127,7 @@ pattern_mgr = PatternManager(config)                 # Pattern manager / 模式�
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 tag_normalizer = TagNormalizer(config, bucket_mgr, dehydrator)  # Tag normalizer / 标签归一化引擎
 cycle_tracker = CycleTracker(config["buckets_dir"])  # Cycle tracker / 例假周期追踪器
+journal_mgr = JournalManager(base_dir=config["buckets_dir"])  # Journal manager / 日记管理器（与housekeeper共用同一路径）
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -1023,7 +1025,7 @@ async def _breath_surfacing(
         days_until = cycle_tracker.days_until_next_cycle()
         if days_until is not None and 0 <= days_until <= 5:
             summary = cycle_tracker.get_cycle_summary()
-            reminder_parts = ["=== 🩸 例假提醒 ==="]
+            reminder_parts = ["=== 例假提醒 ==="]
             if days_until == 0:
                 reminder_parts.append("预测今天会来例假")
             elif days_until == 1:
@@ -1235,6 +1237,60 @@ async def _breath_surfacing(
     if dynamic_results:
         parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
 
+    # --- Emotion echo: find feel memories with similar valence/arousal from 7+ days ago ---
+    # --- 情绪回声：查找7天前与当前feel情绪基调相似的旧记忆 ---
+    if not type_filter or type_filter == "feel":
+        try:
+            all_feels = [
+                b for b in all_buckets
+                if b["metadata"].get("type") == "feel"
+                and not b["metadata"].get("resolved", False)
+            ]
+            if all_feels:
+                # Sort by created date, get the most recent feel
+                all_feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+                latest_feel = all_feels[0] if all_feels else None
+                if latest_feel:
+                    latest_valence = float(latest_feel["metadata"].get("valence", -1))
+                    latest_arousal = float(latest_feel["metadata"].get("arousal", -1))
+                    latest_created = latest_feel["metadata"].get("created", "")[:10]
+
+                    if latest_valence >= 0 and latest_arousal >= 0:
+                        from datetime import datetime as _dt, timedelta as _td
+                        try:
+                            latest_date = _dt.fromisoformat(latest_feel["metadata"].get("created", "").replace("Z", ""))
+                            cutoff = latest_date - _td(days=7)
+                        except Exception:
+                            cutoff = None
+
+                        echo_results = []
+                        for f in all_feels[1:]:  # Skip the latest one
+                            f_valence = float(f["metadata"].get("valence", -1))
+                            f_arousal = float(f["metadata"].get("arousal", -1))
+                            if f_valence < 0 or f_arousal < 0:
+                                continue
+                            # Check emotional similarity (within 0.2 range)
+                            valence_diff = abs(latest_valence - f_valence)
+                            arousal_diff = abs(latest_arousal - f_arousal)
+                            if valence_diff <= 0.2 and arousal_diff <= 0.2:
+                                # Check if it's from 7+ days ago
+                                if cutoff:
+                                    try:
+                                        f_date = _dt.fromisoformat(f["metadata"].get("created", "").replace("Z", ""))
+                                        if f_date >= cutoff:
+                                            continue
+                                    except Exception:
+                                        pass
+                                f_content = f.get("content", "")[:80]
+                                f_date_str = f["metadata"].get("created", "")[:10]
+                                f_id = f["id"]
+                                echo_results.append(f"[{f_date_str}] [bucket_id:{f_id}] {f_content}")
+
+                        if echo_results:
+                            parts.append("=== 情绪回声 ===\n检测到当前情绪与以下旧感受基调相似:\n" + "\n".join(echo_results[:3]))
+        except Exception as e:
+            logger.warning(f"Emotion echo detection failed: {e}")
+
     if not type_filter:
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
@@ -1314,6 +1370,28 @@ async def _breath_surfacing(
                         parts.append("\n=== 语气调味（烛台）===\n" + "\n---\n".join(flavor_parts))
             except Exception as e:
                 logger.warning(f"Candlestick flavor injection failed / 烛台调味料注入失败: {e}")
+
+    # --- Expiring memories alert (for AI to decide whether to remind user) ---
+    # --- 即将遗忘的记忆提醒（供AI决定是否提醒用户保留）---
+    try:
+        expiring = [
+            b for b in all_buckets
+            if not b["metadata"].get("resolved", False)
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+            and b["metadata"].get("type") not in ("permanent", "feel", "identity")
+            and decay_engine.calculate_score(b["metadata"]) < 0.3
+        ]
+        if expiring:
+            expiring.sort(key=lambda b: decay_engine.calculate_score(b["metadata"]))
+            expiring_lines = []
+            for b in expiring[:5]:
+                score = decay_engine.calculate_score(b["metadata"])
+                name = b["metadata"].get("name", b["id"])[:30]
+                expiring_lines.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {name}")
+            parts.append("=== 即将遗忘的记忆 ===\n以下记忆权重极低，即将被遗忘。请根据对话情境决定是否提醒用户保留:\n" + "\n".join(expiring_lines))
+    except Exception as e:
+        logger.warning(f"Expiring memories alert failed: {e}")
 
     if not parts:
         return "权重池平静，没有需要处理的记忆。"
@@ -2407,7 +2485,7 @@ async def grow(content: str) -> str:
                 f"Failed to process diary item / 日记条目处理失败: "
                 f"{item.get('name', '?')}: {e}"
             )
-            results.append(f"⚠️{item.get('name', '?')}")
+            results.append(f"!{item.get('name', '?')}")
 
     tag_normalizer.notify_new_record(len(items))
     return f"{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
@@ -2431,7 +2509,7 @@ async def record_cycle(
         return "请提供开始日期（格式：YYYY-MM-DD）。"
 
     try:
-        success = cycle_tracker.add_record(
+        success, err_msg = cycle_tracker.add_record(
             start_date=start_date.strip(),
             symptoms=symptoms.strip(),
             duration=duration,
@@ -2448,7 +2526,7 @@ async def record_cycle(
                 response += "\n（需要至少2次记录才能预测下次日期）"
             return response
         else:
-            return "日期格式错误，请使用 YYYY-MM-DD 或 YYYY/MM/DD 格式。"
+            return err_msg or "记录失败，请检查日期格式。"
     except Exception as e:
         logger.error(f"record_cycle failed: {e}")
         return f"记录失败: {str(e)}"
@@ -3282,7 +3360,7 @@ async def get_timelines() -> str:
             # --- 动态生成创建时间的相对描述 ---
             rel_created = format_relative_time(created) if created else ""
 
-            entry = f"📅 [{title}]"
+            entry = f"[{title}]"
             if rel_created:
                 entry += f" [{rel_created}]"
             if summary:
@@ -3322,12 +3400,11 @@ async def get_memos() -> str:
         
         results = []
         for c in recent_candlesticks:
-            metadata = c.get("metadata", {})
-            title = metadata.get("title", "")
+            title = c.get("title", "")
             content = c.get("content", "")
             created = c.get("created", "")
             
-            entry = f"🕯️ [{title}]"
+            entry = f"[{title}]" if title else f"[{content[:15]}]"
             if created:
                 entry += f" [{created[:10]}]"
             if content:
@@ -3721,7 +3798,7 @@ async def smart_organize(days: int = 30, importance_drop: int = 2) -> str:
         if results:
             result += "\n".join(results)
         if skipped > 0:
-            result += f"\n\n⚠️ 跳过: {skipped}条（更新失败）"
+            result += f"\n\n! 跳过: {skipped}条（更新失败）"
         
         return result
     
@@ -3985,7 +4062,7 @@ async def review_digest() -> str:
                 action_type = action["action_type"]
                 
                 if action_type == "conflict":
-                    parts.append(f"  ⚠️ [{action['action_id']}] 记忆冲突 ({data.get('conflict_type', 'unknown')})")
+                    parts.append(f"  ! [{action['action_id']}] 记忆冲突 ({data.get('conflict_type', 'unknown')})")
                     parts.append(f"    {data.get('conflict_reason', '')}")
                     parts.append(f"    旧记录: [{data.get('old_metadata', {}).get('created', '')[:10]}] {data.get('old_content', '')[:100]}")
                     parts.append(f"    新记录: [{data.get('new_metadata', {}).get('created', '')[:10]}] {data.get('new_content', '')[:100]}")
@@ -4121,7 +4198,26 @@ async def inject_context(user_input: str = "") -> str:
             context_parts.insert(0, mood_warning)
     except Exception as e:
         logger.warning(f"Mood trend check failed: {e}")
-    
+
+    # --- Expiring memories alert (for AI awareness every turn) ---
+    # --- 即将遗忘的记忆提醒（每轮对话注入，供AI感知）---
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        expiring = [
+            b for b in all_buckets
+            if not b["metadata"].get("resolved", False)
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+            and b["metadata"].get("type") not in ("permanent", "feel", "identity")
+            and decay_engine.calculate_score(b["metadata"]) < 0.3
+        ]
+        if expiring:
+            expiring.sort(key=lambda b: decay_engine.calculate_score(b["metadata"]))
+            expiring_names = [b["metadata"].get("name", b["id"])[:20] for b in expiring[:3]]
+            context_parts.append(f"【遗忘预警】{len(expiring)}条记忆即将遗忘: {', '.join(expiring_names)}。请在合适时机提醒用户是否保留。")
+    except Exception as e:
+        logger.warning(f"Expiring memories injection failed: {e}")
+
     if context_parts:
         return "<context>\n" + "\n".join(context_parts) + "</context>"
     else:
@@ -4200,10 +4296,10 @@ async def weekly_organize() -> str:
                     by_domain[d] = []
                 by_domain[d].append(b)
         
-        result = "📋 每周内容整理报告\n\n"
+        result = "每周内容整理报告\n\n"
         result += "=" * 50 + "\n\n"
-        result += f"📅 统计周期: 最近7天\n"
-        result += f"📊 新增记忆: {len(recent_buckets)}条\n\n"
+        result += f"统计周期: 最近7天\n"
+        result += f"新增记忆: {len(recent_buckets)}条\n\n"
         
         for domain, buckets in sorted(by_domain.items(), key=lambda x: len(x[1]), reverse=True):
             result += f"--- {domain} ({len(buckets)}条) ---\n"
@@ -4287,24 +4383,26 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     content=description,
                     relationships=rel_list,
                 )
-                return f"👤 身份档案已创建 → {identity_id}"
+                return f"身份档案已创建 → {identity_id}"
             elif record_type == "pattern":
                 success = await bucket_mgr.save_pattern(name, description, triggers)
-                return f"📐 行为模式已创建 → {success['id']}" if success else "创建失败"
+                return f"行为模式已创建 → {success['id']}" if success else "创建失败"
             elif record_type == "candlestick":
                 success = await bucket_mgr.save_candlestick(content, bucket_id, title)
-                return f"🕯️ 烛台已记录 → {success['id']}" if success else "记录失败"
+                return f"烛台已记录 → {success['id']}" if success else "记录失败"
             elif record_type == "experience":
                 content_val = content or detail or text
                 title_val = title or name
                 if not content_val:
                     return "请提供经验内容"
+                if not title_val:
+                    title_val = content_val.strip().split("\n")[0][:20]
                 bucket_id = await bucket_mgr.create(
                     content=content_val,
                     tags=[],
                     importance=8,
                     domain=["经验"],
-                    name=title_val or "未命名经验",
+                    name=title_val,
                     bucket_type="permanent",
                 )
                 await bucket_mgr.update(
@@ -4317,21 +4415,23 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     hit_count=0,
                     last_hit="",
                 )
-                return f"📚 经验已创建 → {bucket_id}"
+                return f"经验已创建 → {bucket_id}"
             elif record_type == "annual_ring":
                 content_val = content or detail or text
                 title_val = title or name
                 if not content_val:
                     return "请提供年轮内容"
+                if not title_val:
+                    title_val = content_val.strip().split("\n")[0][:20]
                 bucket_id = await bucket_mgr.create(
                     content=content_val,
                     tags=[],
                     importance=8,
                     domain=["年轮"],
-                    name=title_val or "未命名年轮",
+                    name=title_val,
                     bucket_type="permanent",
                 )
-                return f"🌳 年轮已记录 → {bucket_id}"
+                return f"年轮已记录 → {bucket_id}"
             return f"不支持创建 {record_type} 类型"
         
         elif action == "list":
@@ -4343,7 +4443,7 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 return "\n".join([f"[{p['id']}] {p['metadata'].get('name', '')}" for p in patterns]) if patterns else "暂无行为模式"
             elif record_type == "candlestick":
                 candlesticks = await bucket_mgr.get_candlesticks()
-                return "\n".join([f"[{c['id']}] {c['metadata'].get('title', '')[:30]}" for c in candlesticks]) if candlesticks else "暂无烛台记录"
+                return "\n".join([f"[{c['id']}] {c.get('title', '')[:30]}" for c in candlesticks]) if candlesticks else "暂无烛台记录"
             elif record_type == "experience":
                 all_buckets = await bucket_mgr.list_all(include_archive=False)
                 experiences = [b for b in all_buckets 
@@ -4384,7 +4484,12 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
         elif action == "get":
             if not record_id:
                 return "请提供record_id"
-            if record_type in ["identity", "roster", "pattern", "candlestick", "experience", "annual_ring"]:
+            if record_type == "candlestick":
+                candle = await bucket_mgr.get_candlestick(record_id)
+                if candle:
+                    return f"ID: {record_id}\n标题: {candle.get('title', '')}\n内容: {candle.get('content', '')[:200]}"
+                return f"未找到烛台: {record_id}"
+            if record_type in ["identity", "roster", "pattern", "experience", "annual_ring"]:
                 record = await bucket_mgr.get(record_id)
                 if record:
                     meta = record.get("metadata", {})
@@ -4395,7 +4500,19 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
         elif action == "update":
             if not record_id:
                 return "请提供record_id"
-            if record_type in ["identity", "roster", "pattern", "candlestick", "experience", "annual_ring"]:
+            if record_type == "candlestick":
+                candle = await bucket_mgr.get_candlestick(record_id)
+                if not candle:
+                    return f"未找到烛台: {record_id}"
+                new_content = kwargs.get("content", candle.get("content", ""))
+                new_title = kwargs.get("title", candle.get("title", ""))
+                if not new_title or not new_title.strip():
+                    new_title = new_content.strip().split("\n")[0][:20] if new_content.strip() else "无标题"
+                await bucket_mgr.save_candlestick(new_content, candle.get("bucket_id", ""), new_title)
+                # Delete old file since save creates a new one
+                await bucket_mgr.delete_candlestick(record_id)
+                return f"烛台已更新 → {record_id}"
+            if record_type in ["identity", "roster", "pattern", "experience", "annual_ring"]:
                 record = await bucket_mgr.get(record_id)
                 if not record:
                     return f"未找到记录: {record_id}"
@@ -4408,7 +4525,10 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
         elif action == "delete":
             if not record_id:
                 return "请提供record_id"
-            if record_type in ["identity", "roster", "pattern", "candlestick", "experience", "annual_ring"]:
+            if record_type == "candlestick":
+                success = await bucket_mgr.delete_candlestick(record_id)
+                return f"烛台已删除 → {record_id}" if success else "删除失败: 未找到烛台"
+            if record_type in ["identity", "roster", "pattern", "experience", "annual_ring"]:
                 success = await bucket_mgr.delete(record_id)
                 return f"已删除 → {record_id}" if success else "删除失败"
             return f"不支持删除 {record_type} 类型"
@@ -5171,6 +5291,35 @@ async def ai_manage(request: str) -> str:
                     }
                 }
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "lock_memory",
+                    "description": "将记忆桶标记为隐私记忆，设置密码锁定。锁定后前端无法直接查看内容，需输入密码。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "bucket_id": {"type": "string", "description": "记忆桶ID"},
+                            "password": {"type": "string", "description": "解锁密码（至少3位）"},
+                        },
+                        "required": ["bucket_id", "password"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "unlock_memory",
+                    "description": "解除记忆桶的隐私锁定，解除后前端可正常查看。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "bucket_id": {"type": "string", "description": "记忆桶ID"},
+                        },
+                        "required": ["bucket_id"]
+                    }
+                }
+            },
         ]
         
         # --- Build system prompt ---
@@ -5498,6 +5647,71 @@ async def summarize_recent_events(days: int = 7, max_events: int = 10) -> str:
 
 
 # =============================================================
+# Tool: lock_memory — Lock a memory as private (MCP only)
+# 工具：lock_memory — 将记忆标记为隐私（仅MCP调用者可操作）
+# =============================================================
+@mcp.tool()
+async def lock_memory(bucket_id: str, password: str) -> str:
+    """
+    将指定记忆桶标记为隐私记忆，设置密码锁定。
+    锁定后前端列表中内容显示为[隐私记忆]，需输入正确密码才能查看完整内容。
+    仅MCP调用者可执行此操作。
+
+    参数:
+    - bucket_id: 记忆桶ID
+    - password: 解锁密码（至少3位）
+    """
+    if not password or len(password) < 3:
+        return "密码至少3位。"
+
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return f"未找到记忆桶: {bucket_id}"
+
+    # Hash password before storing
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    success = await bucket_mgr.update(
+        bucket_id,
+        is_private=True,
+        privacy_password=hashed,
+    )
+    if success:
+        name = bucket.get("metadata", {}).get("name", bucket_id)
+        return f"已锁定记忆 [{name}]，前端需输入密码才能查看。"
+    else:
+        return f"锁定失败: {bucket_id}"
+
+
+# =============================================================
+# Tool: unlock_memory — Remove privacy lock from a memory (MCP only)
+# 工具：unlock_memory — 解除记忆的隐私锁定（仅MCP调用者可操作）
+# =============================================================
+@mcp.tool()
+async def unlock_memory(bucket_id: str) -> str:
+    """
+    解除指定记忆桶的隐私锁定。
+    解除后前端可正常查看内容，无需密码。
+
+    参数:
+    - bucket_id: 记忆桶ID
+    """
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return f"未找到记忆桶: {bucket_id}"
+
+    success = await bucket_mgr.update(
+        bucket_id,
+        is_private=False,
+        privacy_password="",
+    )
+    if success:
+        name = bucket.get("metadata", {}).get("name", bucket_id)
+        return f"已解锁记忆 [{name}]，前端可正常查看。"
+    else:
+        return f"解锁失败: {bucket_id}"
+
+
+# =============================================================
 # Brain Export/Import (for backup and migration)
 # 大脑导出/导入（用于备份和迁移）
 # =============================================================
@@ -5701,6 +5915,12 @@ async def api_buckets(request):
         result = []
         for b in all_buckets:
             meta = b.get("metadata", {})
+            is_private = meta.get("is_private", False)
+            raw_content = b.get("content", "")
+            if is_private:
+                content_preview = "[隐私记忆]"
+            else:
+                content_preview = strip_wikilinks(raw_content)[:200]
             result.append({
                 "id": b["id"],
                 "name": meta.get("name", b["id"]),
@@ -5718,7 +5938,8 @@ async def api_buckets(request):
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 1),
                 "score": decay_engine.calculate_score(meta),
-                "content_preview": strip_wikilinks(b.get("content", ""))[:200],
+                "content_preview": content_preview,
+                "is_private": is_private,
             })
         result.sort(key=lambda x: x["score"], reverse=True)
         
@@ -5787,7 +6008,7 @@ async def api_identities(request):
 
 @mcp.custom_route("/api/bucket/{bucket_id}", methods=["GET"])
 async def api_bucket_detail(request):
-    """Get full bucket content by ID."""
+    """Get full bucket content by ID. Private buckets require password."""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
@@ -5796,11 +6017,31 @@ async def api_bucket_detail(request):
     if not bucket:
         return JSONResponse({"error": "not found"}, status_code=404)
     meta = bucket.get("metadata", {})
+    is_private = meta.get("is_private", False)
+    privacy_password = meta.get("privacy_password", "")
+    raw_content = bucket.get("content", "")
+
+    if is_private and privacy_password:
+        # Check for unlock password in query params (hash compare)
+        provided = request.query_params.get("password", "")
+        provided_hash = hashlib.sha256(provided.encode()).hexdigest() if provided else ""
+        if provided_hash != privacy_password:
+            return JSONResponse({
+                "id": bucket["id"],
+                "metadata": meta,
+                "content": "",
+                "score": decay_engine.calculate_score(meta),
+                "is_private": True,
+                "locked": True,
+            })
+
     return JSONResponse({
         "id": bucket["id"],
         "metadata": meta,
-        "content": strip_wikilinks(bucket.get("content", "")),
+        "content": strip_wikilinks(raw_content),
         "score": decay_engine.calculate_score(meta),
+        "is_private": is_private,
+        "locked": False,
     })
 
 
@@ -6001,6 +6242,35 @@ async def api_bucket_update(request):
     return JSONResponse({"success": True})
 
 
+@mcp.custom_route("/api/bucket/{bucket_id}/privacy", methods=["POST"])
+async def api_bucket_privacy(request):
+    """Set or remove privacy lock on a bucket."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    bucket_id = request.path_params["bucket_id"]
+    try:
+        body = await request.json()
+        is_private = body.get("is_private", False)
+        password = body.get("password", "")
+
+        if is_private and not password:
+            return JSONResponse({"error": "password required to lock"}, status_code=400)
+
+        hashed_pwd = hashlib.sha256(password.encode()).hexdigest() if is_private and password else ""
+        success = await bucket_mgr.update(
+            bucket_id,
+            is_private=is_private,
+            privacy_password=hashed_pwd,
+        )
+        if success:
+            return JSONResponse({"success": True, "is_private": is_private})
+        else:
+            return JSONResponse({"error": "bucket not found"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/bucket/{bucket_id}", methods=["DELETE"])
 async def api_bucket_delete(request):
     """Delete a bucket."""
@@ -6008,9 +6278,52 @@ async def api_bucket_delete(request):
     err = _require_auth(request)
     if err: return err
     bucket_id = request.path_params["bucket_id"]
-    
+
     await bucket_mgr.delete(bucket_id)
     return JSONResponse({"success": True})
+
+
+@mcp.custom_route("/api/trash", methods=["GET"])
+async def api_trash_list(request):
+    """List all trashed buckets. 列出回收站内容。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    items = bucket_mgr.list_trash()
+    return JSONResponse({"items": items, "count": len(items)})
+
+
+@mcp.custom_route("/api/trash/restore", methods=["POST"])
+async def api_trash_restore(request):
+    """Restore a trashed bucket. 从回收站恢复桶。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+        filename = body.get("filename", "")
+        if not filename:
+            return JSONResponse({"error": "filename required"}, status_code=400)
+        success = await bucket_mgr.restore(filename)
+        if success:
+            return JSONResponse({"success": True})
+        return JSONResponse({"error": "file not found in trash"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/trash/cleanup", methods=["DELETE"])
+async def api_trash_cleanup(request):
+    """Permanently delete old trash files. 清理过期回收站文件。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        max_age = int(request.query_params.get("max_age_hours", 24))
+    except (TypeError, ValueError):
+        max_age = 24
+    deleted = bucket_mgr.cleanup_trash(max_age)
+    return JSONResponse({"success": True, "deleted_count": deleted})
 
 
 @mcp.custom_route("/api/bucket/{bucket_id}/related", methods=["POST"])
@@ -6313,7 +6626,8 @@ async def api_search(request):
                 "arousal": b_arousal,
                 "importance": meta.get("importance", 0),
                 "created": meta.get("created", ""),
-                "content_preview": strip_wikilinks(b.get("content", ""))[:200],
+                "content_preview": "[隐私记忆]" if meta.get("is_private", False) else strip_wikilinks(b.get("content", ""))[:200],
+                "is_private": meta.get("is_private", False),
             })
         
         result.sort(key=lambda x: x["score"], reverse=True)
@@ -7030,7 +7344,7 @@ async def api_add_cycle(request):
     if err: return err
     try:
         body = await request.json()
-        success = cycle_tracker.add_record(
+        success, err_msg = cycle_tracker.add_record(
             start_date=body.get("start_date", ""),
             symptoms=body.get("symptoms", ""),
             duration=body.get("duration", 5),
@@ -7042,7 +7356,24 @@ async def api_add_cycle(request):
             summary = cycle_tracker.get_cycle_summary()
             return JSONResponse({"success": True, "summary": summary})
         else:
-            return JSONResponse({"error": "Invalid date format"}, status_code=400)
+            return JSONResponse({"error": err_msg or "记录失败"}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@mcp.custom_route("/api/cycle/{start_date}", methods=["DELETE"])
+async def api_delete_cycle(request):
+    """Delete a cycle record by start date."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        start_date = request.path_params.get("start_date", "")
+        success = cycle_tracker.delete_record(start_date)
+        if success:
+            summary = cycle_tracker.get_cycle_summary()
+            return JSONResponse({"success": True, "summary": summary})
+        else:
+            return JSONResponse({"error": "not found"}, status_code=404)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -7797,7 +8128,7 @@ async def api_echo_chamber_clear(request):
 
 @mcp.custom_route("/api/echo-chamber/approve", methods=["POST"])
 async def api_echo_chamber_approve(request):
-    """Approve a pending action."""
+    """Approve a pending action and execute it."""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
@@ -7807,9 +8138,13 @@ async def api_echo_chamber_approve(request):
         if not action_id:
             return JSONResponse({"error": "action_id required"}, status_code=400)
         
-        await approve_action(action_id)
-        return JSONResponse({"ok": True})
+        success = await housekeeper.approve_action(action_id)
+        if success:
+            return JSONResponse({"ok": True, "message": "已批准并执行"})
+        else:
+            return JSONResponse({"error": "未找到提案或提案已处理"}, status_code=404)
     except Exception as e:
+        logger.error(f"Echo chamber approve failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -7825,9 +8160,13 @@ async def api_echo_chamber_reject(request):
         if not action_id:
             return JSONResponse({"error": "action_id required"}, status_code=400)
         
-        await reject_action(action_id)
-        return JSONResponse({"ok": True})
+        success = await housekeeper.reject_action(action_id)
+        if success:
+            return JSONResponse({"ok": True})
+        else:
+            return JSONResponse({"error": "未找到提案或提案已处理"}, status_code=404)
     except Exception as e:
+        logger.error(f"Echo chamber reject failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -8486,6 +8825,147 @@ async def api_import_brain(request):
     except Exception as e:
         logger.error(f"API import-brain failed: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# =============================================================
+# Daily Journal Tools — MCP tools for the daily journal system
+# 每日日志工具 — 每日日志系统的 MCP 工具
+#
+# Design:
+# 设计：
+#   - Journals are stored separately from memory buckets (not in breath()/list_all())
+#   - AI housekeeper generates event_summary (factual events)
+#   - Main AI adds mood_comment + emotion_tags (emotional commentary)
+#   - Only accessible via explicit date query or keyword search
+#
+#   - 日志与记忆桶系统完全隔离（不出现在 breath()/list_all() 中）
+#   - AI 管家生成事件摘要（事实层面）
+#   - 主 AI 补充情绪点评和情绪标签（情感层面）
+#   - 仅通过显式日期查询或关键字搜索访问
+# =============================================================
+
+@mcp.tool()
+async def complete_journal(
+    date: str,
+    mood_comment: str,
+    emotion_tags: str = "",
+) -> str:
+    """
+    为指定日期的日记补充情绪点评和心情标签。
+    AI管家已生成事件摘要，此工具由主AI调用，添加情感层面的评论与判断。
+
+    参数:
+    - date: 日期，格式 YYYY-MM-DD（默认今天）
+    - mood_comment: 情绪点评/心情感受（如"今天虽然忙碌但心情不错，对项目进展感到满意"）
+    - emotion_tags: 情绪标签，逗号分隔（如"充实,期待,略有疲惫"）
+
+    说明:
+    - 日志与记忆桶系统隔离，不会出现在breath()或inject_context()中
+    - 仅通过query_journal按日期/关键词查询时才会被调出
+    """
+    # --- Default to today if date is empty ---
+    # --- date 为空时默认今天 ---
+    if not date or not date.strip():
+        date = datetime.datetime.now().strftime("%Y-%m-%d")
+    else:
+        date = date.strip()
+
+    if not mood_comment or not mood_comment.strip():
+        return "请提供情绪点评内容（mood_comment不能为空）。"
+
+    try:
+        entry = await journal_mgr.create_entry(
+            date=date,
+            event_summary="",  # 保留管家已生成的事件摘要（合并模式）
+            mood_comment=mood_comment.strip(),
+            emotion_tags=emotion_tags.strip(),
+        )
+        return (
+            f"已为 {date} 的日记补充情绪点评。\n"
+            f"事件摘要: {entry.get('event_summary', '(待管家生成)')[:60]}\n"
+            f"情绪标签: {entry.get('emotion_tags', '(无)')}"
+        )
+    except ValueError as e:
+        return f"日期格式无效: {e}"
+    except Exception as e:
+        logger.error(f"complete_journal failed: {e}")
+        return f"补充日记失败: {e}"
+
+
+@mcp.tool()
+async def query_journal(
+    date: str = "",
+    keyword: str = "",
+    limit: int = 10,
+) -> str:
+    """
+    查询每日日志。支持按日期精确查询或按关键词搜索。
+    日志不会出现在breath()或inject_context()中，需主动调用此工具查询。
+
+    参数:
+    - date: 指定日期查询，格式 YYYY-MM-DD（留空则按关键词搜索）
+    - keyword: 关键词搜索（在事件摘要、情绪点评、情绪标签中匹配）
+    - limit: 返回条数上限（默认10，仅关键词搜索时生效）
+
+    返回:
+    - 按日期查询: 返回该日完整日志（事件摘要+情绪点评+情绪标签）
+    - 关键词搜索: 返回匹配条目列表（按日期倒序）
+
+    使用场景:
+    - 用户问"上周某天发生了什么" → query_journal(date="2026-07-21")
+    - 用户问"我之前有没有提到过项目压力" → query_journal(keyword="项目压力")
+    """
+    # --- Date query takes priority ---
+    # --- 日期查询优先 ---
+    if date and date.strip():
+        date = date.strip()
+        entry = journal_mgr.get_entry(date)
+        if not entry:
+            return f"未找到 {date} 的日记记录。"
+        parts = [f"=== 日记 {date} ==="]
+        if entry.get("event_summary"):
+            parts.append(f"[事件摘要]\n{entry['event_summary']}")
+        else:
+            parts.append("[事件摘要]\n(管家尚未生成)")
+        if entry.get("mood_comment"):
+            parts.append(f"[情绪点评]\n{entry['mood_comment']}")
+        else:
+            parts.append("[情绪点评]\n(主AI尚未补充)")
+        if entry.get("emotion_tags"):
+            parts.append(f"[情绪标签] {entry['emotion_tags']}")
+        return "\n\n".join(parts)
+
+    # --- Keyword search ---
+    # --- 关键词搜索 ---
+    if not keyword or not keyword.strip():
+        # No date and no keyword → return recent entries list
+        entries = journal_mgr.list_entries(limit=min(limit, 30))
+        if not entries:
+            return "暂无任何日记记录。"
+        lines = [f"=== 最近 {len(entries)} 条日记 ==="]
+        for e in entries:
+            d = e.get("date", "?")
+            summary = e.get("event_summary", "")[:40]
+            mood = e.get("mood_comment", "")[:30]
+            status = "完整" if mood else "仅事件"
+            lines.append(f"[{d}] ({status}) {summary}")
+        lines.append("\n提示: 使用 query_journal(date='YYYY-MM-DD') 查看完整内容，或 query_journal(keyword='xxx') 搜索。")
+        return "\n".join(lines)
+
+    results = journal_mgr.search_entries(keyword.strip(), limit=min(limit, 30))
+    if not results:
+        return f"未找到包含「{keyword}」的日记记录。"
+
+    lines = [f"=== 搜索「{keyword}」找到 {len(results)} 条日记 ==="]
+    for r in results:
+        d = r.get("date", "?")
+        summary = r.get("event_summary", "")[:50]
+        mood = r.get("mood_comment", "")[:30]
+        lines.append(f"\n[{d}]")
+        lines.append(f"  事件: {summary}")
+        if mood:
+            lines.append(f"  心情: {mood}")
+    return "\n".join(lines)
 
 
 # --- Entry point / 启动入口 ---

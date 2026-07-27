@@ -61,15 +61,27 @@ class CycleTracker:
         notes: str = "",
         flow_level: str = "normal",
         pain_level: int = 0,
-    ) -> bool:
+    ) -> tuple:
+        """Returns (success: bool, error_msg: str)"""
         try:
             date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
         except ValueError:
             try:
                 date_obj = datetime.strptime(start_date, "%Y/%m/%d").date()
             except ValueError:
-                logger.error(f"Invalid date format: {start_date}")
-                return False
+                return False, f"日期格式无效: {start_date}，请使用 YYYY-MM-DD 或 YYYY/MM/DD"
+
+        # Reject future dates (more than 1 day ahead)
+        today = datetime.now().date()
+        if date_obj > today + timedelta(days=1):
+            return False, f"开始日期 {start_date} 是未来日期，无法记录"
+
+        # Check for overlapping cycles
+        for existing in self.data["records"]:
+            exist_date = datetime.fromordinal(existing["date_timestamp"]).date()
+            exist_end = exist_date + timedelta(days=existing["duration"])
+            if date_obj >= exist_date and date_obj < exist_end:
+                return False, f"日期 {start_date} 与已有记录 {existing['start_date']} 重叠"
 
         record = {
             "start_date": start_date,
@@ -87,14 +99,64 @@ class CycleTracker:
 
         self._save_data()
         logger.info(f"Added cycle record: {start_date}")
-        return True
+        return True, ""
 
     def get_all_records(self) -> List[Dict]:
         return self.data["records"]
 
+    def get_record_by_date(self, start_date: str) -> Optional[Dict]:
+        for record in self.data["records"]:
+            if record["start_date"] == start_date:
+                return record
+        return None
+
+    def delete_record(self, start_date: str) -> bool:
+        original_count = len(self.data["records"])
+        self.data["records"] = [
+            r for r in self.data["records"]
+            if r["start_date"] != start_date
+        ]
+        if len(self.data["records"]) < original_count:
+            self._save_data()
+            return True
+        return False
+
+    def update_record(
+        self,
+        start_date: str,
+        symptoms: str = None,
+        duration: int = None,
+        notes: str = None,
+        flow_level: str = None,
+        pain_level: int = None,
+    ) -> bool:
+        for record in self.data["records"]:
+            if record["start_date"] == start_date:
+                if symptoms is not None:
+                    record["symptoms"] = symptoms.strip()
+                if duration is not None:
+                    record["duration"] = max(1, min(14, int(duration)))
+                if notes is not None:
+                    record["notes"] = notes.strip()
+                if flow_level is not None:
+                    record["flow_level"] = flow_level.strip().lower()
+                if pain_level is not None:
+                    record["pain_level"] = max(0, min(10, int(pain_level)))
+                self._save_data()
+                return True
+        return False
+
     def get_recent_records(self, count: int = 5) -> List[Dict]:
         records = sorted(self.data["records"], key=lambda r: r["date_timestamp"], reverse=True)
         return records[:count]
+
+    def _parse_date(self, date_str: str) -> Optional[datetime.date]:
+        for fmt in ["%Y-%m-%d", "%Y/%m/%d"]:
+            try:
+                return datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                continue
+        return None
 
     def calculate_average_cycle(self) -> Optional[float]:
         records = sorted(self.data["records"], key=lambda r: r["date_timestamp"])
@@ -103,8 +165,10 @@ class CycleTracker:
 
         intervals = []
         for i in range(1, len(records)):
-            prev_date = datetime.strptime(records[i-1]["start_date"], "%Y-%m-%d").date()
-            curr_date = datetime.strptime(records[i]["start_date"], "%Y-%m-%d").date()
+            prev_date = self._parse_date(records[i-1]["start_date"])
+            curr_date = self._parse_date(records[i]["start_date"])
+            if prev_date is None or curr_date is None:
+                continue
             interval = (curr_date - prev_date).days
             if 20 <= interval <= 45:
                 intervals.append(interval)
@@ -123,7 +187,10 @@ class CycleTracker:
         if avg_cycle is None:
             return None
 
-        last_date = datetime.strptime(records[-1]["start_date"], "%Y-%m-%d").date()
+        last_date = self._parse_date(records[-1]["start_date"])
+        if last_date is None:
+            return None
+
         next_date = last_date + timedelta(days=round(avg_cycle))
         return next_date.strftime("%Y-%m-%d")
 
@@ -132,7 +199,10 @@ class CycleTracker:
         if next_date_str is None:
             return None
 
-        next_date = datetime.strptime(next_date_str, "%Y-%m-%d").date()
+        next_date = self._parse_date(next_date_str)
+        if next_date is None:
+            return None
+
         today = datetime.now().date()
         delta = (next_date - today).days
         return delta

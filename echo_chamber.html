@@ -1381,8 +1381,11 @@ async function approveEchoAction(actionId) {
       body: JSON.stringify({action_id: actionId}),
       credentials: 'include'
     });
+    if (resp.status === 401) { window.location.href = '/'; return; }
     if (!resp.ok) throw new Error('请求失败 (' + resp.status + ')');
-    showToast('已批准提案: ' + actionId, 'success');
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    showToast('已批准并执行提案: ' + actionId, 'success');
     refreshEchoChamber();
   } catch(e) {
     showToast('批准失败: ' + e.message, 'error');
@@ -1397,7 +1400,10 @@ async function rejectEchoAction(actionId) {
       body: JSON.stringify({action_id: actionId}),
       credentials: 'include'
     });
+    if (resp.status === 401) { window.location.href = '/'; return; }
     if (!resp.ok) throw new Error('请求失败 (' + resp.status + ')');
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error);
     showToast('已驳回提案: ' + actionId, 'info');
     refreshEchoChamber();
   } catch(e) {

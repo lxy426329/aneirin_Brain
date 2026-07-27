@@ -26,3 +26,7 @@ tests/regression/
 tests/unit/
 cookies.txt
 test_report.txt
+buckets.zip
+brain_backup.zip
+sync_to_render.py
+_test_*.py

@@ -27,6 +27,7 @@
 
 import os
 import re
+import json
 import math
 import logging
 import shutil
@@ -269,12 +270,16 @@ class BucketManager:
         """
         Save a candlestick (reflection/thought).
         保存烛台（智能体的感想/反思）。
-        
+
         Args:
             content: The reflection content, can include bucket references or specific events
             bucket_id: Optional reference to a memory bucket
             title: Optional title for the candlestick
         """
+        # Auto-generate title from content if not provided
+        if not title or not title.strip():
+            title = content.strip().split("\n")[0][:20] if content.strip() else "无标题"
+
         candlestick = {
             "id": generate_bucket_id(),
             "title": title,
@@ -746,6 +751,8 @@ class BucketManager:
         context_metadata: dict = None,
         ttl: int = None,
         status_key: str = None,
+        is_private: bool = False,
+        privacy_password: str = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -834,6 +841,8 @@ class BucketManager:
             "ttl": ttl,
             "cold_memory": False,
             "status_key": status_key,
+            "is_private": bool(is_private),
+            "privacy_password": privacy_password or "",
         }
         if pinned:
             metadata["pinned"] = True
@@ -1010,6 +1019,11 @@ class BucketManager:
             for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id"):
                 if key in kwargs:
                     post[key] = kwargs[key]
+
+            if "is_private" in kwargs:
+                post["is_private"] = bool(kwargs["is_private"])
+            if "privacy_password" in kwargs:
+                post["privacy_password"] = kwargs["privacy_password"] or ""
 
             # --- Auto-refresh activation time / 自动刷新激活时间 ---
             post["last_active"] = now_iso()
@@ -1424,23 +1438,208 @@ class BucketManager:
     # ---------------------------------------------------------
     async def delete(self, bucket_id: str) -> bool:
         """
-        Delete a memory bucket file.
-        删除指定的记忆桶文件。
+        Delete a memory bucket file (move to .trash/ recycle bin, restorable).
+        删除指定的记忆桶文件（移入 .trash/ 回收站，可恢复）。
         """
         file_path = self._find_bucket_file(bucket_id)
         if not file_path:
             return False
 
         try:
-            os.remove(file_path)
-        except OSError as e:
+            # --- 移入 .trash/ 回收站，而非直接永久删除 ---
+            trash_dir = self._ensure_trash_dir()
+            original_name = os.path.basename(file_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            trash_filename = f"{timestamp}_{original_name}"
+            trash_path = os.path.join(trash_dir, trash_filename)
+
+            shutil.move(file_path, trash_path)
+
+            # --- 保存元数据 JSON：原始路径、删除时间、桶 ID ---
+            meta = {
+                "original_path": file_path,
+                "deleted_at": now_iso(),
+                "bucket_id": bucket_id,
+            }
+            meta_path = os.path.join(trash_dir, os.path.splitext(trash_filename)[0] + ".json")
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+        except Exception as e:
             logger.error(f"Failed to delete bucket file / 删除桶文件失败: {file_path}: {e}")
             return False
 
-        logger.info(f"Deleted bucket / 删除记忆桶: {bucket_id}")
-        
+        logger.info(f"Deleted bucket (moved to trash) / 删除记忆桶（已移入回收站）: {bucket_id}")
+
         self._invalidate_cache()
         return True
+
+    # ---------------------------------------------------------
+    # Recycle bin (trash) operations / 回收站操作
+    # ---------------------------------------------------------
+    def _trash_dir_path(self) -> str:
+        """
+        Return the .trash/ directory path (sibling of buckets_dir).
+        返回 .trash/ 回收站目录路径（与 buckets_dir 同级）。
+        """
+        parent = os.path.dirname(self.base_dir) or "."
+        return os.path.join(parent, ".trash")
+
+    def _ensure_trash_dir(self) -> str:
+        """Ensure .trash/ exists, return its path. 确保回收站目录存在并返回路径。"""
+        trash_dir = self._trash_dir_path()
+        os.makedirs(trash_dir, exist_ok=True)
+        return trash_dir
+
+    async def restore(self, trash_filename: str) -> bool:
+        """
+        Restore a bucket file from .trash/ back to its original location.
+        从 .trash/ 回收站恢复桶文件到原始位置。
+        """
+        trash_dir = self._trash_dir_path()
+        if not os.path.exists(trash_dir):
+            return False
+
+        # --- 清理文件名，防止路径穿越 ---
+        safe_name = os.path.basename(trash_filename)
+        trash_path = os.path.join(trash_dir, safe_name)
+        if not os.path.exists(trash_path):
+            return False
+
+        # --- 读取元数据，获取原始路径与桶 ID ---
+        meta_path = os.path.join(trash_dir, os.path.splitext(safe_name)[0] + ".json")
+        original_path = None
+        bucket_id = None
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                original_path = meta.get("original_path")
+                bucket_id = meta.get("bucket_id")
+            except Exception as e:
+                logger.warning(f"Failed to read trash metadata / 读取回收站元数据失败: {safe_name}: {e}")
+
+        # --- 确定恢复目标；原目录缺失时回退到 permanent 目录 ---
+        if original_path and os.path.isdir(os.path.dirname(original_path)):
+            restore_path = original_path
+        else:
+            restore_path = os.path.join(self.permanent_dir, safe_name)
+
+        # --- 避免文件名冲突 ---
+        if os.path.exists(restore_path):
+            base, ext = os.path.splitext(restore_path)
+            restore_path = f"{base}_restored{ext}"
+
+        try:
+            shutil.move(trash_path, restore_path)
+            # --- 恢复成功后删除元数据 JSON ---
+            if os.path.exists(meta_path):
+                os.remove(meta_path)
+        except Exception as e:
+            logger.error(f"Failed to restore bucket / 恢复桶失败: {safe_name}: {e}")
+            return False
+
+        logger.info(f"Restored bucket / 恢复记忆桶: {bucket_id or safe_name}")
+        self._invalidate_cache()
+        return True
+
+    def list_trash(self) -> list:
+        """
+        List all trashed bucket files with their deletion metadata.
+        列出回收站中所有桶文件及其删除元数据。
+        """
+        trash_dir = self._trash_dir_path()
+        if not os.path.exists(trash_dir):
+            return []
+
+        result = []
+        for fname in sorted(os.listdir(trash_dir)):
+            if not fname.endswith(".md"):
+                continue
+            meta_path = os.path.join(trash_dir, os.path.splitext(fname)[0] + ".json")
+
+            deleted_at = None
+            bucket_id = None
+            original_name = None
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    deleted_at = meta.get("deleted_at")
+                    bucket_id = meta.get("bucket_id")
+                    orig = meta.get("original_path")
+                    if orig:
+                        original_name = os.path.basename(orig)
+                except Exception:
+                    pass
+
+            # --- 回退：从文件名时间戳前缀解析删除时间 ---
+            if not deleted_at:
+                try:
+                    ts = fname[:15]  # YYYYMMDD_HHMMSS
+                    if len(ts) == 15 and ts[:8].isdigit():
+                        deleted_at = datetime.strptime(ts, "%Y%m%d_%H%M%S").isoformat()
+                except Exception:
+                    deleted_at = None
+
+            # --- 回退：去掉时间戳前缀得到原始文件名 ---
+            if not original_name:
+                if len(fname) > 16 and fname[:8].isdigit() and fname[8] == "_":
+                    original_name = fname[16:]
+                else:
+                    original_name = fname
+
+            result.append({
+                "filename": fname,
+                "deleted_at": deleted_at,
+                "bucket_id": bucket_id,
+                "original_name": original_name,
+            })
+
+        return result
+
+    def cleanup_trash(self, max_age_hours: int = 24) -> int:
+        """
+        Permanently delete trash files older than max_age_hours.
+        永久删除超过 max_age_hours 的回收站文件，返回已删除数量。
+        """
+        trash_dir = self._trash_dir_path()
+        if not os.path.exists(trash_dir):
+            return 0
+
+        now = datetime.now()
+        cutoff = now - timedelta(hours=max_age_hours)
+        deleted_count = 0
+
+        for fname in list(os.listdir(trash_dir)):
+            fpath = os.path.join(trash_dir, fname)
+
+            # --- 确定删除时间：优先用文件名时间戳前缀，回退到 mtime ---
+            delete_time = None
+            try:
+                ts = fname[:15]  # YYYYMMDD_HHMMSS
+                if len(ts) == 15 and ts[:8].isdigit():
+                    delete_time = datetime.strptime(ts, "%Y%m%d_%H%M%S")
+            except Exception:
+                delete_time = None
+
+            if delete_time is None:
+                try:
+                    delete_time = datetime.fromtimestamp(os.path.getmtime(fpath))
+                except OSError:
+                    continue
+
+            if delete_time < cutoff:
+                try:
+                    os.remove(fpath)
+                    deleted_count += 1
+                except OSError as e:
+                    logger.warning(f"Failed to cleanup trash file / 清理回收站文件失败: {fname}: {e}")
+
+        logger.info(
+            f"Cleaned up {deleted_count} trash files older than {max_age_hours}h / "
+            f"清理了 {deleted_count} 个超过 {max_age_hours} 小时的回收站文件"
+        )
+        return deleted_count
 
     # ---------------------------------------------------------
     # Touch bucket (refresh activation time + increment count)

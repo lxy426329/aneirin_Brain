@@ -1138,6 +1138,12 @@
     </div>
     <input type="search" id="search-input" placeholder="搜索记忆..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
     <div class="search-results-panel" id="search-results-panel"></div>
+    <select id="timeRange" onchange="loadBuckets()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;">
+      <option value="0">全部时间</option>
+      <option value="7">最近7天</option>
+      <option value="30">最近30天</option>
+      <option value="90">最近90天</option>
+    </select>
   </div>
   <div class="header-actions">
     <button class="header-btn" onclick="window.location.href='/echo-chamber'">回音壁</button>
@@ -1153,7 +1159,7 @@
   <div class="tab" data-tab="identity">名册</div>
   <div class="tab" data-tab="timeline">时间链</div>
   <div class="tab" data-tab="candlestick">烛台</div>
-  <div class="tab" data-tab="cycle">🩸 例假</div>
+  <div class="tab" data-tab="cycle">例假</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
 </div>
@@ -1180,7 +1186,21 @@
 
   <div class="stats-cards" id="stats-cards"></div>
 
+  <div id="expiring-memories" style="display:none;background:var(--surface);backdrop-filter:blur(8px);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);margin-bottom:20px;transition:box-shadow 0.25s ease;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h3 style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:600;color:var(--accent);letter-spacing:0.2px;margin:0;">即将遗忘的记忆</h3>
+      <span id="expiring-count" style="font-size:12px;color:var(--text-dim);"></span>
+    </div>
+    <div id="expiring-list"></div>
+  </div>
+
   <div class="filters" id="filters"></div>
+  <div id="batchToolbar" style="display:none;gap:8px;padding:8px 12px;background:var(--card);border-radius:8px;margin-bottom:8px;align-items:center;">
+    <span id="batchCount" style="font-size:13px;color:var(--text-dim);">已选 0 项</span>
+    <button onclick="batchSetResolved()" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;font-size:13px;">批量沉底</button>
+    <button onclick="batchDelete()" style="padding:4px 12px;border-radius:6px;border:1px solid #f44336;background:transparent;color:#f44336;cursor:pointer;font-size:13px;">批量删除</button>
+    <button onclick="clearBatchSelection()" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;font-size:13px;">取消</button>
+  </div>
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中...</div>
   </div>
@@ -1335,7 +1355,7 @@
 <div class="content" id="cycle-view" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
     <div>
-      <h2 style="font-size:22px;font-weight:600;">🩸 例假周期追踪</h2>
+      <h2 style="font-size:22px;font-weight:600;">例假周期追踪</h2>
       <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">记录每次例假时间和症状，系统自动预测下次日期并提前3-5天提醒</p>
     </div>
     <button class="btn-primary" onclick="showCycleEditor()">+ 记录例假</button>

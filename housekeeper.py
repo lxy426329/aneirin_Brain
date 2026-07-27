@@ -26,6 +26,10 @@ try:
 except ImportError:
     HAS_RAPIDFUZZ = False
 
+# Journal manager — primary storage for daily journal entries
+# 日记管理器 — 每日日记条目的主存储
+from journal_manager import JournalManager
+
 logger = logging.getLogger("ombre_brain.housekeeper")
 
 
@@ -289,7 +293,15 @@ class Housekeeper:
         os.makedirs(self.echo_chamber_dir, exist_ok=True)
         
         self.echo_chamber = EchoChamber(self.echo_chamber_dir)
-        
+
+        # Journal manager — primary storage for daily journal entries
+        # 日记管理器 — 每日日记条目的主存储（主存储；echo chamber 仅用于审阅）
+        # JournalManager creates {base_dir}/journals/ internally, so pass data_dir (not journals dir)
+        # JournalManager 内部会创建 {base_dir}/journals/，因此传入 data_dir（而非 journals 目录）
+        self.journals_dir = os.path.join(data_dir, "journals")
+        os.makedirs(self.journals_dir, exist_ok=True)
+        self.journal_mgr = JournalManager(base_dir=data_dir)
+
         self._task: asyncio.Task | None = None
         self._running = False
         self._last_daily_run = None
@@ -622,7 +634,19 @@ class Housekeeper:
                 "mood_level": mood_tags["level"],
             }
         )
-        
+
+        # Save draft journal entry — main AI will add mood commentary
+        # 保存日记草稿 — 主 AI 后续补充情绪点评
+        # Journal is primary storage; echo chamber digest above is for review only.
+        # 日记是主存储；上方 echo chamber 摘要仅用于审阅。
+        today = datetime.now().strftime("%Y-%m-%d")
+        await self.journal_mgr.create_entry(
+            date=today,
+            event_summary=summary,
+            mood_comment="",  # To be filled by main AI / 由主 AI 后续填写
+            emotion_tags="",
+        )
+
         logger.info(f"Daily summary: {bucket_count} buckets across {len(chain_groups)} chains + {len(atomic_buckets)} atomic events")
         
         return {
@@ -1009,35 +1033,35 @@ class Housekeeper:
         logger.debug(f"Added temporary node to chain: {chain.chain_id}")
     
     async def _weekly_chain_merge(self) -> dict:
-        """Deduplicate and merge event chains."""
+        """Deduplicate and merge event chains — generates proposals only, no direct execution.
+        去重并合并事件链 — 仅生成提案，不直接执行。"""
         chains = await self.get_event_chains()
         if not chains:
             return {"message": "No chains to merge"}
-        
-        merged_count = 0
-        to_merge = []
-        
+
+        proposals_created = 0
+
         for i, c1 in enumerate(chains):
-            for j, c2 in enumerate(chains[i+1:]):
+            for c2 in chains[i+1:]:
                 if HAS_RAPIDFUZZ:
-                    if fuzz.ratio(c1.topic, c2.topic) >= 70:
-                        to_merge.append((c1, c2))
-        
-        for c1, c2 in to_merge:
-            c1.timeline.extend(c2.timeline)
-            c1.timeline.sort(key=lambda x: x["timestamp"])
-            c1.source_bucket_ids.extend(c2.source_bucket_ids)
-            c1.updated = datetime.now(timezone.utc).isoformat()
-            
-            await self._save_event_chain(c1)
-            
-            chain_file = os.path.join(self.event_chains_dir, f"{c2.chain_id}.json")
-            if os.path.exists(chain_file):
-                os.remove(chain_file)
-            
-            merged_count += 1
-        
-        return {"chains_merged": merged_count}
+                    similarity = fuzz.ratio(c1.topic, c2.topic)
+                    if similarity >= 70:
+                        # --- Create a merge proposal — main AI must approve before actual merge ---
+                        # --- 创建合并提案 — 主 AI 批准后才执行合并 ---
+                        await self.echo_chamber.add_pending_action(
+                            action_type="chain_merge",
+                            data={
+                                "primary_chain_id": c1.chain_id,
+                                "primary_topic": c1.topic,
+                                "secondary_chain_id": c2.chain_id,
+                                "secondary_topic": c2.topic,
+                                "similarity": similarity,
+                                "reason": f"主题相似度 {similarity}%: '{c1.topic}' ↔ '{c2.topic}'",
+                            },
+                        )
+                        proposals_created += 1
+
+        return {"merge_proposals_created": proposals_created}
     
     async def _weekly_cleanup_scan(self) -> dict:
         """Scan for stale low-weight memories and generate cleanup proposals."""
@@ -1515,8 +1539,64 @@ class Housekeeper:
         return await self.echo_chamber.get_review_summary()
     
     async def approve_action(self, action_id: str) -> bool:
-        """Approve a pending action."""
-        return await self.echo_chamber.update_action_status(action_id, "approved")
+        """Approve a pending action and execute it."""
+        file_path = os.path.join(self.pending_actions_dir, f"{action_id}.json")
+        if not os.path.exists(file_path):
+            return False
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if data.get("status") != "pending":
+            return False
+
+        action_type = data.get("action_type", "")
+        action_data = data.get("data", {})
+
+        # Execute the action based on its type
+        try:
+            if action_type == "cleanup":
+                bucket_id = action_data.get("bucket_id", "")
+                if bucket_id:
+                    await self.bucket_mgr.delete(bucket_id)
+                    logger.info(f"Executed cleanup: deleted bucket {bucket_id}")
+
+            elif action_type == "conflict":
+                old_id = action_data.get("old_bucket_id", "")
+                if old_id:
+                    await self.bucket_mgr.update(old_id, resolved=True)
+                    logger.info(f"Executed conflict resolution: marked {old_id} as resolved")
+
+            elif action_type == "chain_merge":
+                # --- Merge secondary chain into primary, then delete secondary ---
+                # --- 将次要链合并到主链，然后删除次要链 ---
+                primary_id = action_data.get("primary_chain_id", "")
+                secondary_id = action_data.get("secondary_chain_id", "")
+                if primary_id and secondary_id:
+                    primary = await self.get_event_chain(primary_id)
+                    secondary = await self.get_event_chain(secondary_id)
+                    if primary and secondary:
+                        primary.timeline.extend(secondary.timeline)
+                        primary.timeline.sort(key=lambda x: x["timestamp"])
+                        primary.source_bucket_ids.extend(secondary.source_bucket_ids)
+                        primary.updated = datetime.now(timezone.utc).isoformat()
+                        await self._save_event_chain(primary)
+                        chain_file = os.path.join(self.event_chains_dir, f"{secondary_id}.json")
+                        if os.path.exists(chain_file):
+                            os.remove(chain_file)
+                        logger.info(f"Executed chain_merge: merged {secondary_id} into {primary_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to execute action {action_id}: {e}")
+
+        data["status"] = "approved"
+        data["executed_at"] = datetime.now(timezone.utc).isoformat()
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Updated action {action_id} → approved")
+        return True
     
     async def reject_action(self, action_id: str) -> bool:
         """Reject a pending action."""
