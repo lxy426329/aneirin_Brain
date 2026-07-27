@@ -317,6 +317,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('identity-view').style.display = target === 'identity' ? '' : 'none';
     document.getElementById('timeline-view').style.display = target === 'timeline' ? '' : 'none';
     document.getElementById('candlestick-view').style.display = target === 'candlestick' ? '' : 'none';
+    document.getElementById('cycle-view').style.display = target === 'cycle' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     if (target === 'network') loadNetwork();
@@ -327,6 +328,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'anchor') loadAnchors();
     if (target === 'timeline') loadTimelines();
     if (target === 'candlestick') loadCandlesticks();
+    if (target === 'cycle') loadCycle();
   });
 });
 
@@ -3086,6 +3088,170 @@ async function deleteCandlestick(candlestickId) {
     loadCandlesticks();
   } catch(e) {
     alert('删除失败: ' + e.message);
+  }
+}
+
+// ========================================
+// Cycle / 例假周期功能
+// ========================================
+
+async function loadCycle() {
+  const list = document.getElementById('cycle-list');
+  const summary = document.getElementById('cycle-summary');
+  try {
+    const resp = await authFetch('/api/cycle');
+    if (!resp) return;
+    const data = await resp.json();
+    renderCycleSummary(data.summary);
+    renderCycleList(data.records);
+  } catch(e) {
+    list.innerHTML = `<div class="loading">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderCycleSummary(summary) {
+  const container = document.getElementById('cycle-summary');
+  const daysUntil = summary.days_until_next;
+  let statusColor = 'var(--text)';
+  let statusText = '---';
+  let statusIcon = '📅';
+  
+  if (daysUntil !== null) {
+    if (daysUntil === 0) {
+      statusColor = 'var(--negative)';
+      statusText = '今天';
+      statusIcon = '🩸';
+    } else if (daysUntil === 1) {
+      statusColor = 'var(--warning)';
+      statusText = '明天';
+      statusIcon = '⚠️';
+    } else if (daysUntil <= 5) {
+      statusColor = 'var(--warning)';
+      statusText = daysUntil + '天后';
+      statusIcon = '⏳';
+    } else {
+      statusText = daysUntil + '天后';
+    }
+  }
+
+  container.innerHTML = `
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">距离下次</div>
+      <div style="font-size:28px;font-weight:600;color:${statusColor};">${statusIcon} ${statusText}</div>
+    </div>
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">平均周期</div>
+      <div style="font-size:28px;font-weight:600;color:var(--accent);">${summary.average_cycle_days || '---'} 天</div>
+    </div>
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">预测日期</div>
+      <div style="font-size:20px;font-weight:600;color:var(--text);">${summary.predicted_next_date || '---'}</div>
+    </div>
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">总记录数</div>
+      <div style="font-size:28px;font-weight:600;color:var(--positive);">${summary.total_records} 次</div>
+    </div>
+  `;
+}
+
+function renderCycleList(records) {
+  const list = document.getElementById('cycle-list');
+  const empty = document.getElementById('cycle-empty');
+  
+  if (!records || records.length === 0) {
+    list.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  
+  empty.style.display = 'none';
+  
+  const sortedRecords = [...records].sort((a, b) => b.date_timestamp - a.date_timestamp);
+  
+  let html = '';
+  sortedRecords.forEach(record => {
+    const flowText = {
+      'light': '少量',
+      'normal': '正常',
+      'heavy': '大量'
+    }[record.flow_level] || record.flow_level;
+    
+    html += `
+      <div style="background:var(--surface);border-radius:var(--radius-md);padding:16px;border:1px solid var(--border);margin-bottom:10px;position:relative;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">
+          <div>
+            <div style="font-weight:600;font-size:14px;color:var(--text);">${record.start_date}</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">
+              持续 ${record.duration} 天 · 流量 ${flowText}
+              ${record.pain_level > 0 ? ' · 疼痛 ' + record.pain_level + '/10' : ''}
+            </div>
+          </div>
+          <div style="font-size:24px;">🩸</div>
+        </div>
+        ${record.symptoms ? `<div style="font-size:13px;color:var(--text);margin-bottom:8px;">症状: ${record.symptoms}</div>` : ''}
+        ${record.notes ? `<div style="font-size:12px;color:var(--text-dim);background:var(--surface-solid);padding:8px;border-radius:var(--radius-sm);">${record.notes}</div>` : ''}
+      </div>
+    `;
+  });
+  
+  list.innerHTML = html;
+}
+
+function showCycleEditor() {
+  document.getElementById('cycle-start-date').valueAsDate = new Date();
+  document.getElementById('cycle-duration').value = '';
+  document.getElementById('cycle-pain').value = '';
+  document.getElementById('cycle-flow').value = 'normal';
+  document.getElementById('cycle-symptoms').value = '';
+  document.getElementById('cycle-notes').value = '';
+  document.getElementById('cycle-editor-msg').textContent = '';
+  document.getElementById('cycle-editor-modal').style.display = 'flex';
+}
+
+function closeCycleEditor() {
+  document.getElementById('cycle-editor-modal').style.display = 'none';
+}
+
+async function saveCycle() {
+  const startDate = document.getElementById('cycle-start-date').value;
+  const duration = document.getElementById('cycle-duration').value;
+  const pain = document.getElementById('cycle-pain').value;
+  const flow = document.getElementById('cycle-flow').value;
+  const symptoms = document.getElementById('cycle-symptoms').value;
+  const notes = document.getElementById('cycle-notes').value;
+  
+  if (!startDate) {
+    document.getElementById('cycle-editor-msg').textContent = '请选择开始日期';
+    document.getElementById('cycle-editor-msg').style.color = 'var(--negative)';
+    return;
+  }
+  
+  try {
+    const resp = await authFetch('/api/cycle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: startDate,
+        duration: duration ? parseInt(duration) : 5,
+        pain_level: pain ? parseInt(pain) : 0,
+        flow_level: flow,
+        symptoms: symptoms,
+        notes: notes
+      })
+    });
+    if (!resp) return;
+    
+    const data = await resp.json();
+    if (data.success) {
+      closeCycleEditor();
+      loadCycle();
+    } else {
+      document.getElementById('cycle-editor-msg').textContent = data.error || '保存失败';
+      document.getElementById('cycle-editor-msg').style.color = 'var(--negative)';
+    }
+  } catch(e) {
+    document.getElementById('cycle-editor-msg').textContent = '保存失败: ' + e.message;
+    document.getElementById('cycle-editor-msg').style.color = 'var(--negative)';
   }
 }
 

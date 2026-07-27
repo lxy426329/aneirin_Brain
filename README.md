@@ -291,6 +291,36 @@ breath(query="今天很累")
 - **SQLite WAL 模式**：`embeddings.db` 所有连接启用 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`，允许多个写操作并发执行，消除 "database is locked" 错误
 - **Markdown 文件锁**：`bucket_manager.update()` 使用 `threading.Lock` 包裹完整读-改-写周期（`frontmatter.load` → 修改元数据 → `frontmatter.dumps` 写回），确保两个进程同时写入同一文件时互斥
 
+### 例假周期追踪 🩸
+
+系统内置例假周期追踪功能，支持记录、预测和自动提醒：
+
+**核心功能：**
+- **记录例假**：使用 `record_cycle(start_date, symptoms, duration, ...)` 记录每次例假的详细信息
+- **自动预测**：基于历史记录自动计算平均周期长度，预测下次例假日期
+- **智能提醒**：当距离预测日期还有 0-5 天时，`breath()` 自动显示提醒信息
+- **可视化面板**：前端 Dashboard 提供专门的例假追踪视图，展示周期统计和历史记录
+
+**使用方式：**
+
+```python
+# 记录例假
+record_cycle(start_date="2026-07-03", symptoms="腹痛、腰酸", duration=5)
+
+# 记录详细信息
+record_cycle(start_date="2026-08-01", symptoms="轻微腹痛", flow_level="light", pain_level=3)
+```
+
+**预测算法：**
+- 至少需要 2 次记录才能开始预测
+- 过滤异常周期（20-45天范围之外）
+- 基于平均周期长度预测下次日期
+
+**提醒机制：**
+- 距离预测日期 0 天：红色紧急提醒
+- 距离预测日期 1 天：橙色警告提醒
+- 距离预测日期 2-5 天：黄色提示提醒
+
 ### 数据导出/导入
 
 **导出**：将 `buckets/` 目录（含所有子目录）和 `embeddings.db` 打包为 zip 文件。
@@ -450,7 +480,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml
 export OMBRE_API_KEY="your-api-key"
-OMBRE_TRANSPORT=sse python server.py
+OMBRE_TRANSPORT=streamable-http python server.py
 ```
 
 ---

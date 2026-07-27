@@ -7003,6 +7003,50 @@ async def api_delete_candlestick(request):
 
 
 # =============================================================
+# /api/cycle — menstrual cycle operations
+# /api/cycle — 例假周期操作
+# =============================================================
+@mcp.custom_route("/api/cycle", methods=["GET"])
+async def api_get_cycle(request):
+    """Get cycle records and summary."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        summary = cycle_tracker.get_cycle_summary()
+        records = cycle_tracker.get_all_records()
+        return JSONResponse({
+            "summary": summary,
+            "records": records,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@mcp.custom_route("/api/cycle", methods=["POST"])
+async def api_add_cycle(request):
+    """Add a new cycle record."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+        success = cycle_tracker.add_record(
+            start_date=body.get("start_date", ""),
+            symptoms=body.get("symptoms", ""),
+            duration=body.get("duration", 5),
+            notes=body.get("notes", ""),
+            flow_level=body.get("flow_level", "normal"),
+            pain_level=body.get("pain_level", 0),
+        )
+        if success:
+            summary = cycle_tracker.get_cycle_summary()
+            return JSONResponse({"success": True, "summary": summary})
+        else:
+            return JSONResponse({"error": "Invalid date format"}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# =============================================================
 # /api/timelines — timeline operations
 # /api/timelines — 时间链操作
 # =============================================================

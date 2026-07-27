@@ -12,6 +12,7 @@ Ombre Brain 是一个基于 FastMCP 的记忆系统服务，提供记忆的存�
 |------|----------|----------|
 | **记忆检索** | breath, query_memory | 关键词搜索、自动浮现、按条件筛选 |
 | **记忆存储** | hold, grow | 存储单条记忆、日记归档 |
+| **周期追踪** | record_cycle | 记录例假周期、自动预测、提醒 |
 | **记忆管理** | trace, manage_record | 修改元数据、CRUD 操作 |
 | **批量操作** | memory_batch_delete, smart_organize, weekly_organize | 批量删除、智能整理 |
 | **关系管理** | manage_relation, manage_identity_relation, link_events | 建立因果链、身份关系 |
@@ -119,6 +120,35 @@ grow(content)
 
 **使用场景：**
 - `grow(content="今天上午开了会议，下午写了代码，晚上和朋友聚餐...")`
+
+---
+
+#### record_cycle - 记录例假周期数据
+
+```python
+record_cycle(start_date, symptoms="", duration=5, notes="", flow_level="normal", pain_level=0)
+```
+
+**参数说明：**
+- `start_date`: 开始日期（必填，格式：YYYY-MM-DD 或 YYYY/MM/DD）
+- `symptoms`: 症状描述（如：腹痛、腰酸、头晕）
+- `duration`: 持续天数（默认 5 天，范围 1-14）
+- `notes`: 备注信息
+- `flow_level`: 流量级别，可选 light（少量）/normal（正常）/heavy（大量）
+- `pain_level`: 疼痛程度（0-10，0=无痛，10=剧痛）
+
+**功能描述：**
+记录每次例假的详细信息。系统会根据历史记录自动计算平均周期长度，预测下次例假日期。当距离预测日期还有 0-5 天时，调用 `breath()` 会自动显示提醒。
+
+**注意事项：**
+- 至少需要 2 次记录才能开始预测下次日期
+- 预测算法会过滤异常周期（20-45天范围之外）
+- 数据存储在独立的 JSON 文件中，不占用记忆桶配额
+
+**使用场景：**
+- `record_cycle(start_date="2026-07-03", symptoms="腹痛、腰酸", duration=5)` - 记录常规例假
+- `record_cycle(start_date="2026-08-01", symptoms="轻微腹痛", flow_level="light", pain_level=3)` - 记录流量较少的情况
+- `record_cycle(start_date="2026-09-05", symptoms="严重腹痛、头晕", flow_level="heavy", pain_level=8, notes="这次特别难受，请了一天假")` - 记录严重症状
 
 ---
 

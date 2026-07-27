@@ -1153,6 +1153,7 @@
   <div class="tab" data-tab="identity">名册</div>
   <div class="tab" data-tab="timeline">时间链</div>
   <div class="tab" data-tab="candlestick">烛台</div>
+  <div class="tab" data-tab="cycle">🩸 例假</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
 </div>
@@ -1329,6 +1330,73 @@
   <div id="anchor-list"></div>
 
   <div id="anchor-empty" class="loading" style="display:none;">暂无锚点记录</div>
+</div>
+
+<div class="content" id="cycle-view" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:600;">🩸 例假周期追踪</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">记录每次例假时间和症状，系统自动预测下次日期并提前3-5天提醒</p>
+    </div>
+    <button class="btn-primary" onclick="showCycleEditor()">+ 记录例假</button>
+  </div>
+
+  <div id="cycle-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:24px;"></div>
+
+  <div id="cycle-list"></div>
+
+  <div id="cycle-empty" class="loading" style="display:none;">暂无例假记录，请点击上方按钮添加第一次记录</div>
+</div>
+
+<div id="cycle-editor-modal" class="modal-overlay" style="display:none;">
+  <div style="background:var(--surface-solid);border-radius:var(--radius-xl);padding:28px;max-width:520px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);margin-top:40px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="cycle-editor-title">记录例假</h3>
+      <button onclick="closeCycleEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>开始日期 *</label>
+      <input type="date" id="cycle-start-date" />
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div class="config-row">
+        <label>持续天数</label>
+        <input type="number" id="cycle-duration" placeholder="5" min="1" max="14" />
+      </div>
+      <div class="config-row">
+        <label>疼痛程度</label>
+        <input type="number" id="cycle-pain" placeholder="0" min="0" max="10" />
+      </div>
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>流量级别</label>
+      <select id="cycle-flow" style="width:100%;padding:8px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:inherit;">
+        <option value="normal">正常</option>
+        <option value="light">少量</option>
+        <option value="heavy">大量</option>
+      </select>
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>症状描述</label>
+      <input type="text" id="cycle-symptoms" placeholder="如：腹痛、腰酸、头晕" />
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">备注</label>
+      <textarea id="cycle-notes" rows="3" placeholder="其他备注信息" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+
+    <div style="display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn-secondary" onclick="closeCycleEditor()">取消</button>
+      <button class="btn-primary" onclick="saveCycle()">保存</button>
+    </div>
+
+    <div id="cycle-editor-msg" style="margin-top:12px;font-size:13px;"></div>
+  </div>
 </div>
 
 <div class="content" id="network-view" style="display:none">
