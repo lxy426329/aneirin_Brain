@@ -63,6 +63,7 @@ from identity_manager import IdentityManager
 from import_memory import ImportEngine
 from pattern_manager import PatternManager
 from tag_normalizer import TagNormalizer
+from cycle_tracker import CycleTracker
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, detect_vulnerable_state
 
 # --- Load .env file / 加载 .env 文件 ---
@@ -124,6 +125,7 @@ emotion_mgr = EmotionManager(config)                 # Emotion manager / 情绪�
 pattern_mgr = PatternManager(config)                 # Pattern manager / 模式管理器
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 tag_normalizer = TagNormalizer(config, bucket_mgr, dehydrator)  # Tag normalizer / 标签归一化引擎
+cycle_tracker = CycleTracker(config["buckets_dir"])  # Cycle tracker / 例假周期追踪器
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -1013,6 +1015,30 @@ async def _breath_surfacing(
         all_buckets = bucket_mgr._mask_task_buckets(all_buckets)
 
     parts = []
+
+    # --- Cycle reminder injection / 例假提醒注入 ---
+    # If next cycle is within 0-5 days, inject reminder at the top
+    # 如果距离下次例假还有0-5天，在最前面注入提醒
+    try:
+        days_until = cycle_tracker.days_until_next_cycle()
+        if days_until is not None and 0 <= days_until <= 5:
+            summary = cycle_tracker.get_cycle_summary()
+            reminder_parts = ["=== 🩸 例假提醒 ==="]
+            if days_until == 0:
+                reminder_parts.append("预测今天会来例假")
+            elif days_until == 1:
+                reminder_parts.append("预测明天会来例假")
+            else:
+                reminder_parts.append(f"距离预测例假还有 {days_until} 天")
+            if summary["predicted_next_date"]:
+                reminder_parts.append(f"预测日期: {summary['predicted_next_date']}")
+            if summary["average_cycle_days"]:
+                reminder_parts.append(f"平均周期: {summary['average_cycle_days']} 天")
+            if summary["last_symptoms"]:
+                reminder_parts.append(f"上次症状: {summary['last_symptoms']}")
+            parts.insert(0, "\n".join(reminder_parts))
+    except Exception as e:
+        logger.warning(f"Cycle reminder injection failed: {e}")
 
     if not type_filter or type_filter == "identity":
         try:
@@ -2388,8 +2414,49 @@ async def grow(content: str) -> str:
 
 
 # =============================================================
-# Tool 4: trace — Trace, redraw the outline of a memory
-# 工具 4：trace — 描摹，重新勾勒记忆的轮廓
+# Tool 4: record_cycle — Record menstrual cycle data
+# 工具 4：record_cycle — 记录例假周期数据
+# =============================================================
+@mcp.tool()
+async def record_cycle(
+    start_date: str,
+    symptoms: str = "",
+    duration: int = 5,
+    notes: str = "",
+    flow_level: str = "normal",
+    pain_level: int = 0,
+) -> str:
+    """记录例假周期数据。start_date=开始日期(格式:YYYY-MM-DD或YYYY/MM/DD),symptoms=症状描述(如:腹痛、腰酸),duration=持续天数(默认5天),notes=备注信息,flow_level=流量级别(light/normal/heavy),pain_level=疼痛程度(0-10)。至少需要2次记录才能开始预测下次日期。"""
+    if not start_date or not start_date.strip():
+        return "请提供开始日期（格式：YYYY-MM-DD）。"
+
+    try:
+        success = cycle_tracker.add_record(
+            start_date=start_date.strip(),
+            symptoms=symptoms.strip(),
+            duration=duration,
+            notes=notes.strip(),
+            flow_level=flow_level.strip(),
+            pain_level=pain_level,
+        )
+        if success:
+            summary = cycle_tracker.get_cycle_summary()
+            response = f"已记录例假: {start_date}"
+            if summary["predicted_next_date"]:
+                response += f"\n预测下次: {summary['predicted_next_date']}（{summary['days_until_next']}天后）"
+            else:
+                response += "\n（需要至少2次记录才能预测下次日期）"
+            return response
+        else:
+            return "日期格式错误，请使用 YYYY-MM-DD 或 YYYY/MM/DD 格式。"
+    except Exception as e:
+        logger.error(f"record_cycle failed: {e}")
+        return f"记录失败: {str(e)}"
+
+
+# =============================================================
+# Tool 5: trace — Trace, redraw the outline of a memory
+# 工具 5：trace — 描摹，重新勾勒记忆的轮廓
 # Also handles deletion (delete=True)
 # 同时承接删除功能
 # =============================================================
@@ -7456,6 +7523,55 @@ async def api_config_update(request):
             return JSONResponse({"error": f"persist failed: {e}", "updated": updated}, status_code=500)
 
     return JSONResponse({"updated": updated, "ok": True})
+
+
+# =============================================================
+# /api/regenerate-names — Batch regenerate bucket names using AI
+# =============================================================
+@mcp.custom_route("/api/regenerate-names", methods=["POST"])
+async def api_regenerate_names(request):
+    """Batch regenerate bucket names using AI one-line summary."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+        bucket_ids = body.get("bucket_ids", [])
+        if not bucket_ids:
+            return JSONResponse({"ok": False, "error": "请提供 bucket_ids 数组"}, status_code=400)
+
+        if not dehydrator.api_available:
+            return JSONResponse({"ok": False, "error": "AI API 未配置"}, status_code=400)
+
+        results = []
+        for bid in bucket_ids:
+            bucket = bucket_mgr.get_bucket(bid)
+            if not bucket:
+                results.append({"bucket_id": bid, "success": False, "error": "bucket not found"})
+                continue
+
+            content = bucket.get("content", "")
+            if not content:
+                results.append({"bucket_id": bid, "success": False, "error": "empty content"})
+                continue
+
+            try:
+                new_name = await dehydrator.one_line_summary(content)
+                await bucket_mgr.update(bid, name=new_name)
+                results.append({"bucket_id": bid, "success": True, "old_name": bucket.get("name", ""), "new_name": new_name})
+            except Exception as e:
+                results.append({"bucket_id": bid, "success": False, "error": str(e)})
+
+        succeeded = len([r for r in results if r["success"]])
+        return JSONResponse({
+            "ok": True,
+            "total": len(bucket_ids),
+            "succeeded": succeeded,
+            "failed": len(bucket_ids) - succeeded,
+            "results": results,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 # =============================================================
