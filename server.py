@@ -8215,7 +8215,13 @@ async def api_run_housekeeper(request):
             parts.append(f"❌ 冲突检测失败: {conflicts['error']}")
         else:
             parts.append(f"✅ 冲突检测: 发现{conflicts.get('conflicts_found', 0)}条冲突")
-        
+
+        identity = results.get("identity_detection", {})
+        if "error" in identity:
+            parts.append(f"❌ 人物收录检测失败: {identity['error']}")
+        else:
+            parts.append(f"✅ 人物收录检测: 生成{identity.get('identity_proposals_created', 0)}条收录提案")
+
         return JSONResponse({"ok": True, "message": "\n".join(parts)})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -8256,7 +8262,9 @@ async def api_ai_chat(request):
         if context and context != "<context>\n</context>":
             enriched_message = f"{context}\n\n用户消息:\n{message}"
         
-        logger.info(f"[Chat] Sending to ai_manage (with context: {'yes' if context and context != '<context>\\n</context>' else 'no'})")
+        empty_ctx = "<context>\n</context>"
+        ctx_status = "yes" if context and context != empty_ctx else "no"
+        logger.info(f"[Chat] Sending to ai_manage (with context: {ctx_status})")
         result = await ai_manage(enriched_message)
         
         logger.info(f"[Chat] Response received ({len(result)} chars): {result[:200]}...")
