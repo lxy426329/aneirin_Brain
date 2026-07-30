@@ -4449,7 +4449,7 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 experiences = [b for b in all_buckets 
                                if b.get("metadata", {}).get("domain") and "经验" in b.get("metadata", {}).get("domain")]
                 
-                exp_type_filter = kwargs.get("exp_type", "")
+                exp_type_filter = exp_type
                 if exp_type_filter:
                     experiences = [e for e in experiences if e.get("metadata", {}).get("exp_type") == exp_type_filter]
                 
@@ -4504,21 +4504,38 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 candle = await bucket_mgr.get_candlestick(record_id)
                 if not candle:
                     return f"未找到烛台: {record_id}"
-                new_content = kwargs.get("content", candle.get("content", ""))
-                new_title = kwargs.get("title", candle.get("title", ""))
+                new_content = content or candle.get("content", "")
+                new_title = title or candle.get("title", "")
                 if not new_title or not new_title.strip():
                     new_title = new_content.strip().split("\n")[0][:20] if new_content.strip() else "无标题"
-                await bucket_mgr.save_candlestick(new_content, candle.get("bucket_id", ""), new_title)
+                # save_candlestick creates a new record with a new ID
+                new_candle = await bucket_mgr.save_candlestick(new_content, candle.get("bucket_id", ""), new_title)
                 # Delete old file since save creates a new one
                 await bucket_mgr.delete_candlestick(record_id)
-                return f"烛台已更新 → {record_id}"
+                return f"烛台已更新 → {new_candle['id']}"
             if record_type in ["identity", "roster", "pattern", "experience", "annual_ring"]:
                 record = await bucket_mgr.get(record_id)
                 if not record:
                     return f"未找到记录: {record_id}"
-                content = kwargs.get("content", record.get("content", ""))
-                meta = {**record.get("metadata", {}), **kwargs.get("meta", {})}
-                success = await bucket_mgr.update(record_id, content, meta)
+                new_content = content or record.get("content", "")
+                meta = {**record.get("metadata", {})}
+                if name:
+                    meta["name"] = name
+                if description:
+                    meta["description"] = description
+                if tags:
+                    meta["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+                if importance >= 0:
+                    meta["importance"] = importance
+                if exp_type:
+                    meta["exp_type"] = exp_type
+                if source:
+                    meta["source"] = source
+                if relationships:
+                    meta["relationships"] = relationships
+                if triggers:
+                    meta["triggers"] = triggers
+                success = await bucket_mgr.update(record_id, new_content, meta)
                 return f"已更新 → {record_id}" if success else "更新失败"
             return f"不支持更新 {record_type} 类型"
         

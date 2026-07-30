@@ -79,10 +79,10 @@ pulse() 系统概览。analytics() 统计分析。memory_directory(detail_level)
 
 管家仅生成提案，不直接执行任何破坏性操作。所有提案需主AI审批后才执行。记忆衰减是自动机制，无需审批。
 
-run_housekeeper() 每日管家：事件摘要写入日记、冲突检测、情绪分析。生成提案到回音壁。
+run_housekeeper() 每日管家：事件摘要写入日记、事件链自动生成、冲突检测、高频人物收录提案。生成提案到回音壁。
 run_weekly_housekeeper() 每周管家：事件链合并提案、过期记忆清理提案。仅提案不执行。
 review_digest() 查看待办提案。
-approve_action(action_id) 批准并执行（cleanup→删除记忆, conflict→标记旧记忆已解决, chain_merge→合并事件链）。
+approve_action(action_id) 批准并执行（cleanup→删除记忆, conflict→标记旧记忆已解决, chain_merge→合并事件链, identity_proposal→创建身份档案）。
 reject_action(action_id) 驳回。
 approve_event_chain(chain_id) 事件链结案。
 
@@ -123,3 +123,5 @@ memory_export(export_type) export_brain(output_path) import_brain(zip_path, over
 8. 记忆过期提醒: breath()浮现模式和inject_context()会自动返回权重<0.3的记忆，AI应在合适时机提醒用户是否保留（trace提升重要度或pinned钉选）
 9. 管家仅提案不执行: 所有破坏性操作（删除/合并/清理）需主AI通过approve_action()审批后执行，记忆衰减除外
 10. 日记隔离: 每日日志与记忆桶系统完全隔离，不参与breath()/inject_context()，仅通过query_journal()主动查询
+11. 事件链自动生成: 管家每日自动检测长效事件并生成/追加事件链，link_events()仅作手动补充
+12. 高频人物收录: 管家检测7天内被提及>=3次且未收录的人物，自动提交identity_proposal提案，由主AI审批

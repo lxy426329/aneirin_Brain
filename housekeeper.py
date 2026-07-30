@@ -458,7 +458,13 @@ class Housekeeper:
         except Exception as e:
             logger.error(f"Conflict detection failed: {e}")
             results["conflicts"] = {"error": str(e)}
-        
+
+        try:
+            results["identity_detection"] = await self._daily_identity_detection()
+        except Exception as e:
+            logger.error(f"Identity detection failed: {e}")
+            results["identity_detection"] = {"error": str(e)}
+
         logger.info(f"Daily job complete: {results}")
         return results
     
@@ -1002,7 +1008,128 @@ class Housekeeper:
                     }
         
         return None
-    
+
+    async def _daily_identity_detection(self) -> dict:
+        """
+        Detect frequently mentioned persons in recent memories.
+        If a person appears >= 3 times in the last 7 days and is not yet in identity records,
+        submit a proposal to echo_chamber for the main AI to decide whether to create an identity record.
+
+        检测近期记忆中频繁出现的人物。若某人物在过去7天内被提及>=3次且尚未收录为身份档案，
+        则向回音壁提交提案，由主AI决定是否创建身份档案。
+        """
+        import re
+        from collections import Counter
+
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            return {"error": str(e)}
+
+        # --- Get existing identity names to exclude ---
+        # --- 获取已有身份档案名称以排除 ---
+        try:
+            identities = await self.bucket_mgr.get_identities()
+            existing_names = set()
+            for ident in identities:
+                name = ident.get("metadata", {}).get("name", "")
+                if name:
+                    existing_names.add(name)
+        except Exception:
+            existing_names = set()
+
+        # --- Person name patterns (Chinese names 2-4 chars, family roles) ---
+        # --- 人物名称匹配模式（中文姓名2-4字，亲属称谓等）---
+        person_patterns = [
+            r'(?:跟|和|与)([\u4e00-\u9fff]{2,4})(?:一起|说|聊|去|吃|玩|见面|打电话|约)',
+            r'([\u4e00-\u9fff]{2,4})(?:说|告诉|给我|让我|帮我|找我|叫我|给我|生气|开心|难过)',
+            r'(妈妈|爸爸|奶奶|爷爷|外公|外婆|舅舅|阿姨|叔叔|老师|同学|室友|朋友|同事|闺蜜|男朋友|女朋友)',
+        ]
+
+        # --- Also check identity buckets' name fields directly ---
+        # --- 同时直接检查记忆桶 name 字段中的人物名 ---
+        person_counter = Counter()
+        person_contexts = {}
+        person_emotions = {}
+
+        for b in all_buckets:
+            meta = b["metadata"]
+            if meta.get("type") in ("permanent", "feel", "identity"):
+                continue
+
+            created_str = meta.get("created", "")
+            if not created_str:
+                continue
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created < week_ago:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            content = b["content"]
+            found_persons = set()
+
+            for pattern in person_patterns:
+                matches = re.findall(pattern, content)
+                for match in matches:
+                    if isinstance(match, tuple):
+                        match = match[0]
+                    if match and match not in ("我", "你", "他", "她", "他们", "她们", "我们", "你们", "这个", "那个"):
+                        found_persons.add(match)
+
+            for person in found_persons:
+                person_counter[person] += 1
+                if person not in person_contexts:
+                    person_contexts[person] = content[:80]
+
+                valence = meta.get("valence", -1)
+                if valence >= 0:
+                    if person not in person_emotions:
+                        person_emotions[person] = []
+                    if valence < 0.3:
+                        person_emotions[person].append("负面")
+                    elif valence > 0.7:
+                        person_emotions[person].append("正面")
+                    else:
+                        person_emotions[person].append("中性")
+
+        # --- Submit proposals for high-frequency persons not in identity records ---
+        # --- 为高频且未收录的人物提交提案 ---
+        proposals_created = 0
+        for person, count in person_counter.most_common():
+            if count < 3:
+                break
+            if person in existing_names:
+                continue
+
+            emotions = person_emotions.get(person, [])
+            dominant_emotion = ""
+            if emotions:
+                emotion_count = Counter(emotions)
+                dominant_emotion = emotion_count.most_common(1)[0][0]
+
+            await self.echo_chamber.add_pending_action(
+                action_type="identity_proposal",
+                data={
+                    "person_name": person,
+                    "mention_count": count,
+                    "dominant_emotion": dominant_emotion,
+                    "sample_context": person_contexts.get(person, ""),
+                    "reason": f"人物「{person}」在过去7天内被提及{count}次"
+                              + (f"，主要情绪倾向：{dominant_emotion}" if dominant_emotion else "")
+                              + "，建议创建身份档案",
+                },
+            )
+            proposals_created += 1
+            logger.info(f"Identity proposal created for: {person} (mentioned {count} times)")
+
+        return {"identity_proposals_created": proposals_created}
+
     async def _should_create_chain(self, topic: str) -> bool:
         """Check if a new chain should be created (topic mentioned across multiple days)."""
         chains = await self.get_event_chains()
@@ -1585,6 +1712,21 @@ class Housekeeper:
                         if os.path.exists(chain_file):
                             os.remove(chain_file)
                         logger.info(f"Executed chain_merge: merged {secondary_id} into {primary_id}")
+
+            elif action_type == "identity_proposal":
+                # --- Create an identity record for the approved person ---
+                # --- 为批准的人物创建身份档案 ---
+                person_name = action_data.get("person_name", "")
+                if person_name:
+                    await self.bucket_mgr.create(
+                        content=f"人物档案：{person_name}（由管家提案自动生成，请主AI补充详细信息）",
+                        tags=["identity", "auto-proposed"],
+                        importance=5,
+                        domain=["身份"],
+                        name=person_name,
+                        bucket_type="permanent",
+                    )
+                    logger.info(f"Executed identity_proposal: created identity for {person_name}")
 
         except Exception as e:
             logger.warning(f"Failed to execute action {action_id}: {e}")

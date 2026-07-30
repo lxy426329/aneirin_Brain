@@ -1281,7 +1281,9 @@ function renderEchoChamber() {
           conflict: '记忆冲突',
           cleanup: '清理提案',
           merge: '合并提案',
-          chain_update: '链更新'
+          chain_merge: '事件链合并',
+          chain_update: '链更新',
+          identity_proposal: '人物收录'
         };
 
         var statusLabels = {
@@ -1313,6 +1315,21 @@ function renderEchoChamber() {
           contentHtml = '<div class="cleanup-details" style="border-color:rgba(74,124,89,0.15);background:rgba(74,124,89,0.04);">' +
             '<div class="conflict-reason" style="color:var(--positive);">' + (data.reason || '合并提案') + '</div>' +
             (data.target_id ? '<div class="cleanup-meta">目标 Bucket: ' + data.target_id + '</div>' : '') +
+          '</div>';
+        } else if (action.action_type === 'chain_merge') {
+          contentHtml = '<div class="cleanup-details" style="border-color:rgba(74,124,89,0.15);background:rgba(74,124,89,0.04);">' +
+            '<div class="conflict-reason" style="color:var(--positive);">' + (data.reason || '事件链合并提案') + '</div>' +
+            '<div class="conflict-record old"><span class="record-label">主链</span>' + (data.primary_topic || data.primary_chain_id || '') + '</div>' +
+            '<div class="conflict-record new"><span class="record-label">次链</span>' + (data.secondary_topic || data.secondary_chain_id || '') + '</div>' +
+            (data.similarity ? '<div class="cleanup-meta">相似度: ' + data.similarity + '%</div>' : '') +
+          '</div>';
+        } else if (action.action_type === 'identity_proposal') {
+          contentHtml = '<div class="cleanup-details" style="border-color:rgba(106,106,139,0.15);background:rgba(106,106,139,0.04);">' +
+            '<div class="conflict-reason" style="color:#6A6A8B;">' + (data.reason || '人物收录提案') + '</div>' +
+            '<div class="cleanup-meta">人物: ' + (data.person_name || '未知') + '</div>' +
+            '<div class="cleanup-meta">出现次数: ' + (data.mention_count || 0) + '</div>' +
+            (data.dominant_emotion ? '<div class="cleanup-meta">主要情绪: ' + data.dominant_emotion + '</div>' : '') +
+            (data.sample_context ? '<div class="conflict-record" style="margin-top:6px;"><span class="record-label">上下文示例</span>' + data.sample_context + '</div>' : '') +
           '</div>';
         } else if (action.action_type === 'chain_update') {
           contentHtml = '<div class="cleanup-details" style="border-color:var(--border);background:var(--surface);">' +

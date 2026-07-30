@@ -302,17 +302,22 @@ class BucketManager:
         """Get all saved candlesticks, sorted by creation time (newest first)."""
         candlesticks = []
         import json
-        
+
         for filename in os.listdir(self.candlestick_dir):
             if filename.endswith(".json"):
                 file_path = os.path.join(self.candlestick_dir, filename)
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         candlestick = json.load(f)
+                        # --- Auto-fix empty titles in old data ---
+                        # --- 自动修复旧数据中为空的标题 ---
+                        if not candlestick.get("title", "").strip():
+                            content = candlestick.get("content", "")
+                            candlestick["title"] = content.strip().split("\n")[0][:20] if content.strip() else "无标题"
                         candlesticks.append(candlestick)
                 except Exception as e:
                     logger.warning(f"Failed to load candlestick file / 加载烛台文件失败: {file_path}: {e}")
-        
+
         candlesticks.sort(key=lambda c: c.get("created", ""), reverse=True)
         return candlesticks
 
@@ -322,7 +327,13 @@ class BucketManager:
         if os.path.exists(file_path):
             import json
             with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                candlestick = json.load(f)
+                # --- Auto-fix empty titles in old data ---
+                # --- 自动修复旧数据中为空的标题 ---
+                if not candlestick.get("title", "").strip():
+                    content = candlestick.get("content", "")
+                    candlestick["title"] = content.strip().split("\n")[0][:20] if content.strip() else "无标题"
+                return candlestick
         return None
 
     async def delete_candlestick(self, candlestick_id: str):

@@ -387,8 +387,8 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 
 - **每日摘要**：管家自动生成的当日记忆总结
 - **每周摘要**：管家自动生成的当周事件链合并报告
-- **待审批提案**：记忆冲突、清理提案、事件链合并提案等需要主 AI 裁决的事项
-- **批准即执行**：批准提案时会自动执行对应操作（cleanup 删除过期记忆，conflict 标记旧记忆已解决，chain_merge 合并事件链）
+- **待审批提案**：记忆冲突、清理提案、事件链合并提案、人物收录提案等需要主 AI 裁决的事项
+- **批准即执行**：批准提案时会自动执行对应操作（cleanup 删除过期记忆，conflict 标记旧记忆已解决，chain_merge 合并事件链，identity_proposal 创建身份档案）
 
 访问地址：**http://localhost:8000/echo-chamber**
 
@@ -447,8 +447,9 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 **每日管家（自动运行）**：
 - 每天凌晨运行
 - 对当日对话做轻量总结，写入每日日志（事件摘要）
-- 提炼关键事实并追加到对应 Event Chain
+- 自动检测长效事件并生成/追加 Event Chain（无需手动 link_events）
 - 检测记忆冲突并提交到回音壁
+- 检测高频人物（7天内被提及>=3次且未收录），自动提交身份收录提案
 - **不删除任何数据，不直接修改记忆**
 
 **每周管家（自动运行）**：
