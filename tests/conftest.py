@@ -49,12 +49,13 @@ def test_config(tmp_path):
         "merge_threshold": 75,
         "matching": {"fuzzy_threshold": 50, "max_results": 10},
         "wikilink": {"enabled": False},
-        # Spec-correct weights (post B-05/B-06/B-07 fix)
+        # Spec-correct weights (post B-05/B-06/B-07 fix + noise-reduction tuning)
+        # 权重已微调以降低上下文噪音：topic 5.0→2.0、vector 4.0→3.0、priority 2.0→4.0
         "scoring_weights": {
             "emotion_arousal": 3.0,
-            "explicit_priority": 2.0,
-            "vector_similarity": 4.0,
-            "topic_relevance": 5.0,
+            "explicit_priority": 4.0,
+            "vector_similarity": 3.0,
+            "topic_relevance": 2.0,
             "time_proximity": 1.5,
             "content_weight": 1.0,
         },

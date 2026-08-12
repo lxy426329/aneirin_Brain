@@ -39,7 +39,19 @@ from typing import Optional
 import frontmatter
 from rapidfuzz import fuzz
 
-from utils import generate_bucket_id, sanitize_name, sanitize_filename, safe_path, now_iso
+from utils import (
+    generate_bucket_id,
+    sanitize_name,
+    sanitize_filename,
+    safe_path,
+    now_iso,
+    safe_int,
+    safe_float,
+    safe_bool,
+    as_list,
+)
+
+logger = logging.getLogger("ombre_brain.bucket")
 
 try:
     from hybrid_search import HybridSearchEngine
@@ -47,8 +59,6 @@ try:
 except ImportError:
     HAS_HYBRID_SEARCH = False
     logger.warning("Hybrid search module not found, using legacy search")
-
-logger = logging.getLogger("ombre_brain.bucket")
 
 # ---------------------------------------------------------
 # File lock for safe concurrent Markdown read/write
@@ -103,10 +113,12 @@ class BucketManager:
         scoring = config.get("scoring_weights", {})
         # New multi-dimensional continuous scoring system:
         # Final_Score = (W1 * Emotion_Arousal) + (W2 * Explicit_Priority) + (W3 * Vector_Similarity) + (W4 * Topic_Relevance) + (W5 * Time_Proximity)
+        # Tuned to reduce context noise: topic & vector weights lowered, explicit priority raised.
+        # 权重已微调以降低上下文噪音：降低主题/向量权重，提高显式优先级权重。
         self.w_emotion_arousal = scoring.get("emotion_arousal", 3.0)    # 情绪唤醒度权重
-        self.w_explicit_priority = scoring.get("explicit_priority", 2.0)  # 显式优先级权重（钉选）
-        self.w_vector_similarity = scoring.get("vector_similarity", 4.0)  # 向量相似度权重
-        self.w_topic = scoring.get("topic_relevance", 5.0)               # 主题相关性权重（最高）
+        self.w_explicit_priority = scoring.get("explicit_priority", 4.0)  # 显式优先级权重（钉选/保护，提高）
+        self.w_vector_similarity = scoring.get("vector_similarity", 3.0)  # 向量相似度权重（降低）
+        self.w_topic = scoring.get("topic_relevance", 2.0)               # 主题相关性权重（降低）
         self.w_time = scoring.get("time_proximity", 1.5)
         self.content_weight = scoring.get("content_weight", 1.0)
 
@@ -217,8 +229,11 @@ class BucketManager:
         file_path = os.path.join(self.timeline_dir, f"{timeline_id}.json")
         if os.path.exists(file_path):
             import json
-            with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load timeline / 加载时间链失败: {file_path}: {e}")
         return None
 
     async def decay_timeline(self, timeline_id: str):
@@ -811,7 +826,12 @@ class BucketManager:
 
         emotions = emotions or []
         if valence is not None or arousal is not None:
-            emotions = self._valence_arousal_to_emotions(valence or 0.5, arousal or 0.3)
+            # NOTE: use explicit None checks — `or` would swallow legitimate 0.0 values
+            # 注意：用显式 None 判断，`or` 会吞掉合法的 0.0 值（极负面/极平静）
+            emotions = self._valence_arousal_to_emotions(
+                valence if valence is not None else 0.5,
+                arousal if arousal is not None else 0.3,
+            )
         
         if not dominant_emotion and emotions:
             dominant_emotion = max(emotions, key=lambda e: e["intensity"])["label"]
@@ -824,7 +844,7 @@ class BucketManager:
             "emotions": emotions,
             "dominant_emotion": dominant_emotion,
             "emotion_metrics": emotion_metrics or {},
-            "importance": max(1, min(10, importance)),
+            "importance": max(1, min(10, safe_int(importance, 5))),
             "importance_details": {
                 "impact": 0,
                 "duration": 0,
@@ -977,7 +997,7 @@ class BucketManager:
             if "tags" in kwargs:
                 post["tags"] = kwargs["tags"]
             if "importance" in kwargs:
-                post["importance"] = max(1, min(10, int(kwargs["importance"])))
+                post["importance"] = max(1, min(10, safe_int(kwargs["importance"], 5)))
             if "domain" in kwargs:
                 post["domain"] = kwargs["domain"]
             if "emotions" in kwargs:
@@ -987,8 +1007,8 @@ class BucketManager:
             if "emotion_metrics" in kwargs:
                 post["emotion_metrics"] = kwargs["emotion_metrics"]
             if "valence" in kwargs or "arousal" in kwargs:
-                v = float(kwargs.get("valence", post.get("valence", 0.5)))
-                a = float(kwargs.get("arousal", post.get("arousal", 0.3)))
+                v = safe_float(kwargs.get("valence", post.get("valence")), 0.5)
+                a = safe_float(kwargs.get("arousal", post.get("arousal")), 0.3)
                 emotions = self._valence_arousal_to_emotions(v, a)
                 post["emotions"] = emotions
                 if not post.get("dominant_emotion") and emotions:
@@ -1001,7 +1021,7 @@ class BucketManager:
                 # If task_flag=True, require force_resolved=True to set resolved=True
                 # 只有显式指定 force_resolved=True 才能解决 task_flag=True 的桶
                 task_flag = post.get("task_flag", False)
-                new_resolved = bool(kwargs["resolved"])
+                new_resolved = safe_bool(kwargs["resolved"], False)
                 
                 if task_flag and new_resolved and not kwargs.get("force_resolved", False):
                     logger.warning(
@@ -1015,24 +1035,24 @@ class BucketManager:
                 # 删除 force_resolved，防止它被存储为元数据
                 kwargs.pop("force_resolved", None)
             if "pinned" in kwargs:
-                post["pinned"] = bool(kwargs["pinned"])
+                post["pinned"] = safe_bool(kwargs["pinned"], False)
                 if kwargs["pinned"]:
                     post["importance"] = 10
             if "digested" in kwargs:
-                post["digested"] = bool(kwargs["digested"])
+                post["digested"] = safe_bool(kwargs["digested"], False)
             if "task_flag" in kwargs:
-                post["task_flag"] = bool(kwargs["task_flag"])
+                post["task_flag"] = safe_bool(kwargs["task_flag"], False)
             if "decay_stage" in kwargs:
-                post["decay_stage"] = int(kwargs["decay_stage"])
+                post["decay_stage"] = safe_int(kwargs["decay_stage"], 0)
             if "model_valence" in kwargs:
-                post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
+                post["model_valence"] = max(0.0, min(1.0, safe_float(kwargs["model_valence"], 0.5)))
             
-            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id"):
+            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "resolved_reason"):
                 if key in kwargs:
                     post[key] = kwargs[key]
 
             if "is_private" in kwargs:
-                post["is_private"] = bool(kwargs["is_private"])
+                post["is_private"] = safe_bool(kwargs["is_private"], False)
             if "privacy_password" in kwargs:
                 post["privacy_password"] = kwargs["privacy_password"] or ""
 
@@ -1230,29 +1250,33 @@ class BucketManager:
         if not file_path:
             return False
         
-        post = frontmatter.load(file_path)
-        related_buckets = post.get("related_buckets", [])
-        if related_id not in related_buckets:
-            related_buckets.append(related_id)
-            post["related_buckets"] = related_buckets
+        # --- Lock the whole bidirectional write (no await inside) ---
+        # --- 持锁完成双向写入（临界区无 await）---
+        with _file_lock:
+            post = frontmatter.load(file_path)
+            related_buckets = post.get("related_buckets", [])
+            if related_id not in related_buckets:
+                related_buckets.append(related_id)
+                post["related_buckets"] = related_buckets
+            
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
+            except OSError as e:
+                logger.error(f"Failed to add related bucket: {e}")
+                return False
+            
+            related_path = self._find_bucket_file(related_id)
+            if related_path:
+                related_post = frontmatter.load(related_path)
+                rel_buckets = related_post.get("related_buckets", [])
+                if bucket_id not in rel_buckets:
+                    rel_buckets.append(bucket_id)
+                    related_post["related_buckets"] = rel_buckets
+                    with open(related_path, "w", encoding="utf-8") as f:
+                        f.write(frontmatter.dumps(related_post))
         
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
-        except OSError as e:
-            logger.error(f"Failed to add related bucket: {e}")
-            return False
-        
-        related_path = self._find_bucket_file(related_id)
-        if related_path:
-            related_post = frontmatter.load(related_path)
-            rel_buckets = related_post.get("related_buckets", [])
-            if bucket_id not in rel_buckets:
-                rel_buckets.append(bucket_id)
-                related_post["related_buckets"] = rel_buckets
-                with open(related_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(related_post))
-        
+        self._invalidate_cache()
         return True
 
     async def remove_related_bucket(self, bucket_id: str, related_id: str) -> bool:
@@ -1261,28 +1285,30 @@ class BucketManager:
         if not file_path:
             return False
         
-        post = frontmatter.load(file_path)
-        related_buckets = post.get("related_buckets", [])
-        if related_id in related_buckets:
-            related_buckets.remove(related_id)
-            post["related_buckets"] = related_buckets
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(post))
-            except OSError as e:
-                logger.error(f"Failed to remove related bucket: {e}")
-                return False
+        with _file_lock:
+            post = frontmatter.load(file_path)
+            related_buckets = post.get("related_buckets", [])
+            if related_id in related_buckets:
+                related_buckets.remove(related_id)
+                post["related_buckets"] = related_buckets
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(frontmatter.dumps(post))
+                except OSError as e:
+                    logger.error(f"Failed to remove related bucket: {e}")
+                    return False
+            
+            related_path = self._find_bucket_file(related_id)
+            if related_path:
+                related_post = frontmatter.load(related_path)
+                rel_buckets = related_post.get("related_buckets", [])
+                if bucket_id in rel_buckets:
+                    rel_buckets.remove(bucket_id)
+                    related_post["related_buckets"] = rel_buckets
+                    with open(related_path, "w", encoding="utf-8") as f:
+                        f.write(frontmatter.dumps(related_post))
         
-        related_path = self._find_bucket_file(related_id)
-        if related_path:
-            related_post = frontmatter.load(related_path)
-            rel_buckets = related_post.get("related_buckets", [])
-            if bucket_id in rel_buckets:
-                rel_buckets.remove(bucket_id)
-                related_post["related_buckets"] = rel_buckets
-                with open(related_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(related_post))
-        
+        self._invalidate_cache()
         return True
 
     async def set_parent_bucket(self, child_id: str, parent_id: str) -> bool:
@@ -1296,27 +1322,29 @@ class BucketManager:
         if not child_path:
             return False
         
-        post = frontmatter.load(child_path)
-        post["parent_bucket"] = parent_id
-        child_buckets = post.get("child_buckets", [])
+        with _file_lock:
+            post = frontmatter.load(child_path)
+            post["parent_bucket"] = parent_id
+            child_buckets = post.get("child_buckets", [])
+            
+            try:
+                with open(child_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
+            except OSError as e:
+                logger.error(f"Failed to set parent bucket: {e}")
+                return False
+            
+            parent_path = self._find_bucket_file(parent_id)
+            if parent_path:
+                parent_post = frontmatter.load(parent_path)
+                parent_children = parent_post.get("child_buckets", [])
+                if child_id not in parent_children:
+                    parent_children.append(child_id)
+                    parent_post["child_buckets"] = parent_children
+                    with open(parent_path, "w", encoding="utf-8") as f:
+                        f.write(frontmatter.dumps(parent_post))
         
-        try:
-            with open(child_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
-        except OSError as e:
-            logger.error(f"Failed to set parent bucket: {e}")
-            return False
-        
-        parent_path = self._find_bucket_file(parent_id)
-        if parent_path:
-            parent_post = frontmatter.load(parent_path)
-            parent_children = parent_post.get("child_buckets", [])
-            if child_id not in parent_children:
-                parent_children.append(child_id)
-                parent_post["child_buckets"] = parent_children
-                with open(parent_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(parent_post))
-        
+        self._invalidate_cache()
         return True
 
     async def add_event_sequence(self, bucket_id: str, event_id: str, position: int = None) -> bool:
@@ -1325,22 +1353,24 @@ class BucketManager:
         if not file_path:
             return False
         
-        post = frontmatter.load(file_path)
-        sequence = post.get("event_sequence", [])
-        if event_id not in sequence:
-            if position is not None and 0 <= position <= len(sequence):
-                sequence.insert(position, event_id)
-            else:
-                sequence.append(event_id)
-            post["event_sequence"] = sequence
+        with _file_lock:
+            post = frontmatter.load(file_path)
+            sequence = post.get("event_sequence", [])
+            if event_id not in sequence:
+                if position is not None and 0 <= position <= len(sequence):
+                    sequence.insert(position, event_id)
+                else:
+                    sequence.append(event_id)
+                post["event_sequence"] = sequence
+            
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
+            except OSError as e:
+                logger.error(f"Failed to add event sequence: {e}")
+                return False
         
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
-        except OSError as e:
-            logger.error(f"Failed to add event sequence: {e}")
-            return False
-        
+        self._invalidate_cache()
         return True
 
     async def update_importance_details(self, bucket_id: str, details: dict) -> bool:
@@ -1356,12 +1386,12 @@ class BucketManager:
         
         for key in ["impact", "duration", "emotional_intensity", "recurrence", "interconnectedness"]:
             if key in details:
-                importance_details[key] = max(0, min(10, int(details[key])))
+                importance_details[key] = max(0, min(10, safe_int(details[key], 0)))
         
         post["importance_details"] = importance_details
         
         total = sum(importance_details.values())
-        average = total / 5 if total > 0 else post.get("importance", 5)
+        average = total / 5 if total > 0 else safe_int(post.get("importance"), 5)
         post["importance"] = max(1, min(10, round(average)))
         
         try:
@@ -1371,6 +1401,7 @@ class BucketManager:
             logger.error(f"Failed to update importance details: {e}")
             return False
         
+        self._invalidate_cache()
         return True
 
     # ---------------------------------------------------------
@@ -1456,28 +1487,31 @@ class BucketManager:
         if not file_path:
             return False
 
-        try:
-            # --- 移入 .trash/ 回收站，而非直接永久删除 ---
-            trash_dir = self._ensure_trash_dir()
-            original_name = os.path.basename(file_path)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            trash_filename = f"{timestamp}_{original_name}"
-            trash_path = os.path.join(trash_dir, trash_filename)
+        # --- Lock move + metadata write so touch/update can't resurrect the file ---
+        # --- 持锁完成移动+元数据写入，防止 touch/update 并发"复活"已删除文件 ---
+        with _file_lock:
+            try:
+                # --- 移入 .trash/ 回收站，而非直接永久删除 ---
+                trash_dir = self._ensure_trash_dir()
+                original_name = os.path.basename(file_path)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                trash_filename = f"{timestamp}_{original_name}"
+                trash_path = os.path.join(trash_dir, trash_filename)
 
-            shutil.move(file_path, trash_path)
+                shutil.move(file_path, trash_path)
 
-            # --- 保存元数据 JSON：原始路径、删除时间、桶 ID ---
-            meta = {
-                "original_path": file_path,
-                "deleted_at": now_iso(),
-                "bucket_id": bucket_id,
-            }
-            meta_path = os.path.join(trash_dir, os.path.splitext(trash_filename)[0] + ".json")
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to delete bucket file / 删除桶文件失败: {file_path}: {e}")
-            return False
+                # --- 保存元数据 JSON：原始路径、删除时间、桶 ID ---
+                meta = {
+                    "original_path": file_path,
+                    "deleted_at": now_iso(),
+                    "bucket_id": bucket_id,
+                }
+                meta_path = os.path.join(trash_dir, os.path.splitext(trash_filename)[0] + ".json")
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to delete bucket file / 删除桶文件失败: {file_path}: {e}")
+                return False
 
         logger.info(f"Deleted bucket (moved to trash) / 删除记忆桶（已移入回收站）: {bucket_id}")
 
@@ -1540,14 +1574,17 @@ class BucketManager:
             base, ext = os.path.splitext(restore_path)
             restore_path = f"{base}_restored{ext}"
 
-        try:
-            shutil.move(trash_path, restore_path)
-            # --- 恢复成功后删除元数据 JSON ---
-            if os.path.exists(meta_path):
-                os.remove(meta_path)
-        except Exception as e:
-            logger.error(f"Failed to restore bucket / 恢复桶失败: {safe_name}: {e}")
-            return False
+        # --- Lock the move so concurrent touch can't write to the old path ---
+        # --- 持锁移动，防止并发 touch 向旧路径写文件 ---
+        with _file_lock:
+            try:
+                shutil.move(trash_path, restore_path)
+                # --- 恢复成功后删除元数据 JSON ---
+                if os.path.exists(meta_path):
+                    os.remove(meta_path)
+            except Exception as e:
+                logger.error(f"Failed to restore bucket / 恢复桶失败: {safe_name}: {e}")
+                return False
 
         logger.info(f"Restored bucket / 恢复记忆桶: {bucket_id or safe_name}")
         self._invalidate_cache()
@@ -1580,8 +1617,8 @@ class BucketManager:
                     orig = meta.get("original_path")
                     if orig:
                         original_name = os.path.basename(orig)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to read trash metadata / 读取回收站元数据失败: {meta_path}: {e}")
 
             # --- 回退：从文件名时间戳前缀解析删除时间 ---
             if not deleted_at:
@@ -1669,24 +1706,33 @@ class BucketManager:
         if not file_path:
             return
 
+        # --- Hold lock for the read-modify-write cycle ---
+        # --- 持锁完成读-改-写循环，防止与 update() 并发导致 lost update ---
+        created_str = ""
+        with _file_lock:
+            try:
+                post = frontmatter.load(file_path)
+                post["last_active"] = now_iso()
+                post["last_accessed"] = now_iso()
+                post["activation_count"] = safe_int(post.get("activation_count"), 0) + 1
+                post["cold_memory"] = False
+                created_str = str(post.get("created", post.get("last_active", "")))
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
+            except Exception as e:
+                logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
+                return
+
+        # --- Time ripple: boost nearby memories within ±48h (lock released) ---
+        # --- 时间涟漪：±48小时内的记忆轻微唤醒（锁已释放）---
         try:
-            post = frontmatter.load(file_path)
-            post["last_active"] = now_iso()
-            post["last_accessed"] = now_iso()
-            post["activation_count"] = post.get("activation_count", 0) + 1
-            post["cold_memory"] = False
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
-
-            # --- Time ripple: boost nearby memories within ±48h ---
-            # --- 时间涟漪：±48小时内的记忆轻微唤醒 ---
-            current_time = datetime.fromisoformat(str(post.get("created", post.get("last_active", ""))))
+            current_time = datetime.fromisoformat(created_str)
             await self._time_ripple(bucket_id, current_time)
-            
-            self._invalidate_cache()
-        except Exception as e:
-            logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
+        except (ValueError, TypeError):
+            pass
+
+        self._invalidate_cache()
 
     # ---------------------------------------------------------
     # Cooldown management for pattern/experience injection
@@ -1753,7 +1799,8 @@ class BucketManager:
         """
         try:
             all_buckets = await self.list_all(include_archive=False)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Time ripple: list_all failed / 时间涟漪列出桶失败: {e}")
             return
 
         rippled = 0
@@ -1781,15 +1828,21 @@ class BucketManager:
                 if not file_path:
                     continue
                 try:
-                    post = frontmatter.load(file_path)
-                    current_count = post.get("activation_count", 1)
-                    # Store as float for fractional increments; calculate_score handles it
-                    post["activation_count"] = round(current_count + 0.3, 1)
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(frontmatter.dumps(post))
+                    # --- Lock each ripple write (small read-modify-write) ---
+                    # --- 每次涟漪写入都持锁（短读-改-写）---
+                    with _file_lock:
+                        post = frontmatter.load(file_path)
+                        current_count = safe_float(post.get("activation_count"), 1.0)
+                        # Store as float for fractional increments; calculate_score handles it
+                        post["activation_count"] = round(current_count + 0.3, 1)
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            f.write(frontmatter.dumps(post))
                     rippled += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Time ripple write failed / 时间涟漪写入失败: {bucket['id']}: {e}")
                     continue
+
+        self._invalidate_cache()
 
     # ---------------------------------------------------------
     # Multi-dimensional search (core feature)
@@ -1861,7 +1914,7 @@ class BucketManager:
             filter_set = {d.lower() for d in domain_filter}
             candidates = [
                 b for b in all_buckets
-                if {d.lower() for d in b["metadata"].get("domain", [])} & filter_set
+                if {d.lower() for d in as_list(b["metadata"].get("domain"))} & filter_set
             ]
             # Fall back to full search if pre-filter yields nothing
             # 预筛为空则回退全量搜索
@@ -1914,7 +1967,7 @@ class BucketManager:
 
                 # Dim 2: Explicit Priority (0 or 1)
                 # 显式优先级：钉选/保护为1，否则为0
-                explicit_priority = 1.0 if (meta.get("pinned") or meta.get("protected")) else 0.0
+                explicit_priority = 1.0 if (safe_bool(meta.get("pinned")) or safe_bool(meta.get("protected"))) else 0.0
 
                 # Dim 3: Vector Similarity (0.0~1.0 continuous)
                 # 向量语义相似度
@@ -2009,14 +2062,14 @@ class BucketManager:
         name_score = fuzz.partial_ratio(query, meta.get("name", "")) * 3
         domain_score = (
             max(
-                (fuzz.partial_ratio(query, d) for d in meta.get("domain", [])),
+                (fuzz.partial_ratio(query, d) for d in as_list(meta.get("domain"))),
                 default=0,
             )
             * 2.5
         )
         tag_score = (
             max(
-                (fuzz.partial_ratio(query, tag) for tag in meta.get("tags", [])),
+                (fuzz.partial_ratio(query, tag) for tag in as_list(meta.get("tags"))),
                 default=0,
             )
             * 2
@@ -2077,12 +2130,12 @@ class BucketManager:
             score += 3.0
             matches += 1
 
-        for d in meta.get("domain", []):
+        for d in as_list(meta.get("domain")):
             if q in d.lower():
                 score += 2.5
                 matches += 1
 
-        for tag in meta.get("tags", []):
+        for tag in as_list(meta.get("tags")):
             if q in tag.lower():
                 score += 2.0
                 matches += 1
@@ -2095,6 +2148,64 @@ class BucketManager:
         if matches == 0:
             return 0.0
         return min(1.0, score / 3.0)
+
+    # ---------------------------------------------------------
+    # Rerank + Top-N truncation (Step 3 context injection gate)
+    # 精排 + Top-N 截断（Step 3 上下文注入闸门）
+    # ---------------------------------------------------------
+    def rerank_top_n(self, candidates: list, query: str, top_n: int = 3) -> list:
+        """
+        Lightweight rerank + hard Top-N truncation for Step 3 search results.
+        No external CrossEncoder model is loaded (avoids OOM in small containers);
+        the rerank signal blends the five-dimension Final_Score with a re-computed
+        lexical/keyword relevance, then hard-caps the result at Top-N.
+
+        轻量级精排 + 硬性 Top-N 截断（Step 3 检索结果注入前使用）。
+        不加载外部跨编码器模型（避免小内存容器 OOM）；
+        精排得分 = 五维 Final_Score 与重新计算的词面/关键词相关性信号混合，
+        随后按精排得分从高到低硬性截断为 Top-N，宁缺毋滥。
+
+        Args:
+            candidates: scored buckets from search() (each has 'score' + 'metadata').
+            query: the search query / 检索查询词。
+            top_n: max number of buckets to keep (default 3) / 保留条数上限（默认 3）。
+
+        Returns:
+            Sorted, truncated list of buckets. Buckets are mutated in place with
+            'rerank_score'. 返回按精排得分降序截断后的列表，并在原桶写入 rerank_score。
+        """
+        if not candidates:
+            return []
+        top_n = max(1, int(top_n))
+        q = (query or "").strip()
+        if not q:
+            # No query → keep existing order, just truncate
+            # 无查询词时保持原顺序，仅做截断
+            return sorted(
+                candidates, key=lambda b: b.get("score", 0.0), reverse=True
+            )[:top_n]
+
+        reranked = []
+        for bucket in candidates:
+            raw = bucket.get("score", 0.0)
+            # Normalize legacy 0~100 scores to 0~1
+            # 兼容旧式 0~100 分制，统一归一化到 0~1
+            base_score = (raw / 100.0) if raw > 1 else raw
+
+            # Lexical relevance signal (0~1): exact keyword match first, topic as fallback
+            # 词面相关信号（0~1）：优先精确关键词匹配，无匹配则回退主题相关度
+            lexical = self._exact_keyword_match(q, bucket)
+            if lexical <= 0.0:
+                lexical = self._calc_topic_score(q, bucket)
+
+            # Blend: 70% five-dim score + 30% lexical signal (pure deterministic calc)
+            # 混合：70% 五维得分 + 30% 词面相关信号（纯确定性计算，不依赖模型）
+            rerank_score = 0.7 * base_score + 0.3 * lexical
+            bucket["rerank_score"] = round(rerank_score, 4)
+            reranked.append(bucket)
+
+        reranked.sort(key=lambda b: b.get("rerank_score", 0.0), reverse=True)
+        return reranked[:top_n]
 
     # ---------------------------------------------------------
     # Emotion intensity score:
@@ -2137,13 +2248,14 @@ class BucketManager:
                 return max(0.0, min(1.0, float(emotion_metrics.get("arousal", 0.3))))
 
             if "emotions" in meta and meta["emotions"]:
-                emotions = meta["emotions"]
-                max_intensity = max(float(e.get("intensity", 0.0)) for e in emotions)
-                return max(0.0, min(1.0, max_intensity))
+                emotions = [e for e in meta["emotions"] if isinstance(e, dict)]
+                if emotions:
+                    max_intensity = max(safe_float(e.get("intensity"), 0.0) for e in emotions)
+                    return max(0.0, min(1.0, max_intensity))
 
-            arousal = float(meta.get("arousal", 0.3))
+            arousal = safe_float(meta.get("arousal"), 0.3)
             return max(0.0, min(1.0, arousal))
-        except (ValueError, TypeError):
+        except Exception:
             return 0.3
 
     def get_emotion_arousal(self, meta: dict) -> float:
@@ -2178,7 +2290,7 @@ class BucketManager:
 
         for b in all_buckets:
             meta = b["metadata"]
-            if meta.get("pinned") or meta.get("protected"):
+            if safe_bool(meta.get("pinned")) or safe_bool(meta.get("protected")):
                 strong_anchors.append(b)
                 anchor_ids.add(b["id"])
 
@@ -2510,31 +2622,35 @@ class BucketManager:
         if not file_path:
             return False
 
-        try:
-            # Read once, get domain info and update type / 一次性读取
-            post = frontmatter.load(file_path)
-            domain = post.get("domain", ["未分类"])
-            primary_domain = sanitize_name(domain[0]) if domain else "未分类"
-            archive_subdir = os.path.join(self.archive_dir, primary_domain)
-            os.makedirs(archive_subdir, exist_ok=True)
+        # --- Lock read-modify-write + move to prevent lost update ---
+        # --- 持锁完成"改类型+移动"，防止并发 update 覆盖或重建旧路径文件 ---
+        with _file_lock:
+            try:
+                # Read once, get domain info and update type / 一次性读取
+                post = frontmatter.load(file_path)
+                domain = as_list(post.get("domain")) or ["未分类"]
+                primary_domain = sanitize_name(domain[0]) if domain else "未分类"
+                archive_subdir = os.path.join(self.archive_dir, primary_domain)
+                os.makedirs(archive_subdir, exist_ok=True)
 
-            dest = safe_path(archive_subdir, os.path.basename(file_path))
+                dest = safe_path(archive_subdir, os.path.basename(file_path))
 
-            # Update type marker then move file / 更新类型标记后移动文件
-            post["type"] = "archived"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+                # Update type marker then move file / 更新类型标记后移动文件
+                post["type"] = "archived"
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
 
-            # Use shutil.move for cross-filesystem safety
-            # 使用 shutil.move 保证跨文件系统安全
-            shutil.move(file_path, str(dest))
-        except Exception as e:
-            logger.error(
-                f"Failed to archive bucket / 归档桶失败: {bucket_id}: {e}"
-            )
-            return False
+                # Use shutil.move for cross-filesystem safety
+                # 使用 shutil.move 保证跨文件系统安全
+                shutil.move(file_path, str(dest))
+            except Exception as e:
+                logger.error(
+                    f"Failed to archive bucket / 归档桶失败: {bucket_id}: {e}"
+                )
+                return False
 
         logger.info(f"Archived bucket / 归档记忆桶: {bucket_id} → archive/{primary_domain}/")
+        self._invalidate_cache()
         return True
 
     # ---------------------------------------------------------
@@ -2596,8 +2712,12 @@ class BucketManager:
         标准化桶元数据：将旧的 valence/arousal 格式转换为新的 emotions 格式。
         """
         if "emotions" not in metadata and ("valence" in metadata or "arousal" in metadata):
-            valence = float(metadata.get("valence", 0.5))
-            arousal = float(metadata.get("arousal", 0.3))
+            # Guard against dirty YAML (null / "abc") — fall back to neutral values
+            # 防止脏数据（null/"abc"）导致整桶加载失败
+            valence = safe_float(metadata.get("valence"), 0.5)
+            arousal = safe_float(metadata.get("arousal"), 0.3)
+            metadata["valence"] = valence
+            metadata["arousal"] = arousal
             metadata["emotions"] = self._valence_arousal_to_emotions(valence, arousal)
             if not metadata.get("dominant_emotion") and metadata["emotions"]:
                 metadata["dominant_emotion"] = max(

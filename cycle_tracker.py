@@ -65,10 +65,10 @@ class CycleTracker:
         """Returns (success: bool, error_msg: str)"""
         try:
             date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
-        except ValueError:
+        except (ValueError, TypeError):
             try:
-                date_obj = datetime.strptime(start_date, "%Y/%m/%d").date()
-            except ValueError:
+                date_obj = datetime.strptime(str(start_date), "%Y/%m/%d").date()
+            except (ValueError, TypeError):
                 return False, f"日期格式无效: {start_date}，请使用 YYYY-MM-DD 或 YYYY/MM/DD"
 
         # Reject future dates (more than 1 day ahead)
@@ -76,10 +76,14 @@ class CycleTracker:
         if date_obj > today + timedelta(days=1):
             return False, f"开始日期 {start_date} 是未来日期，无法记录"
 
-        # Check for overlapping cycles
+        # Check for overlapping cycles (skip corrupted old records)
         for existing in self.data["records"]:
-            exist_date = datetime.fromordinal(existing["date_timestamp"]).date()
-            exist_end = exist_date + timedelta(days=existing["duration"])
+            try:
+                exist_date = datetime.fromordinal(int(existing["date_timestamp"])).date()
+                exist_dur = int(existing.get("duration", 5))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            exist_end = exist_date + timedelta(days=exist_dur)
             if date_obj >= exist_date and date_obj < exist_end:
                 return False, f"日期 {start_date} 与已有记录 {existing['start_date']} 重叠"
 

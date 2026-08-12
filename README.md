@@ -247,10 +247,10 @@ breath(query="今天很累")
     │   ⑤ Time_Proximity     = 最近 24h=1.0 → 30天→0.1 的指数衰减      │
     │                                                                    │
     │ 加权求和后除以总权重归一化到 [0, 1]：                               │
-    │   Final_Score = (3.0×① + 2.0×② + 4.0×③ + 5.0×④ + 1.5×⑤) / 15.5 │
+    │   Final_Score = (3.0×① + 4.0×② + 3.0×③ + 2.0×④ + 1.5×⑤) / 13.5 │
     │                                                                    │
     │ 分层返回规则：                                                     │
-    │   Final_Score ≥ 0.7  → 返回完整正文内容（TOP-N）                   │
+    │   Final_Score ≥ 0.7  → 返回完整正文内容（精排后硬截断 Top 3）      │
     │   0.4 ≤ score < 0.7 → 仅返回 one_line_summary（异步预生成）        │
     │   score < 0.4       → 完全跳过，不返回任何内容                     │
     ├───────────────────────────────────────────────────────────────────┤
@@ -289,7 +289,9 @@ breath(query="今天很累")
 
 保护措施：
 - **SQLite WAL 模式**：`embeddings.db` 所有连接启用 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`，允许多个写操作并发执行，消除 "database is locked" 错误
-- **Markdown 文件锁**：`bucket_manager.update()` 使用 `threading.Lock` 包裹完整读-改-写周期（`frontmatter.load` → 修改元数据 → `frontmatter.dumps` 写回），确保两个进程同时写入同一文件时互斥
+- **Markdown 文件锁**：`bucket_manager` 的 `update()`、`touch()`、`archive()`、`delete()`、`restore()` 及关联操作均使用 `threading.Lock` 包裹完整读-改-写周期（`frontmatter.load` → 修改元数据 → `frontmatter.dumps` 写回），确保两个进程同时写入同一文件时互斥
+- **启动竞态防护**：decay_engine 与 housekeeper 的懒启动加 `asyncio.Lock`，杜绝并发首次调用创建重复后台任务
+- **Embedding 熔断重试**：向量 API 失败自动退避重试（0.5s/1s），连续 3 次失败熔断 60 秒，避免拖垮整个系统
 
 ### 例假周期追踪
 
@@ -336,6 +338,122 @@ lock_memory(bucket_id="xxx", password="mypassword")
 
 # 解除锁定
 unlock_memory(bucket_id="xxx")
+```
+
+### 外部记忆写入接口
+
+提供稳定的 HTTP 写入接口，供夜伴等外部系统直接写入记忆，**不依赖模型自行决定是否调用 MCP**：
+
+- **接口**：`POST /api/hold`
+- **认证**：session cookie，或 `X-API-Key` header（设置 `OMBRE_EXTERNAL_API_KEY` 环境变量后启用，适合服务端到服务端调用）
+- **复用核心逻辑**：与 MCP `hold()` 完全同一条写入路径（情感打标、查重合并、异步 summary/embedding）
+
+**请求体（JSON）：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `content` | string | 是 | 记忆正文 |
+| `valence` | float (0~1) | 否 | 效价，提供时优先于自动打标 |
+| `arousal` | float (0~1) | 否 | 唤醒度，提供时优先于自动打标 |
+| `tags` | list/string | 否 | 标签列表或逗号分隔字符串 |
+| `importance` | int (1~10) | 否 | 重要度，默认 5 |
+| `pinned` | bool | 否 | 钉选为永久记忆 |
+| `protected` | bool | 否 | 受保护（不参与合并/衰减） |
+| `task_flag` | bool | 否 | 任务类记忆 |
+| `source` | string | 否 | 来源标记，如 `yeeban` / `yeeban_status` / `yeeban_daily` |
+| `title` | string | 否 | 自定义记忆名称 |
+| `feel` | bool | 否 | 存储为感受型记忆 |
+
+**示例请求：**
+
+```bash
+curl -X POST http://localhost:8000/api/hold \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-external-key" \
+  -d '{
+    "content": "今天和妈妈去公园散步，聊了很多小时候的事",
+    "valence": 0.85,
+    "arousal": 0.4,
+    "tags": ["家庭", "散步"],
+    "importance": 7,
+    "source": "yeeban_daily"
+  }'
+```
+
+**示例响应：**
+
+```json
+{
+  "success": true,
+  "bucket_id": "candmz4tlsbpe",
+  "merged": false,
+  "valence": 0.85,
+  "arousal": 0.4,
+  "action": "new",
+  "message": "新建→与妈妈散步聊起童年 家庭"
+}
+```
+
+**错误返回**（缺 content、数值越界等均返回 `400` + `success:false`）：
+
+```json
+{ "success": false, "error": "valence 越界，必须位于 0~1" }
+```
+
+### 轻量记忆检索接口
+
+为外部系统（夜伴）提供省 token 的稳定检索接口，与 MCP `breath(lightweight=True)` 共用同一条路径：
+
+- **接口**：`GET /api/breath` 或 `POST /api/breath`（JSON body 同字段）
+- **认证**：session cookie 或 `X-API-Key` header（设置 `OMBRE_EXTERNAL_API_KEY` 后启用）
+- **设计**：每条仅返回一句话摘要 + 关键元数据，不返回大段正文；无结果时返回明确空结构，不做 fallback
+
+**请求参数：**
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `query` | string | 检索词；空 = 被动浮现最近未解决记忆 |
+| `limit` | int | 返回条数上限（默认 5，最大 20） |
+| `min_score` | float (0~1) | 最低相关度过滤（仅查询模式有效） |
+| `recent_days` | int | 仅返回最近 N 天（0 = 不过滤） |
+| `type` | string | 类型过滤：identity / pattern / event / feel |
+| `domain` | string | 领域过滤（逗号分隔） |
+| `valence` / `arousal` | float (0~1) | 情感坐标筛选 |
+
+**示例请求：**
+
+```bash
+curl "http://localhost:8000/api/breath?query=压力&limit=3&min_score=0.2&recent_days=30" \
+  -H "X-API-Key: your-external-key"
+```
+
+**示例响应：**
+
+```json
+{
+  "success": true,
+  "mode": "lightweight",
+  "query": "压力",
+  "count": 3,
+  "results": [
+    {
+      "bucket_id": "candmz4abc123",
+      "name": "项目上线压力大",
+      "summary": "本周项目上线压力很大，连续加班三天",
+      "valence": 0.25,
+      "arousal": 0.7,
+      "tags": ["工作", "压力"],
+      "created": "2026-07-28",
+      "score": 0.83
+    }
+  ]
+}
+```
+
+**无结果时**（明确空结构，不 fallback）：
+
+```json
+{ "success": true, "mode": "lightweight", "query": "不存在的词", "count": 0, "results": [] }
 ```
 
 ### 数据导出/导入
@@ -385,36 +503,46 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 
 系统级中间态数据存储区，专门存放 AI 管家的工作总结与提案：
 
-- **每日摘要**：管家自动生成的当日记忆总结
+- **每日摘要**：管家旧管线（`run_housekeeper` / `daily_review(run_pipeline=True)`）生成的当日记忆总结
 - **每周摘要**：管家自动生成的当周事件链合并报告
+- **日终扫描报告**：每次 `daily_review` 落一份 `daily_review` 类型扫描报告（候选列表存档，非待审批动作）
 - **待审批提案**：记忆冲突、清理提案、事件链合并提案、人物收录提案等需要主 AI 裁决的事项
-- **批准即执行**：批准提案时会自动执行对应操作（cleanup 删除过期记忆，conflict 标记旧记忆已解决，chain_merge 合并事件链，identity_proposal 创建身份档案）
+- **批准即执行**：批准提案时自动执行对应操作——cleanup 删除过期记忆并同步清理向量库、conflict 标记旧记忆 `resolved=True` + `superseded_by`、chain_merge 合并事件链（节点去重 + 实体合并 + 摘要重构）、identity_proposal 在身份层创建人物档案（含主导情绪特征）
+- **状态同步**：审批结果（approved / rejected）实时写回提案卡片，Dashboard 60 秒自动刷新，无缓存滞后
 
 访问地址：**http://localhost:8000/echo-chamber**
 
 ### 每日日志系统
 
-独立于记忆桶系统的每日日记存储区域，采用 AI 管家与主 AI 协作生成模式：
+独立于记忆桶系统的每日日记存储区域，采用主 AI 产出、系统协助结构化的模式：
 
 **协作流程**：
-1. **AI 管家**（每日自动运行）：生成当日事件摘要（事实层面），保存为日记草稿
-2. **主 AI**（对话中调用）：通过 `complete_journal(date, mood_comment, emotion_tags)` 补充情绪点评和心情标签（情感层面）
+1. **主 AI**（日终或对话中）：依据对话理解写出今日事件摘要 `event_summary`，通过 `complete_journal(date, event_summary, mood_comment, emotion_tags)` 落库
+2. **主 AI 补充**：`complete_journal` 可多次调用、幂等合并——情绪点评与标签独立更新，绝不覆盖为空；同一天重复调用不丢数据
 3. **查询**：通过 `query_journal(date, keyword)` 按日期或关键词查询，仅在需要时调出
 
+> 管家**不再自动生成日记草稿**：管家看不到聊天客户端中未写入 Brain 的对话全文，无法也不应编造日程。今日事件总结由主 AI 依据对话理解撰写后落库。
+
 **隔离设计**：
-- 日记存储在独立的 `journals/` 目录，与记忆桶系统完全隔离
+- 日记存储在独立的 `journals/` 目录（与 `buckets/` 同级，物理隔离）
 - **不参与** `breath()` 浮现、`inject_context()` 上下文注入、`list_all()` 列表
 - 仅通过显式日期查询或关键词搜索访问
+
+**幂等与容错**：
+- **幂等合并**：同一天重复调用 `complete_journal` 不会丢数据——新值为空时保留旧值（摘要与点评各自独立更新，绝不覆盖为空）
+- **日期容错**：`date` 为空或格式错乱时自动降级为当前 UTC 日期；`2026/8/1`、`2026年8月1日` 等格式自动归一化
+- **标签容错**：`emotion_tags` 兼容字符串或数组，自动统一 `，`/`、` 分隔符并去重
+- **并发安全**：写入采用线程锁包裹读-改-写，杜绝并发丢失更新
 
 **日记结构**：
 
 | 字段 | 说明 |
 |---|---|
 | `date` | 日期（YYYY-MM-DD） |
-| `event_summary` | 事件摘要（管家生成） |
+| `event_summary` | 事件摘要（主 AI 依据对话生成） |
 | `mood_comment` | 情绪点评（主 AI 生成） |
 | `emotion_tags` | 情绪标签（主 AI 生成） |
-| `housekeeper_generated_at` | 管家生成时间 |
+| `housekeeper_generated_at` | 事件摘要写入时间（字段名沿用历史命名） |
 | `ai_completed_at` | 主 AI 补充时间 |
 
 ### 静默预处理中间件
@@ -423,7 +551,7 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 
 1. 拦截用户输入，后台自动执行 Query 改写与混合检索（Hybrid Search + Rerank）
 2. 自动匹配并拉取最新的【相关事件链 (Event Chain)】与【感官/状态标签 (Feel/Status)】
-3. 将检索到的背景记忆以 `<context>` 结构静默拼接到用户 Prompt 头部
+3. 将检索到的背景记忆以 `<context>` 结构静默拼接到用户 Prompt 头部，并在 `<context>` 上下包裹[系统硬性指令]（优先度校验 / 拒绝无依据联想 / 逻辑聚焦）与[输出要求]，约束主 AI 忠实于注入上下文、禁止臆测发散
 4. 主 AI 无需额外发起检索 Tool Call，直接获得完备上下文
 
 ### 事件链（Event Chain）
@@ -437,26 +565,106 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 | `status` | 进行中/已结案 |
 | `timeline` | 按时间排序的节点数组，关联原始 memory_id |
 | `summary` | 高度概括的事件背景（AI 生成） |
+| `entities` | 核心实体词（人物/物品/概念，自动提取） |
+| `related_chain_ids` | 共享实体的关联事件链 ID（图谱交叉索引） |
 
 仅当同一主题跨越多个时间段（如病程跟进、备考、项目开发）被持续提及或跟进时，才会创建或追加至事件链。
 
-### 日/周两级管家任务
+**实体图谱与交叉索引**：
 
-> **核心原则**：AI 管家仅生成提案，不直接执行任何破坏性操作。所有删除、合并、清理操作需主 AI 通过 `approve_action()` 审批后才执行。记忆衰减是自动机制，无需审批。
+- **实体提取**：建链与追加节点时，从记忆正文（人物正则）、标签、`[[wikilink]]` 自动提取实体词，无需 LLM 调用
+- **图谱融合**：每日/每周管家任务自动扫描全部事件链，两条链存在共享实体即互相加入 `related_chain_ids`（双向、去重、幂等）
+- **检索增强**：`get_event_chains(include_related=True)` 附带各链的关联链摘要；`get_event_chain_detail(chain_id)` 返回单链完整详情 + 关联链的共享实体与摘要——"沿着时间线找演进，顺着实体网找关联"
 
-**每日管家（自动运行）**：
-- 每天凌晨运行
-- 对当日对话做轻量总结，写入每日日志（事件摘要）
-- 自动检测长效事件并生成/追加 Event Chain（无需手动 link_events）
-- 检测记忆冲突并提交到回音壁
-- 检测高频人物（7天内被提及>=3次且未收录），自动提交身份收录提案
-- **不删除任何数据，不直接修改记忆**
+**实体关联示例**：
 
-**每周管家（自动运行）**：
-- 每周日凌晨运行
-- 扫描相似 Event Chain，生成合并提案（不直接合并）
-- 扫描过期且无关联的低权重记忆，生成清理提案
-- 所有提案提交至回音壁，由主 AI 终审决定执行或驳回
+```text
+=== 事件链 chainA ===   [实体: 小明, 备考英语]
+   关联链: chainB（备考英语考试）
+   共享实体: 小明, 备考英语
+```
+
+### 管家与日终整理
+
+> **核心原则**：管家不打断用户与主 AI 的日常对话；日终由主 AI 按提示词约定主动调用；管家只扫描已入库记忆、给出候选与可选方案，不做任何最终删改；最终决策权在主 AI。
+
+**定位**
+
+- 管家**不主动打断**用户与主 AI 的日常对话。
+- 日终由主 AI 按提示词约定**主动调用**（`daily_review` 或 `run_housekeeper`）。
+- 管家负责**扫描已入库记忆**（过期任务、长期低价值、重复、冲突等），提出候选与可选方案；删除 / 沉底 / 提权 / 合并 / 保留 / 改写等最终操作由主 AI 决定并调用 `trace` / `hold` 等工具执行。
+- 管家**无法读取**聊天客户端中未写入 Brain 的对话全文；今日事件总结由主 AI 依据对话理解撰写，再经 `complete_journal` 等落库。
+
+**调用方式**
+
+- **推荐**：主 AI 日终调用 `daily_review`（返回结构化"一包结果"JSON）。
+- `run_housekeeper` 为**兼容入口**，等价于 `daily_review(run_pipeline=True)`：在候选扫描之外，额外执行旧管线副作用——每日摘要写入回音壁 digest、事件链更新、冲突提案与身份收录提案提交回音壁；返回文本渲染（结构化结果请用 `daily_review`）。
+- 后台自动调度**默认关闭**（`housekeeper.auto_schedule: false`）；如需恢复旧行为，在 `config.yaml` 设置 `housekeeper.auto_schedule: true`。
+
+**单次调用返回内容**（`daily_review`，对照真实结构）
+
+| 字段 | 内容 |
+|---|---|
+| `summary_guidance` | 今日总结引导：提醒主 AI 依据对话写出事实要点与可选情绪，附 `suggested_fields`（event_summary / mood_comment / emotion_tags）、`hold_template` 字段模板、当日 `journal_status` 与 `journal_note` |
+| `candidates` | 记忆维护候选列表：每条含 `bucket_id`、名称/摘要、标出原因 `reason`、可选方案 `options`、默认建议 `default_suggestion`（仅参考）、详情 `detail` |
+| `execution_instructions` | 执行说明：主 AI 逐条（或按策略）做出最终决策并调用对应工具执行，**不限于"是/否批准管家建议"** |
+| `health` | 异常/健康信息：`errors` / `warnings`，正常时为空数组 |
+| `scan_summary` | 扫描统计：`scanned_buckets`、`candidates_total`、按类别计数 `candidates_by_category` |
+
+候选类别与可选方案（默认建议仅供参考，主 AI 可忽略）：
+
+| category | 标出原因 | options | 默认建议 |
+|---|---|---|---|
+| `expired_task` | 任务型记忆，正文含明确日期且日期已过去 | `mark_resolved` / `archive_or_sink` / `delete` / `keep` | `mark_resolved` |
+| `stale` | 30 天未访问 + 低重要度 + 低激活次数 | `keep` / `archive_or_sink` / `raise_importance` / `delete` | 权重 <0.3 时 `archive_or_sink`，否则 `keep` |
+| `duplicate` | 内容相似度 ≥88（保守策略，不激进合并） | `merge_with:<older_id>` / `keep` | `merge_with:<older_id>` |
+| `conflict` | 偏好 / 健康 / 状态 / 事实冲突 | `keep` / `mark_old_resolved` / `delete_new` | `keep` |
+
+精简 JSON 示例（字段名与代码一致）：
+
+```json
+{
+  "mode": "daily_review",
+  "review_date": "2026-08-12",
+  "summary_guidance": {
+    "message": "请根据本日对话写出今日事件的事实要点……不要编造对话中未出现的日程或事件。",
+    "suggested_fields": { "event_summary": "今日事实要点…", "mood_comment": "可选…", "emotion_tags": "可选…" },
+    "hold_template": { "content": "…", "valence": "0.0~1.0", "arousal": "0.0~1.0", "tags": "…", "importance": "1~10", "source": "daily_review" },
+    "journal_status": { "exists": false, "has_event_summary": false, "has_mood_comment": false },
+    "journal_note": "今日日记尚无事件摘要：请……调用 complete_journal(…) 落库。"
+  },
+  "candidates": [
+    {
+      "bucket_id": "bc278144e947",
+      "name": "2026-08-03",
+      "category": "expired_task",
+      "reason": "任务型记忆，正文含明确日期 2026-08-03，已过去 9 天",
+      "options": ["mark_resolved", "archive_or_sink", "delete", "keep"],
+      "default_suggestion": "mark_resolved",
+      "detail": { "created": "…", "importance": 5, "content_preview": "2026-08-03 去医院复诊" }
+    }
+  ],
+  "execution_instructions": "以上候选仅为管家扫描结果与参考建议，最终操作权在你（主 AI）。请逐条……使用对应工具执行，不必局限于管家的默认建议：删除 trace(delete=True)；沉底 trace(resolved=1)；提权 trace(importance=N)；合并 先读取两条内容→hold() 写入合并后完整记忆→trace(delete=True) 删冗余；保留 不做操作。",
+  "health": { "errors": [], "warnings": [] },
+  "scan_summary": { "scanned_buckets": 5, "candidates_total": 1, "candidates_by_category": { "expired_task": 1 } }
+}
+```
+
+**日记**：管家**不再自动写日记草稿**。今日事件总结由主 AI 依据对话理解写出，经 `complete_journal(date, event_summary, mood_comment, emotion_tags)` 落库（幂等合并、日期/标签容错）；按日期/关键词用 `query_journal(date, keyword)` 查询。详见上文「每日日志系统」。
+
+**回音壁**
+
+- 每次 `daily_review` 向回音壁写入一份 **`daily_review` 扫描报告**（`digests/` 目录）：含扫描统计与完整候选列表（每条含原因与默认建议），供主 AI 后续对照；**仅为存档，不产生待审批动作**。
+- 当 `run_pipeline=True`（即 `run_housekeeper`）时，额外产生**旧管线提案**：每日摘要 digest、事件链更新、冲突提案（conflict）、人物收录提案（identity_proposal）等——这些仍走回音壁 `approve_action` / `reject_action` 审批链路。
+- `approve_action` / `reject_action` 仍适用场景：身份收录提案、事件链合并提案、旧管线清理/冲突提案等"是否执行"的快捷决策；而 `daily_review` 的候选更强调主 AI 的自由决策（逐条选择不同操作，非"是/否"）。两者可结合使用：先看 `daily_review` 候选自由决策，再对旧管线提案走审批。
+
+**明确不做什么**
+
+- **不编造未入库对话**：管家看不到对话全文，今日总结不自动生成，绝不虚构日程。
+- 日终仅返回候选与建议，**不做任何自动删除 / 合并 / 沉底**。
+- 开新窗口由管家接手日终流程：**未实现 / 后续规划**。
+
+> **每周管家**（随自动调度关闭，可开启）：扫描相似 Event Chain 生成合并提案（不直接合并）；扫描过期且无关联的低权重记忆生成清理提案；所有提案提交回音壁，由主 AI 终审。
 
 ---
 
@@ -504,12 +712,14 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 | `grow` | 日记归档。自动拆分长内容为多个记忆桶，逐条执行 hold 流程 |
 | `trace` | 修改元数据（resolved / tags / importance / emotions 等），删除记忆桶 |
 | `inject_context` | 静默预处理中间件：自动检索并注入上下文到用户 Prompt |
-| `run_housekeeper` | 手动触发每日管家任务 |
+| `daily_review` | 日终整理（推荐，主 AI 主动调用）：返回结构化"一包结果"——今日总结引导 + 记忆维护候选列表（过期任务/长期低价值/重复/冲突，含原因与可选方案）+ 执行说明 + 健康信息 |
+| `run_housekeeper` | 管家日终整理（兼容入口，文本渲染；等价于 daily_review 加旧管线副作用） |
 | `run_weekly_housekeeper` | 手动触发每周管家任务 |
 | `review_digest` | 审阅回音壁中的待办提案 |
 | `approve_action` | 批准管家提案并自动执行操作（清理/合并/冲突解决） |
 | `reject_action` | 驳回管家提案 |
-| `get_event_chains` | 获取所有事件链 |
+| `get_event_chains` | 获取所有事件链，`include_related=True` 时附带关联链摘要（实体 + 关联链主题/节点数） |
+| `get_event_chain_detail` | 获取单条事件链完整详情，含关联链的共享实体与摘要 |
 | `approve_event_chain` | 批准事件链结案 |
 | `lock_memory` | 将记忆桶标记为隐私，设置密码锁定 |
 | `unlock_memory` | 解除记忆桶的隐私锁定 |

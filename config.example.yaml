@@ -77,12 +77,14 @@ embedding:
                                   # 留空复用 dehydration 的 api_key
 
 # --- Scoring weights / 检索权重参数 ---
-# total = topic(×4) + emotion(×2) + time(×1.5) + importance(×1)
+# Final_Score = (emotion×3 + priority×4 + vector×3 + topic×2 + time×1.5) / 13.5
+# 已微调以降低上下文噪音：降低主题/向量权重，提高显式优先级权重
 scoring_weights:
-  topic_relevance: 4.0
-  emotion_resonance: 2.0
+  emotion_arousal: 3.0
+  explicit_priority: 4.0
+  vector_similarity: 3.0
+  topic_relevance: 2.0
   time_proximity: 1.5
-  importance: 1.0
 
 # --- Hybrid Search / 混合检索配置 ---
 # BM25 + Vector + Rerank 混合检索模式
@@ -166,8 +168,12 @@ echo_chamber:
   max_pending_actions: 100         # Max pending actions before warning / 最大待审批提案数
 
 # --- Housekeeper / 管家任务配置 ---
+# 产品定位：管家不主动打断对话；日终整理由主 AI 在提示词约定下主动调用
+# （daily_review / run_housekeeper）。以下自动调度默认关闭。
 housekeeper:
-  enabled: true                    # Enable housekeeper auto-scheduling / 启用管家自动调度
+  enabled: true                    # Enable housekeeper auto-scheduling / 启用管家
+  auto_schedule: false             # Auto-run daily/weekly jobs in background / 后台自动调度（默认关闭，日终由主AI主动调用）
+  auto_journal_draft: false        # Legacy daily summary may auto-write journal draft / 旧管线自动写日记草稿（默认关闭，今日总结由主AI写出）
   daily_run_time: "02:00"          # Daily digest run time (UTC) / 每日摘要执行时间（UTC）
   weekly_run_time: "03:00"         # Weekly digest run time (UTC) / 每周摘要执行时间（UTC）
   weekly_run_day: 0                # Day of week for weekly digest (0=Sunday) / 每周摘要执行日（0=周日）

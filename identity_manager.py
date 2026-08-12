@@ -19,7 +19,7 @@ import os
 import logging
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List
 
 import frontmatter
@@ -416,7 +416,9 @@ class IdentityManager:
         
         try:
             last_time = datetime.fromisoformat(last_mentioned.replace("Z", "+00:00"))
-            now = datetime.now()
+            # --- Fix: use timezone-aware now (was naive → TypeError every call) ---
+            # --- 修复：使用带时区的当前时间（原为 naive，每次调用都抛异常）---
+            now = datetime.now(timezone.utc)
             days_since = (now - last_time).total_seconds() / (24 * 3600)
             
             if days_since <= 0:

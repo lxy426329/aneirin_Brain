@@ -29,11 +29,14 @@
 3. **Feel 独立检索**（`breath(domain="feel")`）：按创建时间倒序返回所有 feel
 4. **随机浮现**：搜索结果 <3 条时 40% 概率漂浮 1~3 条低权重旧桶（模拟人类随机联想）
 
-**四维搜索评分**（归一化到 0~100）
-- topic_relevance（权重 4.0）：name×3 + domain×2.5 + tags×2 + body
-- emotion_resonance（权重 2.0）：Russell 环形模型欧氏距离
-- time_proximity（权重 2.5）：`e^(-0.1×days)`
-- importance（权重 1.0）：importance/10
+**五维搜索评分**（归一化到 0~1）
+- emotion_arousal（权重 3.0）：Russell 环形模型欧氏距离/唤醒度
+- explicit_priority（权重 4.0）：钉选/保护记忆优先（已调高以对抗上下文噪音）
+- vector_similarity（权重 3.0）：语义向量余弦相似度（已调低）
+- topic_relevance（权重 2.0）：name×3 + domain×2.5 + tags×2 + body（已调低）
+- time_proximity（权重 1.5）：`e^(-0.1×days)`
+- `Final_Score = (3.0×emotion + 4.0×priority + 3.0×vector + 2.0×topic + 1.5×time) / 13.5`
+- 精排（rerank_top_n）：70% 五维得分 + 30% 词面关键词信号，硬截断 Top 3
 - resolved 桶全局降权 ×0.3
 
 **记忆随时间变化**
@@ -338,11 +341,12 @@
 | `decay.emotion_weights.arousal_boost` | `0.8` | 唤醒度加成系数 |
 | `matching.fuzzy_threshold` | `50` | 模糊匹配下限 |
 | `matching.max_results` | `5` | 匹配返回上限 |
-| `scoring_weights.topic_relevance` | `4.0` | 主题评分权重 |
-| `scoring_weights.emotion_resonance` | `2.0` | 情感评分权重 |
-| `scoring_weights.time_proximity` | `2.5` | 时间评分权重 |
-| `scoring_weights.importance` | `1.0` | 重要性评分权重 |
-| `scoring_weights.content_weight` | `3.0` | 正文评分权重 |
+| `scoring_weights.emotion_arousal` | `3.0` | 情绪唤醒度权重 |
+| `scoring_weights.explicit_priority` | `4.0` | 显式优先级权重（钉选/保护，已调高） |
+| `scoring_weights.vector_similarity` | `3.0` | 向量相似度权重（已调低） |
+| `scoring_weights.topic_relevance` | `2.0` | 主题评分权重（已调低） |
+| `scoring_weights.time_proximity` | `1.5` | 时间评分权重 |
+| `scoring_weights.content_weight` | `1.0` | 正文评分权重 |
 | `wikilink.enabled` | `true` | 启用 wikilink 注入 |
 | `wikilink.use_tags` | `false` | wikilink 包含标签 |
 | `wikilink.use_domain` | `true` | wikilink 包含域名 |

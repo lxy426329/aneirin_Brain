@@ -12,6 +12,7 @@
 import os
 import re
 import uuid
+import json
 import yaml
 import logging
 import unicodedata
@@ -56,9 +57,9 @@ def load_config(config_path: str = None) -> dict:
         },
         "scoring_weights": {
             "emotion_arousal": 3.0,
-            "explicit_priority": 2.0,
-            "vector_similarity": 4.0,
-            "topic_relevance": 5.0,
+            "explicit_priority": 4.0,
+            "vector_similarity": 3.0,
+            "topic_relevance": 2.0,
             "time_proximity": 1.5,
             "content_weight": 1.0,
         },
@@ -284,6 +285,82 @@ def now_iso() -> str:
     Format: "2026-07-22T16:00:00+08:00"
     """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def safe_int(value, default=0):
+    """
+    Safely convert a value to int, falling back to default on failure.
+    Guards against YAML dirty data (None / "abc" / lists) throwing TypeError.
+    安全转换为整数，失败时返回默认值；防止 frontmatter 脏数据（None/"abc"）抛异常。
+    """
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_float(value, default=0.0):
+    """
+    Safely convert a value to float, falling back to default on failure.
+    安全转换为浮点数，失败时返回默认值。
+    """
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_bool(value, default=False):
+    """
+    Safely interpret a value as bool, handling string forms like "false"/"true".
+    安全解释布尔值，兼容字符串 "false"/"true" 等 YAML 常见写法。
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "是")
+    return default
+
+
+def as_list(value):
+    """
+    Normalize a value into a list (string → [string], None → []).
+    将值规范化为列表（字符串 → 单元素列表，None → 空列表），防止迭代 None/字符串报错。
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [value]
+
+
+def safe_json_loads(text, default=None):
+    """
+    Safely parse JSON, returning default on failure. Optionally strips code fences.
+    安全解析 JSON，失败返回默认值；自动剥离 LLM 常见的 ```json ``` 代码块围栏。
+    """
+    if not text or not isinstance(text, str):
+        return default
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        if raw.endswith("```"):
+            raw = raw[:-3].rstrip()
+        raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
 
 
 def safe_slice(text: str, start: int = 0, end: int = None) -> str:

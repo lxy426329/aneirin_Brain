@@ -25,7 +25,8 @@
 import os
 import json
 import logging
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -75,10 +76,53 @@ class JournalManager:
         self.journals_dir = os.path.join(self.base_dir, "journals")
         os.makedirs(self.journals_dir, exist_ok=True)
 
+        # --- Thread lock for idempotent read-modify-write (merge mode) ---
+        # --- 线程锁：保证合并模式的读-改-写原子性，防止并发丢失更新 ---
+        self._lock = threading.Lock()
+
     # ---------------------------------------------------------
-    # Validate date format (YYYY-MM-DD)
-    # 校验日期格式（YYYY-MM-DD）
+    # Normalize date: empty/invalid → graceful degradation to current UTC date
+    # 日期归一化：空值/格式错乱 → 优雅降级为当前 UTC 日期
     # ---------------------------------------------------------
+    def _normalize_date(self, date: str) -> str:
+        """Return a valid YYYY-MM-DD string, defaulting to current UTC date.
+        Also accepts common alt formats (YYYY/M/D, YYYY年M月D日).
+        返回合法 YYYY-MM-DD 日期，无法解析时降级为当前 UTC 日期。"""
+        if date and isinstance(date, str):
+            d = date.strip()
+            if self._validate_date(d):
+                return d
+            # --- Try common alternative formats / 尝试常见替代格式 ---
+            for fmt in ("%Y/%m/%d", "%Y年%m月%d日", "%Y.%m.%d"):
+                try:
+                    parsed = datetime.strptime(d, fmt)
+                    return parsed.strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            logger.warning(
+                f"Invalid journal date '{date}', falling back to current UTC date / "
+                f"日记日期无效，降级为当前 UTC 日期"
+            )
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # ---------------------------------------------------------
+    # Normalize emotion_tags: str / list / None → deduped comma-separated str
+    # 情绪标签归一化：str / list / None → 去重后的逗号分隔字符串
+    # ---------------------------------------------------------
+    def _normalize_emotion_tags(self, emotion_tags) -> str:
+        """Accept a comma-separated string or a list; strip, filter empties, dedup.
+        兼容逗号分隔字符串与列表；去除空值与重复项。"""
+        if emotion_tags is None:
+            return ""
+        if isinstance(emotion_tags, str):
+            raw = emotion_tags
+        elif isinstance(emotion_tags, (list, tuple, set)):
+            raw = ",".join(str(t) for t in emotion_tags if t is not None)
+        else:
+            raw = str(emotion_tags)
+        parts = [p.strip() for p in raw.replace("，", ",").replace("、", ",").split(",")]
+        return ",".join(dict.fromkeys(p for p in parts if p))
+
     def _validate_date(self, date: str) -> bool:
         """Returns True if date matches YYYY-MM-DD format. 校验日期是否为 YYYY-MM-DD。"""
         if not date or not isinstance(date, str):
@@ -118,84 +162,87 @@ class JournalManager:
 
         Returns the saved entry dict.
         """
-        if not self._validate_date(date):
-            raise ValueError(f"Invalid date format (expected YYYY-MM-DD): {date}")
+        # --- Normalize inputs (graceful degradation, never raise on bad input) ---
+        # --- 输入归一化（优雅降级，非法输入不抛异常）---
+        date = self._normalize_date(date)
+        emotion_tags = self._normalize_emotion_tags(emotion_tags)
 
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         file_path = self._entry_path(date)
 
-        # --- Load existing entry if present (merge mode) ---
-        # --- 加载已有条目（合并模式）---
-        existing = None
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load existing journal for merge, overwriting / "
-                    f"加载已有日记失败，将覆盖: {date}: {e}"
+        # --- Idempotent read-modify-write under lock / 加锁的读-改-写（幂等） ---
+        with self._lock:
+            # --- Load existing entry if present (merge mode) ---
+            # --- 加载已有条目（合并模式）---
+            existing = None
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load existing journal for merge, overwriting / "
+                        f"加载已有日记失败，将覆盖: {date}: {e}"
+                    )
+                    existing = None
+
+            if existing:
+                # --- Merge: keep existing fields when new ones are empty ---
+                # --- 合并：新值为空时保留旧值 ---
+                entry = dict(existing)
+                entry["date"] = date
+
+                # event_summary comes from the AI housekeeper
+                # event_summary 来自 AI 管家
+                if event_summary and event_summary.strip():
+                    entry["event_summary"] = event_summary.strip()
+                    entry["housekeeper_generated_at"] = now_iso
+
+                # mood_comment & emotion_tags come from the main AI
+                # mood_comment 与 emotion_tags 来自主 AI
+                if mood_comment and mood_comment.strip():
+                    entry["mood_comment"] = mood_comment.strip()
+                    entry["ai_completed_at"] = now_iso
+
+                if emotion_tags:
+                    entry["emotion_tags"] = emotion_tags
+                    entry["ai_completed_at"] = now_iso
+
+                # created_at preserved from existing entry
+                # created_at 保留已有条目的值
+            else:
+                # --- New entry ---
+                # --- 新建条目 ---
+                has_summary = bool(event_summary and event_summary.strip())
+                has_ai_input = bool(
+                    (mood_comment and mood_comment.strip()) or bool(emotion_tags)
                 )
-                existing = None
+                entry = {
+                    "date": date,
+                    "event_summary": (event_summary or "").strip(),
+                    "mood_comment": (mood_comment or "").strip(),
+                    "emotion_tags": emotion_tags,
+                    "housekeeper_generated_at": now_iso if has_summary else "",
+                    "ai_completed_at": now_iso if has_ai_input else "",
+                    "created_at": now_iso,
+                }
 
-        if existing:
-            # --- Merge: keep existing fields when new ones are empty ---
-            # --- 合并：新值为空时保留旧值 ---
-            entry = dict(existing)
-            entry["date"] = date
+            # --- Write entry to disk ---
+            # --- 写入磁盘 ---
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(entry, f, ensure_ascii=False, indent=2)
+            except OSError as e:
+                logger.error(
+                    f"Failed to write journal entry / 写入日记失败: {date}: {e}"
+                )
+                raise
 
-            # event_summary comes from the AI housekeeper
-            # event_summary 来自 AI 管家
-            if event_summary and event_summary.strip():
-                entry["event_summary"] = event_summary.strip()
-                entry["housekeeper_generated_at"] = now_iso
-
-            # mood_comment & emotion_tags come from the main AI
-            # mood_comment 与 emotion_tags 来自主 AI
-            if mood_comment and mood_comment.strip():
-                entry["mood_comment"] = mood_comment.strip()
-                entry["ai_completed_at"] = now_iso
-
-            if emotion_tags and emotion_tags.strip():
-                entry["emotion_tags"] = emotion_tags.strip()
-                entry["ai_completed_at"] = now_iso
-
-            # created_at preserved from existing entry
-            # created_at 保留已有条目的值
-        else:
-            # --- New entry ---
-            # --- 新建条目 ---
-            has_summary = bool(event_summary and event_summary.strip())
-            has_ai_input = bool(
-                (mood_comment and mood_comment.strip())
-                or (emotion_tags and emotion_tags.strip())
+            logger.info(
+                f"Journal entry saved / 日记已保存: date={date}, "
+                f"mode={'merge' if existing else 'create'}"
             )
-            entry = {
-                "date": date,
-                "event_summary": (event_summary or "").strip(),
-                "mood_comment": (mood_comment or "").strip(),
-                "emotion_tags": (emotion_tags or "").strip(),
-                "housekeeper_generated_at": now_iso if has_summary else "",
-                "ai_completed_at": now_iso if has_ai_input else "",
-                "created_at": now_iso,
-            }
-
-        # --- Write entry to disk ---
-        # --- 写入磁盘 ---
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(entry, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            logger.error(
-                f"Failed to write journal entry / 写入日记失败: {date}: {e}"
-            )
-            raise
-
-        logger.info(
-            f"Journal entry saved / 日记已保存: date={date}, "
-            f"mode={'merge' if existing else 'create'}"
-        )
-        return entry
+            return entry
 
     # ---------------------------------------------------------
     # Get entry by date
@@ -211,14 +258,15 @@ class JournalManager:
         file_path = self._entry_path(date)
         if not os.path.exists(file_path):
             return None
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(
-                f"Failed to load journal entry / 加载日记失败: {date}: {e}"
-            )
-            return None
+        with self._lock:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load journal entry / 加载日记失败: {date}: {e}"
+                )
+                return None
 
     # ---------------------------------------------------------
     # Search entries by keyword
@@ -327,13 +375,14 @@ class JournalManager:
         file_path = self._entry_path(date)
         if not os.path.exists(file_path):
             return False
-        try:
-            os.remove(file_path)
-        except OSError as e:
-            logger.error(
-                f"Failed to delete journal entry / 删除日记失败: {date}: {e}"
-            )
-            return False
+        with self._lock:
+            try:
+                os.remove(file_path)
+            except OSError as e:
+                logger.error(
+                    f"Failed to delete journal entry / 删除日记失败: {date}: {e}"
+                )
+                return False
 
         logger.info(f"Journal entry deleted / 日记已删除: {date}")
         return True

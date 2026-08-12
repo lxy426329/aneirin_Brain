@@ -30,6 +30,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from utils import safe_int, safe_float
+
 logger = logging.getLogger("ombre_brain.decay")
 
 
@@ -60,6 +62,7 @@ class DecayEngine:
         # --- Background task control / 后台任务控制 ---
         self._task: asyncio.Task | None = None
         self._running = False
+        self._start_lock = asyncio.Lock()  # Prevent concurrent start races / 防并发启动竞态
 
     @property
     def is_running(self) -> bool:
@@ -142,7 +145,7 @@ class DecayEngine:
         if metadata.get("type") == "experience":
             emotion_arousal = self._calc_emotion_arousal(metadata)
             base_weight = 1.0 + emotion_arousal * 9.0
-            hit_count = max(0, int(metadata.get("hit_count", 0)))
+            hit_count = max(0, safe_int(metadata.get("hit_count"), 0))
             
             last_hit_str = metadata.get("last_hit", metadata.get("created", ""))
             try:
@@ -175,7 +178,7 @@ class DecayEngine:
         # --- Continuous base weight: 1.0 + emotion_arousal * 9.0 (maps 0.0~1.0 to 1~10) ---
         emotion_arousal = self._calc_emotion_arousal(metadata)
         base_weight = 1.0 + emotion_arousal * 9.0
-        activation_count = max(1.0, float(metadata.get("activation_count", 1)))
+        activation_count = max(1.0, safe_float(metadata.get("activation_count"), 1))
 
         # --- Days since last activation ---
         last_active_str = metadata.get("last_active", metadata.get("created", ""))
@@ -485,7 +488,9 @@ class DecayEngine:
         确保衰减引擎已启动（懒加载，首次调用时启动）。
         """
         if not self._running:
-            await self.start()
+            async with self._start_lock:
+                if not self._running:
+                    await self.start()
 
     async def start(self) -> None:
         """Start the background decay loop.

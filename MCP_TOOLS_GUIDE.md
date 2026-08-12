@@ -6,19 +6,35 @@
 
 ## 检索
 
-breath(query, domain, valence, arousal, importance_min, brief, type, max_results, max_tokens)
+breath(query, domain, valence, arousal, importance_min, brief, type, max_results, max_tokens, lightweight, limit, min_score, recent_days)
   空 query=浮现高权重记忆；有 query=三步检索。valence/arousal 0~1 筛选情感，importance_min>=1 按重要度降序。
+  lightweight=True=轻量模式：返回稳定JSON字符串，每条仅 summary+bucket_id/valence/arousal/tags/时间/score，省token不做fallback。limit=条数上限(默认5)。min_score=最低相关度(0~1)。recent_days=仅最近N天。
   联动: inject_context()→breath()→回复→hold()
 
 query_memory(query, mode)
   mode=search/float/status/directory/recent，通用入口。
 
+## 外部检索接口 (HTTP)
+
+GET/POST /api/breath — 夜伴等外部系统轻量检索，与 breath(lightweight=True) 同一条路径。
+  GET  /api/breath?query=...&limit=5&min_score=0&recent_days=0&type=&domain=&valence=&arousal=
+  POST /api/breath  (JSON body 同字段)
+  认证: session cookie 或 X-API-Key header（设置 OMBRE_EXTERNAL_API_KEY 后启用）
+  返回: {"success":true, "mode":"lightweight", "query":..., "count":N, "results":[{bucket_id, name, summary, valence, arousal, tags, created, score}]}
+
 ## 存储
 
-hold(content, importance, tags, pinned, feel, task_flag, source_bucket, valence, arousal)
-  自动情感打标+查重合并。pinned=永久不衰减。feel=True 存AI感受（配合source_bucket标记源记忆已消化）。task_flag=True 在用户脆弱时屏蔽。
+hold(content, importance, tags, pinned, protected, feel, task_flag, source_bucket, source, title, valence, arousal)
+  自动情感打标+查重合并。pinned=永久不衰减。protected=受保护(不参与合并/衰减)。feel=True 存AI感受（配合source_bucket标记源记忆已消化）。task_flag=True 在用户脆弱时屏蔽。source=来源标记(如 yeeban)。title=自定义记忆名称。valence/arousal=显式情感坐标(0~1, 提供时优先于自动打标)。
 
 grow(content) 长文本自动拆分存储。
+
+## 外部写入接口 (HTTP)
+
+POST /api/hold — 供夜伴等外部系统稳定写入记忆，与 MCP hold() 完全同一条写入路径。
+  请求体: {content(必填), valence(0~1), arousal(0~1), tags(list或逗号字符串), importance(1~10), pinned, protected, task_flag, source(如 yeeban/yeeban_status), title, feel}
+  认证: session cookie 或 X-API-Key header（设置 OMBRE_EXTERNAL_API_KEY 环境变量后启用）
+  返回: {success, bucket_id, merged, valence, arousal, action, message}
 
 ## 管理
 
@@ -90,7 +106,7 @@ approve_event_chain(chain_id) 事件链结案。
 
 dream() 读取最近记忆供自省，读后hold(feel=True, source_bucket=ID)消化或trace(resolved=1)沉底。
 summarize_recent_events(days) 最近事件概括。
-inject_context(user_input) 静默预处理，自动注入相关记忆到Prompt。
+inject_context(user_input) 静默预处理，自动注入相关记忆到Prompt，并在<context>上下包裹[系统硬性指令]（优先度校验/拒绝无依据联想/逻辑聚焦）与[输出要求]；无相关记忆时返回空字符串。
 memory_export(export_type) export_brain(output_path) import_brain(zip_path, overwrite)
 
 ---

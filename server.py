@@ -65,7 +65,7 @@ from pattern_manager import PatternManager
 from tag_normalizer import TagNormalizer
 from cycle_tracker import CycleTracker
 from journal_manager import JournalManager
-from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, detect_vulnerable_state
+from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, detect_vulnerable_state, safe_json_loads, safe_int, safe_float
 
 # --- Load .env file / 加载 .env 文件 ---
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -120,14 +120,14 @@ embedding_engine = EmbeddingEngine(config)            # Embedding engine first (
 bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket manager / 记忆桶管理器
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
-housekeeper = Housekeeper(config, bucket_mgr, dehydrator)         # Housekeeper / 记忆管家
 identity_mgr = IdentityManager(config)               # Identity manager / 身份管理器
+housekeeper = Housekeeper(config, bucket_mgr, dehydrator, identity_mgr=identity_mgr, embedding_engine=embedding_engine)         # Housekeeper / 记忆管家
 emotion_mgr = EmotionManager(config)                 # Emotion manager / 情绪管理器
 pattern_mgr = PatternManager(config)                 # Pattern manager / 模式管理器
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 tag_normalizer = TagNormalizer(config, bucket_mgr, dehydrator)  # Tag normalizer / 标签归一化引擎
 cycle_tracker = CycleTracker(config["buckets_dir"])  # Cycle tracker / 例假周期追踪器
-journal_mgr = JournalManager(base_dir=config["buckets_dir"])  # Journal manager / 日记管理器（与housekeeper共用同一路径）
+journal_mgr = JournalManager(base_dir=os.path.dirname(config["buckets_dir"]))  # Journal manager / 日记管理器（journals 与 buckets/ 同级，完全隔离）
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -216,6 +216,14 @@ def _create_session() -> str:
 
 
 def _is_authenticated(request) -> bool:
+    # --- External API key check (for stable external callers like 夜伴) ---
+    # --- 外部 API Key 校验（供夜伴等外部系统稳定调用）---
+    external_key = os.environ.get("OMBRE_EXTERNAL_API_KEY", "").strip()
+    if external_key:
+        provided = request.headers.get("X-API-Key", "") or request.headers.get("x-api-key", "")
+        if provided and provided == external_key:
+            return True
+
     token = request.cookies.get("ombre_session")
     if not token:
         return False
@@ -743,16 +751,17 @@ async def _merge_or_create(
     emotion_metrics: dict = None,
     name: str = "",
     task_flag: bool = False,
+    protected: bool = False,
     dehydrator=None,
     context_metadata: dict = None,
     ttl: int = None,
     status_key: str = None,
-) -> tuple[str, bool]:
+) -> tuple[str, str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
-    Returns (bucket_id_or_name, is_merged).
+    Returns (bucket_id, bucket_name, is_merged).
     检查是否有相似桶可合并，有则合并，无则新建。
-    返回 (桶ID或名称, 是否合并)。
+    返回 (桶ID, 桶名称, 是否合并)。
     """
     try:
         existing = await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
@@ -784,9 +793,17 @@ async def _merge_or_create(
                         update_kwargs["dominant_emotion"] = dominant_emotion
                     if emotion_metrics:
                         update_kwargs["emotion_metrics"] = emotion_metrics
+                    if valence is not None:
+                        update_kwargs["valence"] = valence
+                    if arousal is not None:
+                        update_kwargs["arousal"] = arousal
                 elif valence is not None or arousal is not None:
                     update_kwargs["valence"] = valence if valence is not None else 0.5
                     update_kwargs["arousal"] = arousal if arousal is not None else 0.3
+                    if dominant_emotion:
+                        update_kwargs["dominant_emotion"] = dominant_emotion
+                    if emotion_metrics:
+                        update_kwargs["emotion_metrics"] = emotion_metrics
 
                 await bucket_mgr.update(bucket["id"], **update_kwargs)
 
@@ -798,7 +815,7 @@ async def _merge_or_create(
                 # Generate one-line summary asynchronously after merge
                 asyncio.create_task(_generate_one_line_summary_async(bucket["id"], merged))
 
-                return bucket["metadata"].get("name", bucket["id"]), True
+                return bucket["id"], bucket["metadata"].get("name", bucket["id"]), True
             except Exception as e:
                 logger.warning(f"Merge failed, creating new / 合并失败，新建: {e}")
 
@@ -809,6 +826,7 @@ async def _merge_or_create(
         "domain": domain,
         "name": name or None,
         "task_flag": task_flag,
+        "protected": protected,
         "dehydrator": dehydrator,
         "context_metadata": context_metadata,
         "ttl": ttl,
@@ -821,9 +839,17 @@ async def _merge_or_create(
             create_kwargs["dominant_emotion"] = dominant_emotion
         if emotion_metrics:
             create_kwargs["emotion_metrics"] = emotion_metrics
+        if valence is not None:
+            create_kwargs["valence"] = valence
+        if arousal is not None:
+            create_kwargs["arousal"] = arousal
     elif valence is not None or arousal is not None:
         create_kwargs["valence"] = valence if valence is not None else 0.5
         create_kwargs["arousal"] = arousal if arousal is not None else 0.3
+        if dominant_emotion:
+            create_kwargs["dominant_emotion"] = dominant_emotion
+        if emotion_metrics:
+            create_kwargs["emotion_metrics"] = emotion_metrics
 
     bucket_id = await bucket_mgr.create(**create_kwargs)
 
@@ -835,7 +861,7 @@ async def _merge_or_create(
     # Generate one-line summary asynchronously after creation
     asyncio.create_task(_generate_one_line_summary_async(bucket_id, content))
 
-    return bucket_id, False
+    return bucket_id, name or bucket_id, False
 
 
 # =============================================================
@@ -932,8 +958,8 @@ async def _generate_summary_report(summarized_buckets: list, query: str = "") ->
         for d in domains:
             domain_counts[d] = domain_counts.get(d, 0) + 1
         
-        arousal = float(meta.get("arousal", 0.3))
-        valence = float(meta.get("valence", 0.5))
+        arousal = safe_float(meta.get("arousal"), 0.3)
+        valence = safe_float(meta.get("valence"), 0.5)
         intensity = arousal * (1.0 + abs(valence - 0.5))
         if intensity > 0.7:
             emotion_stats["high"] += 1
@@ -942,7 +968,7 @@ async def _generate_summary_report(summarized_buckets: list, query: str = "") ->
         else:
             emotion_stats["low"] += 1
         
-        importance = int(meta.get("importance", 5))
+        importance = safe_int(meta.get("importance"), 5)
         if importance >= 8:
             important_count += 1
         
@@ -1145,8 +1171,8 @@ async def _breath_surfacing(
 
     cold_start = [
         b for b in unresolved
-        if int(b["metadata"].get("activation_count", 0)) == 0
-        and int(b["metadata"].get("importance", 0)) >= 8
+        if safe_int(b["metadata"].get("activation_count"), 0) == 0
+        and safe_int(b["metadata"].get("importance"), 0) >= 8
     ][:2]
     cold_start_ids = {b["id"] for b in cold_start}
     scored_deduped = [b for b in scored if b["id"] not in cold_start_ids]
@@ -1251,8 +1277,8 @@ async def _breath_surfacing(
                 all_feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
                 latest_feel = all_feels[0] if all_feels else None
                 if latest_feel:
-                    latest_valence = float(latest_feel["metadata"].get("valence", -1))
-                    latest_arousal = float(latest_feel["metadata"].get("arousal", -1))
+                    latest_valence = safe_float(latest_feel["metadata"].get("valence"), -1)
+                    latest_arousal = safe_float(latest_feel["metadata"].get("arousal"), -1)
                     latest_created = latest_feel["metadata"].get("created", "")[:10]
 
                     if latest_valence >= 0 and latest_arousal >= 0:
@@ -1260,13 +1286,14 @@ async def _breath_surfacing(
                         try:
                             latest_date = _dt.fromisoformat(latest_feel["metadata"].get("created", "").replace("Z", ""))
                             cutoff = latest_date - _td(days=7)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse latest feel date: {e}")
                             cutoff = None
 
                         echo_results = []
                         for f in all_feels[1:]:  # Skip the latest one
-                            f_valence = float(f["metadata"].get("valence", -1))
-                            f_arousal = float(f["metadata"].get("arousal", -1))
+                            f_valence = safe_float(f["metadata"].get("valence"), -1)
+                            f_arousal = safe_float(f["metadata"].get("arousal"), -1)
                             if f_valence < 0 or f_arousal < 0:
                                 continue
                             # Check emotional similarity (within 0.2 range)
@@ -1279,8 +1306,8 @@ async def _breath_surfacing(
                                         f_date = _dt.fromisoformat(f["metadata"].get("created", "").replace("Z", ""))
                                         if f_date >= cutoff:
                                             continue
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.debug(f"Failed to parse feel date: {e}")
                                 f_content = f.get("content", "")[:80]
                                 f_date_str = f["metadata"].get("created", "")[:10]
                                 f_id = f["id"]
@@ -1606,6 +1633,126 @@ def is_casual_chat(text: str) -> bool:
 # With args: search by keyword + emotion coordinates
 # 有参数：按关键词+情感坐标检索记忆
 # =============================================================
+async def _breath_lightweight(
+    query: str = "",
+    limit: int = 5,
+    min_score: float = 0.0,
+    recent_days: int = 0,
+    type_filter: str = None,
+    domain: str = "",
+    valence: float = -1,
+    arousal: float = -1,
+    task_mask: bool = False,
+) -> dict:
+    """轻量检索模式，供 MCP breath(lightweight=True) 与 HTTP /api/breath 共用。
+    返回稳定 JSON 结构，节省 token：每条仅 summary + 关键元数据，不返回大段正文。
+    无结果时返回明确空结构，不做 fallback。
+    """
+    limit = max(1, min(limit, 20)) if limit and limit > 0 else 5
+
+    domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
+    q_valence = valence if 0 <= valence <= 1 else None
+    q_arousal = arousal if 0 <= arousal <= 1 else None
+
+    buckets = []
+    has_query = bool(query and query.strip())
+    if has_query:
+        # --- Keyword/semantic retrieval (with score) ---
+        # --- 关键词/语义检索（带相关度分数）---
+        try:
+            matches = await bucket_mgr.search(
+                query,
+                limit=50,
+                domain_filter=domain_filter,
+                query_valence=q_valence,
+                query_arousal=q_arousal,
+                mask_tasks=task_mask,
+            )
+            if type_filter:
+                matches = [b for b in matches if b["metadata"].get("type") == type_filter]
+            buckets = matches
+        except Exception as e:
+            logger.warning(f"Lightweight search failed: {e}")
+            buckets = []
+    else:
+        # --- Passive surfacing: recent unresolved memories, sorted by decay weight ---
+        # --- 被动浮现：最近未解决记忆，按衰减权重排序（无相关度分数）---
+        try:
+            all_buckets = await bucket_mgr.list_all(include_archive=False)
+            if task_mask:
+                all_buckets = bucket_mgr._mask_task_buckets(all_buckets)
+            if type_filter:
+                all_buckets = [b for b in all_buckets if b["metadata"].get("type") == type_filter]
+            seven_days_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).isoformat()
+            recent = [
+                b for b in all_buckets
+                if not b["metadata"].get("resolved", False)
+                and not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+                and b["metadata"].get("last_active", "") >= seven_days_ago
+            ]
+            recent.sort(key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
+            buckets = recent[:50]
+        except Exception as e:
+            logger.warning(f"Lightweight surfacing failed: {e}")
+            buckets = []
+
+    def _norm_score(b):
+        """Normalize score to 0~1 range (legacy scores may be 0~100)."""
+        s = b.get("score", 0.0)
+        try:
+            s = float(s)
+        except (TypeError, ValueError):
+            return 0.0
+        return s / 100.0 if s > 1 else s
+
+    # --- min_score filter (query mode only: no relevance score in surfacing mode) ---
+    # --- 最低分数过滤（仅查询模式有效，浮现模式无相关度概念）---
+    if has_query and min_score > 0:
+        buckets = [b for b in buckets if _norm_score(b) >= min_score]
+
+    # --- Recent-days filter ---
+    # --- 时间范围过滤 ---
+    if recent_days > 0:
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=recent_days)).isoformat()
+        buckets = [b for b in buckets if b["metadata"].get("created", "") >= cutoff]
+
+    # --- Sort by score desc (query mode); surfacing already sorted by weight ---
+    # --- 按相关度降序（查询模式）；浮现模式已按权重排序 ---
+    if has_query:
+        buckets.sort(key=_norm_score, reverse=True)
+
+    results = []
+    for b in buckets[:limit]:
+        meta = b["metadata"]
+        summary = meta.get("one_line_summary", "") or meta.get("dehydrated_summary", "")
+        if summary:
+            summary = strip_wikilinks(str(summary)).strip()
+        else:
+            content = strip_wikilinks(b.get("content", ""))
+            s = _norm_score(b)
+            summary = content[:120] if s >= 0.7 else content[:60]
+        tags = meta.get("tags", [])
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        results.append({
+            "bucket_id": b["id"],
+            "name": meta.get("name", b["id"]),
+            "summary": summary[:200],
+            "valence": safe_float(meta.get("valence"), 0.5),
+            "arousal": safe_float(meta.get("arousal"), 0.3),
+            "tags": tags[:10],
+            "created": str(meta.get("created", ""))[:10],
+            "score": round(_norm_score(b), 3) if has_query else None,
+        })
+
+    return {
+        "mode": "lightweight",
+        "query": query,
+        "count": len(results),
+        "results": results,
+    }
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -1619,10 +1766,31 @@ async def breath(
     type: str = "",
     summary_report: bool = True,
     force_keyword: bool = False,
+    lightweight: bool = False,
+    limit: int = 0,
+    min_score: float = 0.0,
+    recent_days: int = 0,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。"""
     await decay_engine.ensure_started()
     await housekeeper.ensure_started()
+
+    # --- Lightweight mode: return stable JSON string, no fallback, minimal tokens ---
+    # --- 轻量模式：返回稳定 JSON 字符串，省 token，不做 fallback ---
+    if lightweight:
+        return _json_lib.dumps(
+            await _breath_lightweight(
+                query=query.strip() if query else "",
+                limit=limit,
+                min_score=min_score,
+                recent_days=recent_days,
+                type_filter=type.strip().lower() if type else None,
+                domain=domain,
+                valence=valence,
+                arousal=arousal,
+            ),
+            ensure_ascii=False,
+        )
     
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1632,8 +1800,11 @@ async def breath(
     housekeeper_prefetch = ""
     try:
         proposals = await housekeeper.get_cleanup_proposals(status="pending")
-        if proposals != "暂无待清理提案。":
-            housekeeper_prefetch = f"\n管家提案:\n{proposals[:500]}"
+        if proposals:
+            proposal_text = "；".join(
+                f"{p.reason} ({p.bucket_id})" for p in proposals[:5]
+            )
+            housekeeper_prefetch = f"\n管家提案:\n{proposal_text[:500]}"
     except Exception as e:
         logger.warning(f"Housekeeper prefetch failed: {e}")
 
@@ -1711,12 +1882,12 @@ async def breath(
             all_buckets = bucket_mgr._mask_task_buckets(all_buckets)
         filtered = [
             b for b in all_buckets
-            if int(b["metadata"].get("importance", 0)) >= importance_min
+            if safe_int(b["metadata"].get("importance"), 0) >= importance_min
             and b["metadata"].get("type") not in ("feel",)
         ]
         if type_filter:
             filtered = [b for b in filtered if b["metadata"].get("type") == type_filter]
-        filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
+        filtered.sort(key=lambda b: safe_int(b["metadata"].get("importance"), 0), reverse=True)
         filtered = filtered[:20]
         if not filtered:
             return f"没有重要度 >= {importance_min} 的记忆。"
@@ -1891,8 +2062,45 @@ async def breath(
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
+    # --- Step 3 continuation: Rerank + Top-N hard truncation ---
+    # --- 步骤3续：轻量级精排 + Top-N 硬截断 ---
+    # Three-tier injection by normalized Final_Score:
+    #   score >= 0.7        → full-text context injection, hard-capped at TOP-N (default 3)
+    #   0.4 <= score < 0.7  → one-line summary only (记忆速览)
+    #   score < 0.4         → dropped (too noisy, 宁缺毋滥)
+    # 三层注入策略（按归一化最终得分）：
+    #   得分 >= 0.7        → 完整正文注入，硬性上限 Top 3，按精排得分从高到低排序
+    #   0.4 <= 得分 < 0.7  → 仅注入一行摘要（记忆速览）
+    #   得分 < 0.4         → 丢弃（噪音过大）
+    full_text_top_n = 3
+    norm_matches = []
+    for b in matches:
+        raw = safe_float(b.get("score"), 0.0)
+        # Normalize legacy 0~100 scores to 0~1
+        # 兼容旧式 0~100 分制，统一归一化到 0~1（safe_float 防脏数据 str/None 打穿）
+        b["_norm_score"] = (raw / 100.0) if raw > 1 else raw
+        norm_matches.append(b)
+
+    full_text_candidates = [b for b in norm_matches if b["_norm_score"] >= 0.7]
+    summary_candidates = [b for b in norm_matches if 0.4 <= b["_norm_score"] < 0.7]
+
+    if full_text_candidates:
+        # Lightweight rerank (no external cross-encoder, avoids OOM) + hard Top-N gate
+        # 轻量级精排（不加载外部跨编码器，避免小内存容器 OOM）+ Top-N 硬截断
+        full_text_candidates = bucket_mgr.rerank_top_n(
+            full_text_candidates, query, top_n=full_text_top_n
+        )
+
+    # Surplus full-text buckets (beyond Top-N) degrade to one-line summary too
+    # 超出 Top-N 的完整正文桶同样降级为一行摘要，避免上下文噪音
+    matches = full_text_candidates
+    if summary_candidates:
+        summary_candidates.sort(key=lambda b: b.get("_norm_score", 0.0), reverse=True)
+        summarized_buckets = summary_candidates
+    else:
+        summarized_buckets = []
+
     results = []
-    summarized_buckets = []
     token_used = 0
     shown_count = 0
 
@@ -1988,7 +2196,9 @@ async def breath(
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue
 
-    if len(matches) < 3 and random.random() < 0.4:
+    # Use pre-truncation count so random surfacing only fires when few results exist
+    # 使用截断前的候选数量判断，避免 Top-N 截断后频繁触发随机浮现
+    if len(norm_matches) < 3 and random.random() < 0.4:
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
             matched_ids = {b["id"] for b in matches}
@@ -2018,15 +2228,15 @@ async def breath(
     # If ALL matches have normalized Final_Score < 0.4 OR no matches at all, trigger fallback
     # 如果所有匹配的记忆桶归一化最终得分都小于 0.4 或没有任何匹配，触发保底机制
     # 
-    # Note: Uses normalized Final_Score = 0.3*Emotion + 0.2*Priority + 0.4*Vector + 0.5*Topic + 0.15*Time
+    # Note: Uses normalized Final_Score = (3.0*Emotion + 4.0*Priority + 3.0*Vector + 2.0*Topic + 1.5*Time) / 13.5
     #       注意：使用归一化后的最终得分，综合考虑情绪、优先级、向量相似度、主题相关性和时间亲近度
-    if matches:
+    # Check against pre-truncation candidates so 0.4~0.7 summary buckets
+    # are not mistaken for "no relevant memory"
+    # 使用截断前的候选列表判断，避免 0.4~0.7 摘要桶被误判为"无相关记忆"
+    if norm_matches:
         all_low_score = True
-        for bucket in matches:
-            # Use normalized Final_Score if available, otherwise use vector similarity as fallback
-            # 使用归一化后的最终得分，如果没有则回退到向量相似度
-            final_score = bucket.get("score", 0.0) / 100.0 if bucket.get("score", 0) > 1 else bucket.get("score", 0.0)
-            if final_score >= 0.4:
+        for bucket in norm_matches:
+            if bucket.get("_norm_score", 0.0) >= 0.4:
                 all_low_score = False
                 break
     else:
@@ -2105,7 +2315,8 @@ async def breath(
             bucket_id = b["id"]
             # Use normalized Final_Score if available, otherwise use vector similarity as fallback
             # 使用归一化后的最终得分，如果没有则回退到向量相似度
-            final_score = b.get("score", 0.0) / 100.0 if b.get("score", 0) > 1 else b.get("score", 0.0)
+            raw_score = safe_float(b.get("score"), 0.0)
+            final_score = (raw_score / 100.0) if raw_score > 1 else raw_score
             
             # Skip buckets with very low score (< 0.4)
             # 跳过得分极低的桶（< 0.4）
@@ -2215,29 +2426,39 @@ async def breath(
 # Tool 2: hold — Hold on to this
 # 工具 2：hold — 握住，留下来
 # =============================================================
-@mcp.tool()
-async def hold(
+async def _hold_impl(
     content: str,
     tags: str = "",
     importance: int = 5,
     pinned: bool = False,
+    protected: bool = False,
     feel: bool = False,
     task_flag: bool = False,
     source_bucket: str = "",
+    source: str = "",
+    title: str = "",
     valence: float = -1,
     arousal: float = -1,
     event_context: str = "",
-) -> str:
-    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。event_context=事件背景(时间/地点/状态/当时发生的事件)。"""
+) -> dict:
+    """核心记忆写入逻辑，供 MCP hold() 与 HTTP /api/hold 共用。
+    自动打标 + 查重合并 + 异步 summary/embedding，与原有 hold() 行为完全一致。
+    返回结构化结果: {success, bucket_id, merged, valence, arousal, action, message}
+    """
     await decay_engine.ensure_started()
     await tag_normalizer.ensure_started()
 
     # --- Input validation / 输入校验 ---
     if not content or not content.strip():
-        return "内容为空，无法存储。"
+        return {"success": False, "bucket_id": "", "merged": False,
+                "valence": None, "arousal": None, "action": "error",
+                "message": "内容为空，无法存储。"}
 
     importance = max(1, min(10, importance))
-    extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+    if isinstance(tags, str):
+        extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+    else:
+        extra_tags = [t.strip() for t in tags if t and t.strip()]
 
     # --- Feel mode: store as feel type, minimal metadata ---
     # --- Feel 模式：存为 feel 类型，最少元数据 ---
@@ -2252,17 +2473,23 @@ async def hold(
             domain=[],
             valence=feel_valence,
             arousal=feel_arousal,
-            name=None,
+            name=title or None,
             bucket_type="feel",
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
-        except Exception:
-            pass
-        
+        except Exception as e:
+            logger.warning(f"Failed to store feel embedding / feel 向量存储失败: {bucket_id}: {e}")
+
         asyncio.create_task(_generate_one_line_summary_async(bucket_id, content))
         tag_normalizer.notify_new_record(1)
-        
+
+        if source:
+            try:
+                await bucket_mgr.update(bucket_id, source=source)
+            except Exception as e:
+                logger.warning(f"Failed to set source on feel bucket: {e}")
+
         # --- Mark source memory as digested + store model's valence perspective ---
         # --- 标记源记忆为已消化 + 存储模型视角的 valence ---
         if source_bucket and source_bucket.strip():
@@ -2271,16 +2498,18 @@ async def hold(
                 if 0 <= valence <= 1:
                     update_kwargs["model_valence"] = feel_valence
                 await bucket_mgr.update(source_bucket.strip(), **update_kwargs)
-                
+
                 source_bucket_data = await bucket_mgr.get(source_bucket.strip())
                 if source_bucket_data:
                     source_content = source_bucket_data.get("content", "")
                     asyncio.create_task(_generate_one_line_summary_async(source_bucket.strip(), source_content))
-                
+
                 asyncio.create_task(_reinforce_related_experiences(source_bucket.strip()))
             except Exception as e:
                 logger.warning(f"Failed to mark source as digested / 标记已消化失败: {e}")
-        return f"🫧feel→{bucket_id}"
+        return {"success": True, "bucket_id": bucket_id, "merged": False,
+                "valence": feel_valence, "arousal": feel_arousal, "action": "feel",
+                "message": f"🫧feel→{bucket_id}"}
 
     # --- Step 0: Extract Event Context / 提取事件背景 ---
     # 如果没有显式提供 event_context，则尝试从 content 中提取
@@ -2291,12 +2520,12 @@ async def hold(
     else:
         context_metadata["event_context"] = _extract_event_context(content)
         context_metadata["context_provided"] = False
-    
+
     # --- Step 0.5: Noise detection and TTL / 噪音检测和生存时间 ---
     ttl = None
     if _detect_noise_content(content):
         ttl = 7
-    
+
     # --- Step 0.6: Status override / 状态覆盖 ---
     # 如果新内容表示"已恢复/已解决"，则标记旧的同类状态为已解决
     status_key = _extract_status_key(content)
@@ -2312,7 +2541,7 @@ async def hold(
                             logger.info(f"Status override: marked {bucket['id']} as resolved")
             except Exception as e:
                 logger.warning(f"Status override failed: {e}")
-    
+
     # --- Step 1: auto-tagging / 自动打标 ---
     try:
         analysis = await dehydrator.analyze(content)
@@ -2335,9 +2564,13 @@ async def hold(
     final_dominant = auto_dominant
     final_emotion_metrics = emotion_metrics
 
-    if 0 <= valence <= 1 or 0 <= arousal <= 1:
-        v = valence if 0 <= valence <= 1 else 0.5
-        a = arousal if 0 <= arousal <= 1 else 0.3
+    # --- Explicit valence/arousal override (if provided, prefer them) ---
+    # --- 显式 valence/arousal 覆盖（提供时优先使用）---
+    explicit_v = valence if 0 <= valence <= 1 else None
+    explicit_a = arousal if 0 <= arousal <= 1 else None
+    if explicit_v is not None or explicit_a is not None:
+        v = explicit_v if explicit_v is not None else 0.5
+        a = explicit_a if explicit_a is not None else 0.3
         final_emotions = bucket_mgr._valence_arousal_to_emotions(v, a)
         if final_emotions:
             final_dominant = max(final_emotions, key=lambda e: e["intensity"])["label"]
@@ -2358,26 +2591,36 @@ async def hold(
             emotions=final_emotions,
             dominant_emotion=final_dominant,
             emotion_metrics=final_emotion_metrics,
-            name=suggested_name or None,
+            name=title or suggested_name or None,
             bucket_type="permanent",
             pinned=True,
             task_flag=task_flag,
             context_metadata=context_metadata,
             ttl=ttl,
             status_key=status_key,
+            valence=explicit_v,
+            arousal=explicit_a,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
-        except Exception:
-            pass
-        
+        except Exception as e:
+            logger.warning(f"Failed to store pinned embedding / 钉选向量存储失败: {bucket_id}: {e}")
+
         # Generate one-line summary asynchronously for pinned buckets
         asyncio.create_task(_generate_one_line_summary_async(bucket_id, content))
-        
-        tag_normalizer.notify_new_record(1)
-        return f"📌钉选→{bucket_id} {','.join(domain)}"
 
-    result_name, is_merged = await _merge_or_create(
+        tag_normalizer.notify_new_record(1)
+        if source:
+            try:
+                await bucket_mgr.update(bucket_id, source=source)
+            except Exception as e:
+                logger.warning(f"Failed to set source on pinned bucket: {e}")
+        return {"success": True, "bucket_id": bucket_id, "merged": False,
+                "valence": explicit_v if explicit_v is not None else 0.5,
+                "arousal": explicit_a if explicit_a is not None else 0.3,
+                "action": "pin", "message": f"📌钉选→{bucket_id} {','.join(domain)}"}
+
+    result_id, result_name, is_merged = await _merge_or_create(
         content=content,
         tags=all_tags,
         importance=importance,
@@ -2385,17 +2628,56 @@ async def hold(
         emotions=final_emotions,
         dominant_emotion=final_dominant,
         emotion_metrics=final_emotion_metrics,
-        name=suggested_name,
+        valence=explicit_v,
+        arousal=explicit_a,
+        name=title or suggested_name,
         task_flag=task_flag,
+        protected=protected,
         dehydrator=dehydrator,
         context_metadata=context_metadata,
         ttl=ttl,
         status_key=status_key,
     )
 
-    action = "合并→" if is_merged else "新建→"
+    if source:
+        try:
+            await bucket_mgr.update(result_id, source=source)
+        except Exception as e:
+            logger.warning(f"Failed to set source on bucket: {e}")
+
+    action = "merge" if is_merged else "new"
     tag_normalizer.notify_new_record(1)
-    return f"{action}{result_name} {','.join(domain)}"
+    return {"success": True, "bucket_id": result_id, "merged": is_merged,
+            "valence": explicit_v if explicit_v is not None else 0.5,
+            "arousal": explicit_a if explicit_a is not None else 0.3,
+            "action": action,
+            "message": f"{'合并→' if is_merged else '新建→'}{result_name} {','.join(domain)}"}
+
+
+@mcp.tool()
+async def hold(
+    content: str,
+    tags: str = "",
+    importance: int = 5,
+    pinned: bool = False,
+    protected: bool = False,
+    feel: bool = False,
+    task_flag: bool = False,
+    source_bucket: str = "",
+    source: str = "",
+    title: str = "",
+    valence: float = -1,
+    arousal: float = -1,
+    event_context: str = "",
+) -> str:
+    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。"""
+    result = await _hold_impl(
+        content=content, tags=tags, importance=importance,
+        pinned=pinned, protected=protected, feel=feel, task_flag=task_flag,
+        source_bucket=source_bucket, source=source, title=title,
+        valence=valence, arousal=arousal, event_context=event_context,
+    )
+    return result["message"]
 
 
 # =============================================================
@@ -2428,7 +2710,7 @@ async def grow(content: str) -> str:
             }
         emotions = analysis.get("emotions", [])
         dominant = analysis.get("dominant_emotion", "")
-        result_name, is_merged = await _merge_or_create(
+        result_id, result_name, is_merged = await _merge_or_create(
             content=content.strip(),
             tags=analysis.get("tags", []),
             importance=analysis.get("importance", 5) if isinstance(analysis.get("importance"), int) else 5,
@@ -2463,7 +2745,7 @@ async def grow(content: str) -> str:
         try:
             emotions = item.get("emotions", [])
             dominant = item.get("dominant_emotion", "")
-            result_name, is_merged = await _merge_or_create(
+            result_id, result_name, is_merged = await _merge_or_create(
                 content=item["content"],
                 tags=item.get("tags", []),
                 importance=item.get("importance", 5),
@@ -3812,14 +4094,16 @@ async def smart_organize(days: int = 30, importance_drop: int = 2) -> str:
 # 管家工具 - 事件链和清理提案管理
 # =============================================================
 @mcp.tool()
-async def get_event_chains() -> str:
-    """获取所有事件链草案，供主AI终审裁决。"""
+async def get_event_chains(include_related: bool = False) -> str:
+    """获取所有事件链草案，供主AI终审裁决。include_related=True 时附带各链的实体关联链摘要（顺着实体网找关联）。"""
     await housekeeper.ensure_started()
     
     try:
         chains = await housekeeper.get_event_chains()
         if not chains:
             return "暂无事件链草案。"
+        
+        related_cache = {c.chain_id: c for c in chains} if include_related else None
         
         parts = ["=== 事件链草案 ===\n"]
         for chain in chains:
@@ -3828,12 +4112,63 @@ async def get_event_chains() -> str:
             parts.append(f"   状态: {chain.status}")
             parts.append(f"   摘要: {chain.summary}")
             parts.append(f"   时间线节点数: {len(chain.timeline)}")
+            if chain.entities:
+                parts.append(f"   实体: {', '.join(chain.entities)}")
+            if include_related and chain.related_chain_ids:
+                related_summaries = []
+                for rid in chain.related_chain_ids:
+                    rc = related_cache.get(rid)
+                    if rc:
+                        related_summaries.append(f"{rc.topic}（{len(rc.timeline)}节点）")
+                if related_summaries:
+                    parts.append(f"   关联链: {', '.join(related_summaries)}")
             parts.append(f"   更新时间: {chain.updated}\n")
         
         return "\n".join(parts)
     except Exception as e:
         logger.error(f"get_event_chains failed: {e}")
         return f"获取事件链失败: {e}"
+
+
+@mcp.tool()
+async def get_event_chain_detail(chain_id: str, include_related: bool = True) -> str:
+    """查询单个事件链详情。include_related=True 时自动附带共享实体的关联事件链摘要（沿着时间线找演进，顺着实体网找关联）。"""
+    await housekeeper.ensure_started()
+    
+    try:
+        chain = await housekeeper.get_event_chain(chain_id)
+        if not chain:
+            return f"未找到事件链: {chain_id}"
+        
+        parts = [
+            f"=== 事件链 {chain.chain_id} ===",
+            f"主题: {chain.topic}",
+            f"状态: {chain.status}",
+            f"实体: {', '.join(chain.entities) if chain.entities else '(无)'}",
+            "时间线:",
+        ]
+        for node in chain.timeline:
+            ts = node.get("timestamp", "?")
+            preview = str(node.get("content_preview", ""))[:80]
+            parts.append(f"  [{ts}] {preview}")
+        if chain.summary:
+            parts.append(f"摘要: {chain.summary}")
+        
+        if include_related and chain.related_chain_ids:
+            parts.append("\n=== 关联事件链（共享实体）===")
+            for rid in chain.related_chain_ids:
+                rc = await housekeeper.get_event_chain(rid)
+                if rc:
+                    shared = sorted(set(chain.entities) & set(rc.entities))
+                    parts.append(
+                        f"[{rc.chain_id}] {rc.topic} | 共享实体: "
+                        f"{', '.join(shared) if shared else '(未匹配)'} | 摘要: {rc.summary[:100]}"
+                    )
+        
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error(f"get_event_chain_detail failed: {e}")
+        return f"获取事件链详情失败: {e}"
 
 
 @mcp.tool()
@@ -3910,41 +4245,54 @@ async def reject_cleanup_proposal(proposal_id: str) -> str:
 
 
 @mcp.tool()
+async def daily_review(record_report: bool = True, run_pipeline: bool = False) -> str:
+    """日终整理（推荐入口，主AI在日终主动调用）。返回结构化"一包结果"JSON：今日总结引导 + 记忆维护候选列表（过期任务/长期低价值/重复/冲突，每条含原因与可选方案）+ 执行说明 + 扫描健康信息。管家不做任何删除或修改，最终写操作由主AI用 trace/hold 等工具执行。run_pipeline=True 时额外执行旧管线（每日摘要/时间链更新/冲突提案/身份提案）。"""
+    await housekeeper.ensure_started()
+    logger.info("[Housekeeper] 主AI 触发 Daily Review...")
+    try:
+        result = await housekeeper.run_daily_review(record_report=record_report, run_pipeline=run_pipeline)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"daily_review failed: {e}")
+        return json.dumps({"mode": "daily_review", "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
 async def run_housekeeper() -> str:
-    """手动触发管家管线执行（每日总结 + 时间链更新 + 冲突检测）。"""
+    """手动触发管家日终整理（兼容入口）。返回文本格式的日终报告；结构化结果请使用 daily_review。"""
     await housekeeper.ensure_started()
     
-    logger.info("[Housekeeper] 手动触发 Daily Job...")
+    logger.info("[Housekeeper] 手动触发 Daily Review...")
     
     try:
-        results = await housekeeper.run_daily_job()
-        parts = ["=== 管家管线执行结果 ===\n"]
-        
-        daily_summary = results.get("daily_summary", {})
-        if "error" in daily_summary:
-            parts.append(f"❌ 每日总结失败: {daily_summary['error']}")
-        else:
-            parts.append(f"✅ 每日总结: 处理{daily_summary.get('buckets_processed', 0)}条记忆")
-            mood_tags = daily_summary.get("mood_tags", [])
-            mood_level = daily_summary.get("mood_level", "")
-            if mood_tags or mood_level != "neutral":
-                parts.append(f"   情绪标签: {', '.join(mood_tags) if mood_tags else '无'}")
-                parts.append(f"   情绪等级: {mood_level}")
-        
-        chain_updates = results.get("chain_updates", {})
-        if "error" in chain_updates:
-            parts.append(f"❌ 时间链更新失败: {chain_updates['error']}")
-        else:
-            parts.append(f"✅ 时间链更新: 更新{chain_updates.get('chains_updated', 0)}条链")
-        
-        conflicts = results.get("conflicts", {})
-        if "error" in conflicts:
-            parts.append(f"❌ 冲突检测失败: {conflicts['error']}")
-        else:
-            parts.append(f"✅ 冲突检测: 发现{conflicts.get('conflicts_found', 0)}条冲突")
-        
-        logger.info(f"[Housekeeper] Daily Job 完成: {results}")
-        
+        result = await housekeeper.run_daily_review(record_report=True, run_pipeline=True)
+        if "error" in result:
+            return f"管家执行失败: {result['error']}"
+
+        parts = ["=== 管家日终整理结果 ===\n"]
+        ss = result.get("scan_summary", {})
+        parts.append(f"扫描记忆 {ss.get('scanned_buckets', 0)} 条，候选 {ss.get('candidates_total', 0)} 条")
+        for cat, n in (ss.get("candidates_by_category", {}) or {}).items():
+            parts.append(f"  - {cat}: {n}")
+
+        for c in result.get("candidates", []):
+            parts.append(f"\n[{c.get('category')}] {c.get('name', '')} (id={c.get('bucket_id')})")
+            parts.append(f"  原因: {c.get('reason', '')}")
+            parts.append(f"  可选方案: {', '.join(c.get('options', []))}  |  默认建议(仅参考): {c.get('default_suggestion', '')}")
+
+        parts.append("\n" + result.get("execution_instructions", ""))
+
+        for w in result.get("health", {}).get("warnings", []):
+            parts.append(f"⚠ {w}")
+        for e in result.get("health", {}).get("errors", []):
+            parts.append(f"❌ {e}")
+
+        pipeline = result.get("pipeline", {})
+        for k, v in pipeline.items():
+            if isinstance(v, dict) and "error" in v:
+                parts.append(f"⚠ 管线任务 {k} 失败: {v['error']}")
+
+        logger.info(f"[Housekeeper] Daily Review 完成: {ss}")
         return "\n".join(parts)
     except Exception as e:
         logger.error(f"run_housekeeper failed: {e}")
@@ -4116,6 +4464,9 @@ async def inject_context(user_input: str = "") -> str:
     """
     静默预处理中间件：自动检索相关记忆并注入上下文。
     在用户发送消息前调用，将检索到的背景记忆以<context>结构注入到Prompt头部。
+    输出模板：<context> 上下包裹[系统硬性指令]（优先度校验/拒绝无依据联想/逻辑聚焦）
+    与[输出要求]，约束大模型忠实于注入上下文、禁止臆测发散。
+    无上下文时返回空字符串，调用方可直接以空值判断。
     user_input=用户输入的消息内容。
     """
     await decay_engine.ensure_started()
@@ -4218,10 +4569,31 @@ async def inject_context(user_input: str = "") -> str:
     except Exception as e:
         logger.warning(f"Expiring memories injection failed: {e}")
 
-    if context_parts:
-        return "<context>\n" + "\n".join(context_parts) + "</context>"
-    else:
-        return "<context></context>"
+    # --- Rebuild output template: strict instructions around <context> ---
+    # --- 重构输出模板：在 <context> 节点上下加入严格指令约束 ---
+    # When no context is found, return empty string so callers can detect
+    # "no context" cleanly instead of comparing against a literal marker.
+    # 无上下文时返回空字符串，调用方可直接以空值判断"无上下文"，无需比对字面量标记。
+    if not context_parts:
+        return ""
+
+    context_body = "\n".join(context_parts)
+    return (
+        "[系统硬性指令]\n"
+        "你已获取由记忆系统静默注入的相关背景上下文（见 <context> 标签）。\n"
+        "请严格遵循以下规则进行思考与回答：\n"
+        "1. 优先度校验：若 <context> 中包含与用户问题直接相关的事实、偏好或历史记录，"
+        "你的回答必须 100% 忠实于该信息，严禁给出与上下文矛盾的描述。\n"
+        "2. 拒绝无依据联想：若 <context> 中的信息不足以全面回答问题，"
+        "请仅依据已知事实回答，并明确指出不足部分，严禁凭空臆测或过度发散。\n"
+        "3. 逻辑聚焦：忽略 <context> 中与当前用户输入无显式因果关系的冗余碎片。\n"
+        "<context>\n"
+        + context_body
+        + "\n</context>\n"
+        "[输出要求]\n"
+        "请严格基于 <context> 中与用户输入直接相关的信息作答："
+        "能回答则精确引用，不能回答则明示缺失，不臆测、不编造、不冗余发散。"
+    )
 
 
 async def _check_ongoing_mood_trend() -> str | None:
@@ -4752,7 +5124,7 @@ ID: {bucket_id}
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
         
-        result = _json_lib.loads(raw)
+        result = safe_json_loads(raw, {}) or {}
         related_ids = result.get("related_ids", [])
         reason = result.get("reason", "")
         
@@ -4831,7 +5203,7 @@ async def ai_find_related(query: str = "", bucket_id: str = "") -> str:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
         
-        result = _json_lib.loads(raw)
+        result = safe_json_loads(raw, {}) or {}
         related_ids = result.get("related_ids", [])
         descriptions = result.get("descriptions", [])
         
@@ -4896,7 +5268,7 @@ async def ai_build_event_chain(bucket_id: str = "") -> str:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
         
-        result = _json_lib.loads(raw)
+        result = safe_json_loads(raw, {}) or {}
         event_chain = result.get("event_chain", [])
         description = result.get("description", "")
         
@@ -4966,7 +5338,7 @@ async def ai_summarize_memory(bucket_id: str) -> str:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
         
-        result = _json_lib.loads(raw)
+        result = safe_json_loads(raw, {}) or {}
         summary = result.get("summary", "")
         keywords = result.get("keywords", [])
         sentiment = result.get("sentiment", "")
@@ -5023,7 +5395,7 @@ async def ai_classify_memory(bucket_id: str) -> str:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
         
-        result = _json_lib.loads(raw)
+        result = safe_json_loads(raw, {}) or {}
         new_type = result.get("type", "")
         new_domain = result.get("domain", [])
         new_tags = result.get("tags", [])
@@ -5921,6 +6293,183 @@ async def import_brain(zip_path: str, overwrite: bool = False) -> str:
 # Dashboard API endpoints (for lightweight Web UI)
 # 仪表板 API（轻量 Web UI 用）
 # =============================================================
+@mcp.custom_route("/api/hold", methods=["POST"])
+async def api_hold(request):
+    """External memory write endpoint (stable for systems like 夜伴).
+    Reuses the same core logic as the MCP hold() tool.
+    外部系统记忆写入接口，与 MCP hold() 共用核心逻辑。
+
+    Request JSON fields:
+      content (str, required): 记忆正文
+      valence (float 0~1, optional): 效价，提供时优先使用
+      arousal (float 0~1, optional): 唤醒度，提供时优先使用
+      tags (list[str] or str, optional): 标签列表或逗号分隔字符串
+      importance (int 1~10, optional, default 5): 重要度
+      pinned (bool, optional): 钉选为永久记忆
+      protected (bool, optional): 受保护记忆（不参与合并/衰减）
+      task_flag (bool, optional): 任务类记忆
+      source (str, optional): 来源标记，如 yeeban / yeeban_status / yeeban_daily
+      title (str, optional): 自定义记忆名称
+      feel (bool, optional): 存储为感受型记忆
+    """
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "invalid json body"}, status_code=400)
+
+    content = body.get("content", "")
+    if not content or not str(content).strip():
+        return JSONResponse({
+            "success": False,
+            "bucket_id": "",
+            "merged": False,
+            "valence": None,
+            "arousal": None,
+            "message": "content 为必填字段，且不能为空",
+        }, status_code=400)
+
+    # --- Field coercion & validation / 字段转换与校验 ---
+    try:
+        valence = float(body.get("valence", -1)) if body.get("valence") is not None else -1
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "error": "valence 必须是 0~1 的数值"}, status_code=400)
+    try:
+        arousal = float(body.get("arousal", -1)) if body.get("arousal") is not None else -1
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "error": "arousal 必须是 0~1 的数值"}, status_code=400)
+
+    if valence != -1 and not (0 <= valence <= 1):
+        return JSONResponse({"success": False, "error": "valence 越界，必须位于 0~1"}, status_code=400)
+    if arousal != -1 and not (0 <= arousal <= 1):
+        return JSONResponse({"success": False, "error": "arousal 越界，必须位于 0~1"}, status_code=400)
+
+    try:
+        importance = int(body.get("importance", 5))
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "error": "importance 必须是 1~10 的整数"}, status_code=400)
+    if not (1 <= importance <= 10):
+        return JSONResponse({"success": False, "error": "importance 越界，必须位于 1~10"}, status_code=400)
+
+    tags = body.get("tags", [])
+    if isinstance(tags, str):
+        tags_str = tags
+    elif isinstance(tags, list):
+        tags_str = ",".join(str(t) for t in tags)
+    else:
+        tags_str = ""
+
+    # --- Strict bool coercion: treat "false"/"0"/"" as False ---
+    # --- 严格布尔转换：字符串 "false"/"0"/"" 视为 False ---
+    def _to_bool(val, default=False):
+        if isinstance(val, bool):
+            return val
+        if val is None:
+            return default
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(val)
+
+    try:
+        result = await _hold_impl(
+            content=str(content).strip(),
+            tags=tags_str,
+            importance=importance,
+            pinned=_to_bool(body.get("pinned")),
+            protected=_to_bool(body.get("protected")),
+            feel=_to_bool(body.get("feel")),
+            task_flag=_to_bool(body.get("task_flag")),
+            source=str(body.get("source", "")).strip(),
+            title=str(body.get("title", "")).strip(),
+            valence=valence,
+            arousal=arousal,
+        )
+    except Exception as e:
+        logger.error(f"/api/hold failed: {e}")
+        return JSONResponse({"success": False, "error": f"写入失败: {e}"}, status_code=500)
+
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+
+    return JSONResponse({
+        "success": True,
+        "bucket_id": result["bucket_id"],
+        "merged": result["merged"],
+        "valence": result["valence"],
+        "arousal": result["arousal"],
+        "action": result["action"],
+        "message": result["message"],
+    })
+
+
+@mcp.custom_route("/api/breath", methods=["GET", "POST"])
+async def api_breath(request):
+    """Lightweight retrieval endpoint (stable JSON for external systems like 夜伴).
+    Same logic as MCP breath(lightweight=True).
+    轻量检索接口，返回稳定 JSON，与 MCP breath(lightweight=True) 完全一致。
+
+    GET  /api/breath?query=...&limit=5&min_score=0&recent_days=0&type=&domain=&valence=&arousal=
+    POST /api/breath  (JSON body with same fields)
+    """
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"success": False, "error": "invalid json body"}, status_code=400)
+        params = {k: v for k, v in body.items() if v is not None}
+    else:
+        params = dict(request.query_params)
+
+    query = str(params.get("query", "")).strip()
+    try:
+        limit = int(params.get("limit", 5))
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        min_score = float(params.get("min_score", 0))
+    except (TypeError, ValueError):
+        min_score = 0.0
+    try:
+        recent_days = int(params.get("recent_days", 0))
+    except (TypeError, ValueError):
+        recent_days = 0
+
+    type_filter = str(params.get("type", "")).strip().lower() or None
+    domain = str(params.get("domain", "")).strip()
+    try:
+        valence = float(params.get("valence", -1))
+    except (TypeError, ValueError):
+        valence = -1
+    try:
+        arousal = float(params.get("arousal", -1))
+    except (TypeError, ValueError):
+        arousal = -1
+
+    try:
+        result = await _breath_lightweight(
+            query=query,
+            limit=limit,
+            min_score=min_score,
+            recent_days=recent_days,
+            type_filter=type_filter,
+            domain=domain,
+            valence=valence,
+            arousal=arousal,
+        )
+    except Exception as e:
+        logger.error(f"/api/breath failed: {e}")
+        return JSONResponse({"success": False, "error": f"检索失败: {e}"}, status_code=500)
+
+    result["success"] = True
+    return JSONResponse(result)
+
+
 @mcp.custom_route("/api/buckets", methods=["GET"])
 async def api_buckets(request):
     """List all buckets with metadata (no content for efficiency)."""
@@ -8189,40 +8738,18 @@ async def api_echo_chamber_reject(request):
 
 @mcp.custom_route("/api/run-housekeeper", methods=["POST"])
 async def api_run_housekeeper(request):
-    """Run daily housekeeper job."""
+    """Run daily housekeeper review (structured package)."""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
     try:
         await housekeeper.ensure_started()
-        results = await housekeeper.run_daily_job()
-        
-        parts = []
-        daily_summary = results.get("daily_summary", {})
-        if "error" in daily_summary:
-            parts.append(f"❌ 每日总结失败: {daily_summary['error']}")
-        else:
-            parts.append(f"✅ 每日总结: 处理{daily_summary.get('buckets_processed', 0)}条记忆")
-        
-        chain_updates = results.get("chain_updates", {})
-        if "error" in chain_updates:
-            parts.append(f"❌ 时间链更新失败: {chain_updates['error']}")
-        else:
-            parts.append(f"✅ 时间链更新: 更新{chain_updates.get('chains_updated', 0)}条链")
-        
-        conflicts = results.get("conflicts", {})
-        if "error" in conflicts:
-            parts.append(f"❌ 冲突检测失败: {conflicts['error']}")
-        else:
-            parts.append(f"✅ 冲突检测: 发现{conflicts.get('conflicts_found', 0)}条冲突")
-
-        identity = results.get("identity_detection", {})
-        if "error" in identity:
-            parts.append(f"❌ 人物收录检测失败: {identity['error']}")
-        else:
-            parts.append(f"✅ 人物收录检测: 生成{identity.get('identity_proposals_created', 0)}条收录提案")
-
-        return JSONResponse({"ok": True, "message": "\n".join(parts)})
+        result = await housekeeper.run_daily_review(record_report=True, run_pipeline=True)
+        if "error" in result:
+            return JSONResponse({"ok": False, "error": result["error"]}, status_code=500)
+        # Frontend only checks resp.ok + resp.json(); keep it backward compatible.
+        # 前端仅检查 resp.ok 与 resp.json()，保持兼容。
+        return JSONResponse({"ok": True, "review": result})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -8248,7 +8775,7 @@ async def api_ai_chat(request):
         context = ""
         try:
             context = await inject_context(user_input=message)
-            if context and context != "<context>\n</context>":
+            if context:
                 logger.info(f"[Middleware] Context injected ({len(context)} chars)")
                 logger.debug(f"[Middleware] Context content:\n{context[:500]}...")
             else:
@@ -8259,11 +8786,10 @@ async def api_ai_chat(request):
         # --- Step 2: Call ai_manage with pre-injected context ---
         # --- 第二步：调用 AI 管家，将上下文拼入消息 ---
         enriched_message = message
-        if context and context != "<context>\n</context>":
+        if context:
             enriched_message = f"{context}\n\n用户消息:\n{message}"
         
-        empty_ctx = "<context>\n</context>"
-        ctx_status = "yes" if context and context != empty_ctx else "no"
+        ctx_status = "yes" if context else "no"
         logger.info(f"[Chat] Sending to ai_manage (with context: {ctx_status})")
         result = await ai_manage(enriched_message)
         
@@ -8544,9 +9070,15 @@ async def api_import_review(request):
             elif action == "noise":
                 await bucket_mgr.update(bid, resolved=True, importance=1)
             elif action == "delete":
-                file_path = bucket_mgr._find_bucket_file(bid)
-                if file_path:
-                    os.remove(file_path)
+                # --- Use trash mechanism (restorable) instead of raw os.remove ---
+                # --- 走回收站机制（可恢复），而非直接 os.remove ---
+                ok = await bucket_mgr.delete(bid)
+                if not ok:
+                    raise RuntimeError(f"bucket {bid} 删除失败")
+                try:
+                    embedding_engine.delete_embedding(bid)
+                except Exception as e:
+                    logger.warning(f"Failed to delete embedding for {bid}: {e}")
             applied += 1
         except Exception as e:
             logger.warning(f"Review action failed for {bid}: {e}")
@@ -8888,12 +9420,9 @@ async def complete_journal(
     - 日志与记忆桶系统隔离，不会出现在breath()或inject_context()中
     - 仅通过query_journal按日期/关键词查询时才会被调出
     """
-    # --- Default to today if date is empty ---
-    # --- date 为空时默认今天 ---
-    if not date or not date.strip():
-        date = datetime.datetime.now().strftime("%Y-%m-%d")
-    else:
-        date = date.strip()
+    # --- Normalize date (empty/invalid → graceful default to current UTC date) ---
+    # --- 日期归一化（空值/格式错乱 → 优雅降级为当前 UTC 日期）---
+    date = journal_mgr._normalize_date(date)
 
     if not mood_comment or not mood_comment.strip():
         return "请提供情绪点评内容（mood_comment不能为空）。"
@@ -8903,15 +9432,13 @@ async def complete_journal(
             date=date,
             event_summary="",  # 保留管家已生成的事件摘要（合并模式）
             mood_comment=mood_comment.strip(),
-            emotion_tags=emotion_tags.strip(),
+            emotion_tags=emotion_tags,
         )
         return (
             f"已为 {date} 的日记补充情绪点评。\n"
             f"事件摘要: {entry.get('event_summary', '(待管家生成)')[:60]}\n"
             f"情绪标签: {entry.get('emotion_tags', '(无)')}"
         )
-    except ValueError as e:
-        return f"日期格式无效: {e}"
     except Exception as e:
         logger.error(f"complete_journal failed: {e}")
         return f"补充日记失败: {e}"
@@ -9080,6 +9607,12 @@ if __name__ == "__main__":
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(_housekeeper_startup())
+            try:
+                # --- Keep the loop alive so the background task can actually run ---
+                # --- 保持事件循环存活，否则 create_task 的管家任务永远不会被调度 ---
+                loop.run_forever()
+            except (KeyboardInterrupt, RuntimeError):
+                pass
         
         hk_thread = threading.Thread(target=_start_housekeeper, daemon=True)
         hk_thread.start()

@@ -244,10 +244,22 @@ class TestSearchScoring:
     async def test_exact_topic_match_ranks_first(self, populated_env):
         bm, de, ids = populated_env
         results = await bm.search("asyncio Python event loop", limit=10)
-        if results:
-            # The asyncio bucket should be in top results
-            top_content = results[0].get("content", "")
-            assert "asyncio" in top_content or "event loop" in top_content
+        assert results, "search should return results"
+        top_content = results[0].get("content", "")
+        # Pinned/protected buckets are intentionally prioritized after the
+        # noise-reduction weight tuning (explicit_priority 2.0→4.0 > topic 2.0).
+        # Among non-pinned buckets, the exact-topic asyncio bucket must rank first.
+        # 权重调整后钉选桶的显式优先级高于主题命中（priority 4.0 > topic 2.0）；
+        # 因此在非钉选结果中，精确命中的 asyncio 桶必须排第一。
+        if "asyncio" not in top_content and "event loop" not in top_content:
+            non_pinned = [
+                r for r in results
+                if not r.get("metadata", {}).get("pinned")
+                and r.get("metadata", {}).get("type") != "permanent"
+            ]
+            assert non_pinned, "expected non-pinned search results"
+            top_non_pinned = non_pinned[0].get("content", "")
+            assert "asyncio" in top_non_pinned or "event loop" in top_non_pinned
 
     @pytest.mark.asyncio
     async def test_domain_filter_works(self, populated_env):

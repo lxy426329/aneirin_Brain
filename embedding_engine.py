@@ -17,8 +17,10 @@
 import os
 import json
 import math
+import time
 import sqlite3
 import logging
+import asyncio
 
 try:
     from openai import AsyncOpenAI
@@ -78,6 +80,16 @@ class EmbeddingEngine:
         # --- Initialize SQLite ---
         self._init_db()
 
+        # --- Circuit breaker state / 熔断器状态 ---
+        # After 3 consecutive API failures, open the circuit for 60s to
+        # avoid hammering a dead endpoint (saves tokens, avoids long stalls).
+        # 连续 3 次 API 失败后熔断 60 秒，避免对失效端点持续重试。
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+        self._max_retries = 2
+        self._circuit_failure_threshold = 3
+        self._circuit_cooldown_seconds = 60.0
+
     # ---------------------------------------------------------
     # WAL-mode connection helper / WAL 模式连接帮助方法
     # ---------------------------------------------------------
@@ -127,21 +139,49 @@ class EmbeddingEngine:
             return False
 
     async def _generate_embedding(self, text: str) -> list[float]:
-        """Call API to generate embedding vector. No local model fallback."""
+        """Call API to generate embedding vector. No local model fallback.
+        Retries with small backoff; opens a short circuit breaker after repeated failures.
+        调用 API 生成向量。重试 + 熔断，防止单次失败拖垮整个系统。"""
         # Truncate to avoid token limits
         truncated = text[:2000]
-        
-        if self.client:
+
+        if not self.client:
+            return []
+
+        # --- Circuit breaker gate / 熔断闸门 ---
+        if time.time() < self._circuit_open_until:
+            logger.debug("Embedding circuit open, skipping / 熔断中，跳过向量生成")
+            return []
+
+        last_error = None
+        for attempt in range(self._max_retries + 1):
             try:
                 response = await self.client.embeddings.create(
                     model=self.model,
                     input=truncated,
                 )
                 if response.data and len(response.data) > 0:
+                    # --- Success: reset failure counter / 成功：重置失败计数 ---
+                    self._consecutive_failures = 0
                     return response.data[0].embedding
+                last_error = "empty response"
             except Exception as e:
-                logger.warning(f"Embedding API call failed: {e}")
-        
+                last_error = e
+                logger.warning(f"Embedding API call failed (attempt {attempt + 1}/{self._max_retries + 1}): {e}")
+                if attempt < self._max_retries:
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Backoff: 0.5s, 1s / 退避重试
+
+        # --- Failure: count toward circuit breaker / 失败：累计熔断计数 ---
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._circuit_failure_threshold:
+            self._circuit_open_until = time.time() + self._circuit_cooldown_seconds
+            logger.warning(
+                f"Embedding API failed {self._consecutive_failures} times consecutively; "
+                f"circuit breaker opened for {self._circuit_cooldown_seconds}s / "
+                f"向量 API 连续失败 {self._consecutive_failures} 次，熔断 {self._circuit_cooldown_seconds} 秒"
+            )
+
+        logger.warning(f"Embedding API failed after retries / 向量 API 重试后仍失败: {last_error}")
         return []
 
     def _store_embedding(self, bucket_id: str, embedding: list[float]):
@@ -229,7 +269,9 @@ class EmbeddingEngine:
                 stored_embedding = json.loads(emb_json)
                 sim = self._cosine_similarity(query_embedding, stored_embedding)
                 results.append((bucket_id, sim))
-            except (json.JSONDecodeError, Exception):
+            except Exception:
+                # --- Corrupted row: skip and continue, never break search ---
+                # --- 单条损坏数据跳过，绝不中断整体搜索 ---
                 continue
 
         results.sort(key=lambda x: x[1], reverse=True)
