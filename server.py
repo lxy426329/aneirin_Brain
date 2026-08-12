@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import secrets
 import time
+import json  # 日终工具(daily_review/run_housekeeper)等使用裸 json.*；_json_lib 为历史别名，指向同一模块
 import json as _json_lib
 import httpx
 import datetime
