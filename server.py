@@ -5176,10 +5176,11 @@ async def weekly_organize() -> str:
 async def manage_record(action: str, record_type: str = "", record_id: str = "", name: str = "", description: str = "", content: str = "", detail: str = "", text: str = "", exp_type: str = "", title: str = "", tags: str = "", importance: int = -1, source: str = "", bucket_id: str = "", relationships: str = "", triggers: str = "") -> str:
     """通用记录管理工具，替代identity_*/pattern_*/candlestick_*/experience_*等CRUD工具。
     action: create/update/get/list/delete/apply
-    record_type: identity/roster/pattern/candlestick/experience/annual_ring
+    record_type: identity/roster/pattern/candlestick/experience/annual_ring/bucket/memory
     record_id: 记录ID(仅get/update/delete/apply需要)
     create参数: name/description/relationships(identity), content/detail/text/title/exp_type(experience), name/description/triggers(pattern), content/bucket_id/title(candlestick), content/detail/text/title(annual_ring)
-    update参数: content/tags/importance"""
+    update参数: content/tags/importance
+    delete参数: record_id；record_type=bucket/memory 时 record_id 即 bucket_id，主 AI 可直接删除任意记忆桶"""
     try:
         if action not in ["create", "update", "get", "list", "delete", "apply"]:
             return f"未知操作: {action}"
@@ -5359,6 +5360,17 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
             if record_type in ["identity", "roster", "pattern", "experience", "annual_ring"]:
                 success = await bucket_mgr.delete(record_id)
                 return f"已删除 → {record_id}" if success else "删除失败"
+            if record_type in ["bucket", "memory"]:
+                # --- Main AI absolute control: delete ANY memory bucket directly ---
+                # --- 主 AI 绝对控制权：直接删除任意记忆桶（移入回收站 .trash/）---
+                # record_id 即 bucket_id；可直接使用任意桶 ID，无需经过管家审批
+                success = await bucket_mgr.delete(record_id)
+                if success:
+                    # --- Sync in-memory index with disk after deletion ---
+                    # --- 删除后同步内存索引，避免检索残留 ---
+                    bucket_mgr.invalidate_index()
+                    return f"记忆桶已删除 → {record_id}"
+                return f"删除失败: 未找到记忆桶 {record_id}"
             return f"不支持删除 {record_type} 类型"
         
         elif action == "apply":
@@ -9958,6 +9970,29 @@ async def query_journal(
         if mood:
             lines.append(f"  心情: {mood}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def delete_journal(
+    date: str,
+) -> str:
+    """
+    直接删除指定日期的每日日记（主 AI 拥有对日记的绝对管理权）。
+    主 AI 可直接调用本工具物理删除日记条目文件，无需任何审批流程。
+
+    参数:
+    - date: 日期，格式 YYYY-MM-DD（如 "2026-08-13"）
+
+    说明:
+    - 删除为不可恢复的物理删除（不进入回收站）
+    - 适用场景：日记内容错误、含隐私敏感内容、或主 AI 判定该日记不再需要保留
+    - 日记与记忆桶系统完全隔离，删除日记不影响任何记忆桶
+    """
+    date = journal_mgr._normalize_date(date)
+    if journal_mgr.delete_entry(date):
+        logger.info(f"Journal deleted by main AI / 主 AI 删除日记: {date}")
+        return f"已删除 {date} 的日记记录。"
+    return f"删除失败或不存在 {date} 的日记记录。"
 
 
 # --- Entry point / 启动入口 ---
