@@ -435,12 +435,14 @@ trace(bucket_id="abc123", delete=True)
 
 ### 场景 9：用户使用 dream 工具进行记忆沉淀
 
-**触发**：Claude 在对话启动时，`breath()` 之后调用 `dream()`
+**触发**：主 AI 在晚间总结或后台闲置时调用 `dream()`（已与 SessionStart 开局流程解耦，不在 breath() 后自动触发）
 
 **OB 工具调用**：`dream()`（无参数）
 
 **系统内部发生什么**：
 
+0. `bucket_mgr.purge_expired_ephemeral(24h)` — **ephemeral 暂存区蒸发**：超过半衰期且未被再次引用（last_accessed 未刷新）的纯发泄内容软删除移入 .trash/ 并清理向量
+0.5 主动关怀扫描 — 未解决桶中 `(arousal>0.7 且 valence<0.4) 或 valence<0.25` 的高焦虑/极低情绪条目写入 `echo_chamber/emotional_suspension.json`（供下次开局 check_suspension_flag 一次性读取，实现自然主动问候）
 1. `bucket_mgr.list_all()` → 过滤非 `permanent/feel/pinned/protected` 桶
 2. 按 `created` 降序取前 10 条（最近新增的记忆）
 3. 对每条拼接：名称、resolved 状态、domain、V/A、创建时间、正文前 500 字符

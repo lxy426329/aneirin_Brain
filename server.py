@@ -67,6 +67,7 @@ from tag_normalizer import TagNormalizer
 from cycle_tracker import CycleTracker
 from journal_manager import JournalManager
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, detect_vulnerable_state, safe_json_loads, safe_int, safe_float
+from mcp_tools import register_tools as _register_mcp_tools
 
 # --- Load .env file / 加载 .env 文件 ---
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -147,6 +148,11 @@ mcp = FastMCP(
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
+# --- Register strategy-efficacy feedback tools (mcp_tools.py) ---
+# --- 注册策略有效性评估工具（主 AI 静默反馈通道） ---
+import types as _types
+_register_mcp_tools(mcp, _types.SimpleNamespace(pattern_mgr=pattern_mgr, bucket_mgr=bucket_mgr))
+
 
 # =============================================================
 # Dashboard Auth — simple cookie-based session auth
@@ -161,6 +167,14 @@ _sessions: dict[str, float] = {}  # {token: expiry_timestamp}
 
 def _get_auth_file() -> str:
     return os.path.join(config["buckets_dir"], ".dashboard_auth.json")
+
+
+# --- Salience gate thresholds for breath() deep retrieval ---
+# --- breath() 深层检索的相关度门槛：只有匹配度高或情绪唤醒度高时才激活 ---
+#   主题/向量归一化匹配度低于该值 → 不激活深层检索（避免无意义拉取）
+SALIENCE_THRESHOLD = 0.25
+#   情绪唤醒度高于该值 → 即便匹配度低也激活深层检索（高唤醒记忆值得浮现）
+SALIENCE_AROUSAL_THRESHOLD = 0.7
 
 
 def _load_password_hash() -> str | None:
@@ -547,24 +561,13 @@ async def breath_hook(request):
                 parts.append(entry)
                 token_budget -= 200
 
-        # --- Dream introspection: auto-trigger after breath on every session start ---
-        # --- 自省：breath 之后自动触发 dream()，确保每次新对话都跑一遍自省 ---
-        dream_text = ""
-        try:
-            dream_text = await dream()
-            if dream_text:
-                dream_text = "[Ombre Brain - 自省]\n" + dream_text
-        except Exception as e:
-            logger.warning(f"Dream introspection failed / 自省失败: {e}")
+        # --- Dream is decoupled from session start (runs at nightly wrap-up or idle) ---
+        # --- dream 已与开局流程解耦：仅在晚间总结或后台闲置时由主 AI 调用 ---
 
         if not parts:
             await _fire_webhook("breath_hook", {"surfaced": 0})
-            if dream_text:
-                return PlainTextResponse(dream_text)
             return PlainTextResponse("")
         body_text = "[Ombre Brain - 记忆浮现]\n" + "\n---\n".join(parts)
-        if dream_text:
-            body_text += "\n\n" + dream_text
         await _fire_webhook("breath_hook", {"surfaced": len(parts), "chars": len(body_text)})
         return PlainTextResponse(body_text)
     except Exception as e:
@@ -883,6 +886,50 @@ async def _merge_or_create(
 # Breath helper functions
 # breath 辅助函数
 # =============================================================
+async def _detect_life_context() -> str:
+    """轻量时空与生活节奏感知：基于当前时间与近12小时活动推断 [Context] 标记。
+    供主 AI 调整接话节奏，极其轻量，单行文本。"""
+    try:
+        now = datetime.datetime.now()
+        hour = now.hour
+        if hour >= 23 or hour < 5:
+            period = "深夜"
+        elif hour < 7:
+            period = "凌晨"
+        elif hour < 11:
+            period = "上午"
+        elif hour < 14:
+            period = "午后"
+        elif hour < 18:
+            period = "下午"
+        else:
+            period = "傍晚"
+
+        life_state = ""
+        try:
+            recent = await bucket_mgr.list_all(include_archive=False)
+            half_day_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=12)).isoformat()
+            activity_text = ""
+            for b in recent:
+                created = b["metadata"].get("created", "")
+                if created and created >= half_day_ago:
+                    activity_text += " " + str(b.get("content") or "")[:120]
+            if any(k in activity_text for k in ("舞房", "教学", "教舞", "上课", "排练", "编舞")):
+                life_state = "·舞房教学后"
+            elif hour >= 23 or hour < 5:
+                if any(k in activity_text for k in ("调试", "代码", "bug", "项目", "编程", "开发")):
+                    life_state = "·深夜调试期"
+                else:
+                    life_state = "·深夜休整"
+            elif any(k in activity_text for k in ("休息", "睡觉", "躺平", "休假")):
+                life_state = "·日常休息期"
+        except Exception:
+            pass
+        return f"[Context] {period}{life_state}（{now.strftime('%H:%M')}）"
+    except Exception:
+        return ""
+
+
 async def _breath_identity(max_tokens: int) -> str:
     """Load all identities for breath."""
     try:
@@ -1769,50 +1816,72 @@ async def _breath_lightweight(
     }
 
 
-# ---------------------------------------------------------
-# Voice layer (说话习惯/称呼/相处方式)
-# voice 层：每次 breath() 强制注入，不走评分、不走衰减
-# ---------------------------------------------------------
-async def _load_voice_layer() -> list:
-    """从 voice/ 目录加载 voice 桶，返回结构化条目列表。
-    纯读取，不触发评分/衰减；读取失败时返回空列表。
+# =========================================================
+# Boundary sliding-window guard (底线防御滑动窗口)
+# 不能仅凭单轮对话的 Valence/Arousal 极值立即触发底线引导。
+# 触发约束：
+#   - 非开发/非代码调试类 Topic：单轮极值即可激活（保持原有敏感度）
+#   - 开发/代码调试类 Topic：需连续 2 轮以上极值才激活（防止吐槽代码报错误触发）
+# 状态持久化在 housekeeper.echo_chamber_dir/boundary_sliding.json，
+# 跨 MCP 调用保持；超过 30 分钟的窗口自动重置。
+# =========================================================
+_DEV_TOPIC_KEYWORDS = (
+    "开发", "代码", "编程", "编码", "程序", "bug", "debug", "调试",
+    "报错", "错误", "异常", "项目", "后端", "前端", "接口", "部署",
+    "数据库", "服务器", "测试", "docker", "render", "git", "github",
+    "api", "mcp", "python", "javascript", "编译", "运行",
+)
+
+_BOUNDARY_WINDOW_SECONDS = 1800  # 30 分钟滑动窗口
+
+
+def _is_dev_topic(text: str) -> bool:
+    """Whether the current topic is development/code-debugging related.
+    判断当前 Topic 是否属于开发/代码调试类（此类吐槽不触发严肃底线引导）。"""
+    if not text:
+        return False
+    tl = text.lower()
+    return any(k in tl for k in _DEV_TOPIC_KEYWORDS)
+
+
+def _update_boundary_streak(triggered_now: bool) -> int:
     """
+    Update the boundary trigger streak in a sliding 30-min window.
+    Returns the current streak count (>=1 only when triggered_now).
+    滑动窗口更新底线触发连续轮次：超过 30 分钟未触发则归零；
+    本轮极值触发则 streak+1，否则归零。
+    """
+    state_path = os.path.join(housekeeper.echo_chamber_dir, "boundary_sliding.json")
+    streak = 0
+    last_at = 0.0
     try:
-        all_buckets = await bucket_mgr.list_all(include_archive=False)
-    except Exception as e:
-        logger.warning(f"Voice layer load failed / voice 层读取失败: {e}")
-        return []
-    voices = [b for b in all_buckets if b["metadata"].get("type") == "voice"]
-    if not voices:
-        return []
-    entries = []
-    for v in voices:
-        meta = v["metadata"]
-        name = meta.get("name") or v["id"]
-        summary = meta.get("one_line_summary") or meta.get("dehydrated_summary") or ""
-        content = strip_wikilinks(v.get("content", ""))
-        body = summary or content
-        entries.append({"name": str(name), "bucket_id": v["id"], "text": str(body)[:300]})
-    return entries
-
-
-def _format_voice_block(voice_entries: list) -> str:
-    """把 voice 条目拼装为固定注入块；无条目时返回空串。"""
-    if not voice_entries:
-        return ""
-    parts = []
-    for e in voice_entries:
-        line = f"[{e['name']}] [bucket_id:{e['bucket_id']}]"
-        if e.get("text"):
-            line += f"\n  {e['text']}"
-        parts.append(line)
-    return "=== 说话方式 ===\n" + "\n---\n".join(parts) + "\n\n"
+        if os.path.exists(state_path):
+            with open(state_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            streak = int(data.get("streak", 0))
+            last_at = float(data.get("last_at", 0.0))
+    except (json.JSONDecodeError, OSError, ValueError, TypeError):
+        # --- Corrupted state file: reset silently, never crash ---
+        # --- 状态文件损坏：静默重置，绝不崩溃 ---
+        streak = 0
+        last_at = 0.0
+    now = time.time()
+    if now - last_at > _BOUNDARY_WINDOW_SECONDS:
+        streak = 0
+    streak = (streak + 1) if triggered_now else 0
+    try:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump({"streak": streak, "last_at": now}, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logger.warning(f"Boundary streak state write failed / 底线滑动窗口状态写入失败: {e}")
+    return streak
 
 
 @mcp.tool()
 async def breath(
     query: str = "",
-    max_tokens: int = 5000,
+    max_tokens: int = 2000,
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
@@ -1827,48 +1896,66 @@ async def breath(
     min_score: float = 0.0,
     recent_days: int = 0,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认2000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。开局注入轻量化：只精准拉取与当前情境最相关的少量锚点/行为准则，不无差别注入全量内容。"""
     await decay_engine.ensure_started()
     await housekeeper.ensure_started()
 
-    # --- Voice layer: always injected into every breath(), bypass scoring/decay ---
-    # --- voice 层：每次 breath() 都强制注入，不走评分、不走衰减 ---
-    voice_entries = await _load_voice_layer()
-    voice_block = _format_voice_block(voice_entries)
+    # --- Lightweight time / life-rhythm context tag / 轻量时空与生活节奏感知 ---
+    # 供主 AI 调整接话节奏；极其轻量，单行 [Context] 标记
+    context_tag = ""
+    try:
+        context_tag = await _detect_life_context()
+    except Exception as e:
+        logger.warning(f"Life context detection failed / 生活节奏感知失败: {e}")
+
+    # --- Boundary activation: severe cognitive distortion or extreme negativity ---
+    # --- 底线激活：检测到严重认知偏差/极度消极言论时，高优先级注入 boundary/ 原则 ---
+    # 滑动窗口保护：不能仅凭单轮极值触发——
+    #   非开发 Topic 单轮极值即可激活（保持敏感度）；
+    #   开发/代码调试 Topic 需连续 2 轮以上极值才激活（防止吐槽代码报错误触发）。
+    boundary_block = ""
+    boundary_extreme = (0 <= valence < 0.25) or (arousal > 0.8)
+    boundary_streak = _update_boundary_streak(boundary_extreme)
+    boundary_is_dev = _is_dev_topic((domain or "") + " " + (query or ""))
+    boundary_triggered = boundary_extreme and (not boundary_is_dev or boundary_streak >= 2)
+    if boundary_triggered:
+        try:
+            _all_buckets = await bucket_mgr.list_all(include_archive=False)
+            _boundaries = [b for b in _all_buckets if b["metadata"].get("type") == "boundary"]
+            if _boundaries:
+                _blines = []
+                for _b in _boundaries[:5]:
+                    _blines.append(
+                        f"[{_b['metadata'].get('name', _b['id'])}] "
+                        f"{strip_wikilinks(_b.get('content', ''))[:200]}"
+                    )
+                boundary_block = "=== 底线共识 ===\n" + "\n---\n".join(_blines) + "\n\n"
+        except Exception as e:
+            logger.warning(f"Boundary activation failed / 底线激活失败: {e}")
+
+    _prefix = ""
+    if context_tag or boundary_block:
+        _prefix = (context_tag + "\n" if context_tag else "") + boundary_block
 
     # --- Lightweight mode: return stable JSON string, no fallback, minimal tokens ---
     # --- 轻量模式：返回稳定 JSON 字符串，省 token，不做 fallback ---
     if lightweight:
-        result = await _breath_lightweight(
-            query=query.strip() if query else "",
-            limit=limit,
-            min_score=min_score,
-            recent_days=recent_days,
-            type_filter=type.strip().lower() if type else None,
-            domain=domain,
-            valence=valence,
-            arousal=arousal,
+        return _json_lib.dumps(
+            await _breath_lightweight(
+                query=query.strip() if query else "",
+                limit=limit,
+                min_score=min_score,
+                recent_days=recent_days,
+                type_filter=type.strip().lower() if type else None,
+                domain=domain,
+                valence=valence,
+                arousal=arousal,
+            ),
+            ensure_ascii=False,
         )
-        # Voice layer appended as a fixed field (not scored, not decayed)
-        # voice 层作为固定字段附加（不走评分、不走衰减）
-        result["voice"] = voice_entries
-        return _json_lib.dumps(result, ensure_ascii=False)
     
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
-
-    # --- Housekeeper prefetch: pull event chain drafts and cleanup proposals ---
-    # --- 管家预取：拉取事件链草案和清理提案 ---
-    housekeeper_prefetch = ""
-    try:
-        proposals = await housekeeper.get_cleanup_proposals(status="pending")
-        if proposals:
-            proposal_text = "；".join(
-                f"{p.reason} ({p.bucket_id})" for p in proposals[:5]
-            )
-            housekeeper_prefetch = f"\n管家提案:\n{proposal_text[:500]}"
-    except Exception as e:
-        logger.warning(f"Housekeeper prefetch failed: {e}")
 
     # --- Vulnerable state detection (auto-mask task_flag buckets) ---
     # --- 脆弱状态检测（自动屏蔽 task_flag 桶，防止 KPI 机器式催任务）---
@@ -1928,10 +2015,10 @@ async def breath(
         brief = False
 
     if type_filter == "identity":
-        return voice_block + await _breath_identity(max_tokens)
+        return await _breath_identity(max_tokens)
 
     if type_filter == "feel":
-        return voice_block + await _breath_feel(max_tokens)
+        return await _breath_feel(max_tokens)
 
     if importance_min >= 1:
         try:
@@ -1952,7 +2039,7 @@ async def breath(
         filtered.sort(key=lambda b: safe_int(b["metadata"].get("importance"), 0), reverse=True)
         filtered = filtered[:20]
         if not filtered:
-            return voice_block + f"没有重要度 >= {importance_min} 的记忆。"
+            return f"没有重要度 >= {importance_min} 的记忆。"
         results = []
         token_used = 0
         for b in filtered:
@@ -1972,13 +2059,13 @@ async def breath(
                 token_used += t
             except Exception as e:
                 logger.warning(f"importance_min dehydrate failed: {e}")
-        return voice_block + ("\n---\n".join(results) if results else "没有可以展示的记忆。")
+        return "\n---\n".join(results) if results else "没有可以展示的记忆。"
 
     if not query or not query.strip():
         # --- Casual chat detection: inject candlestick flavor only in casual mode ---
         # --- 闲聊检测：仅在闲聊模式下注入烛台调味料 ---
         inject_candlestick_flavor = is_casual_chat(query)
-        return voice_block + await _breath_surfacing(
+        return _prefix + await _breath_surfacing(
             max_tokens, max_results, brief, type_filter, summary_report, mask_tasks,
             inject_candlestick_flavor=inject_candlestick_flavor
         )
@@ -1997,7 +2084,7 @@ async def breath(
                 results.append(entry)
                 if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                     break
-            return voice_block + "=== 你留下的 feel ===\n" + "\n---\n".join(results)
+            return "=== 你留下的 feel ===\n" + "\n---\n".join(results)
         except Exception as e:
             logger.error(f"Feel retrieval failed: {e}")
             return "读取 feel 失败。"
@@ -2143,6 +2230,24 @@ async def breath(
         b["_norm_score"] = (raw / 100.0) if raw > 1 else raw
         norm_matches.append(b)
 
+    # --- Salience Gate: deep retrieval only activates when relevance or emotional salience is high ---
+    # --- 相关度门槛：只有向量/主题匹配度高于门槛或情绪唤醒度高时才激活深层检索 ---
+    # Exact-keyword queries bypass the gate so precise lookups always work.
+    # force_keyword 精确检索绕过门槛，保证精确查找始终可用。
+    if not force_keyword:
+        _top_norm = max((b["_norm_score"] for b in norm_matches), default=0.0)
+        _top_arousal = max(
+            (safe_float(b["metadata"].get("arousal"), 0.0) for b in norm_matches),
+            default=0.0,
+        )
+        if _top_norm < SALIENCE_THRESHOLD and _top_arousal < SALIENCE_AROUSAL_THRESHOLD:
+            logger.info(
+                f"Breath: salience gate blocked deep retrieval / "
+                f"相关度门槛拦截: top_norm={_top_norm:.3f}, top_arousal={_top_arousal:.3f}"
+            )
+            await _fire_webhook("breath", {"mode": "salience_gate", "top_score": _top_norm})
+            return "当前情境下没有足够相关的记忆。"
+
     full_text_candidates = [b for b in norm_matches if b["_norm_score"] >= 0.7]
     summary_candidates = [b for b in norm_matches if 0.4 <= b["_norm_score"] < 0.7]
 
@@ -2260,7 +2365,9 @@ async def breath(
 
     # Use pre-truncation count so random surfacing only fires when few results exist
     # 使用截断前的候选数量判断，避免 Top-N 截断后频繁触发随机浮现
-    if len(norm_matches) < 3 and random.random() < 0.4:
+    # Probability reduced from 40% to 8% to avoid meaningless random drift.
+    # 随机漂浮概率从 40% 降至 8%，避免无意义的随机浮现。
+    if len(norm_matches) < 3 and random.random() < 0.08:
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
             matched_ids = {b["id"] for b in matches}
@@ -2473,15 +2580,19 @@ async def breath(
 
     if not results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
-        return voice_block + "未找到相关记忆。"
+        return _prefix + "未找到相关记忆。"
 
     final_text = "\n".join(results)
-    
-    if housekeeper_prefetch:
-        final_text += housekeeper_prefetch
-    
+
+    # --- Context isolation declaration (appended to memory-layer output) ---
+    # --- 上下文隔离宣告：记忆层仅作后台背景事实与情境参考，管家系统数据严禁复述 ---
+    final_text += (
+        "\n\n[Memory Layer] 仅作为后台背景事实与情境参考。管家整理的系统数据严禁直接复述，"
+        "请始终保持自然口语风格与顾尘进行交互。"
+    )
+
     await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "shown": shown_count, "summarized": len(summarized_buckets), "chars": len(final_text)})
-    return voice_block + final_text
+    return _prefix + final_text
 
 
 # =============================================================
@@ -2574,10 +2685,17 @@ async def _hold_impl(
                 "valence": feel_valence, "arousal": feel_arousal, "action": "feel",
                 "message": f"🫧feel→{bucket_id}"}
 
-    # --- Milestone / Voice modes: dedicated layers, never decay ---
-    # --- milestone（重要时刻）/ voice（说话方式）专用层：永不衰减 ---
-    if bucket_type in ("milestone", "voice"):
-        is_ms = bucket_type == "milestone"
+    # --- Milestone / Voice / Boundary / Ephemeral modes: dedicated layers ---
+    # --- milestone（重要时刻）/ voice（说话方式）/ boundary（底线共识）/ ephemeral（吐槽暂存）专用层 ---
+    if bucket_type in ("milestone", "voice", "boundary", "ephemeral"):
+        if bucket_type == "milestone":
+            layer_name = "重要时刻"
+        elif bucket_type == "boundary":
+            layer_name = "底线共识"
+        elif bucket_type == "ephemeral":
+            layer_name = "吐槽暂存"
+        else:
+            layer_name = "说话方式"
         # --- Auto-tagging for metadata / 自动打标生成元数据 ---
         try:
             analysis = await dehydrator.analyze(content)
@@ -2597,7 +2715,7 @@ async def _hold_impl(
         bucket_id = await bucket_mgr.create(
             content=content,
             tags=all_tags,
-            importance=10,  # 永不衰减
+            importance=5 if bucket_type == "ephemeral" else 10,  # ephemeral 临时内容，不设高重要度
             domain=domain,
             emotions=auto_emotions,
             dominant_emotion=auto_dominant,
@@ -2619,7 +2737,6 @@ async def _hold_impl(
                 await bucket_mgr.update(bucket_id, source=source)
             except Exception as e:
                 logger.warning(f"Failed to set source on {bucket_type} bucket: {e}")
-        layer_name = "重要时刻" if is_ms else "说话方式"
         return {"success": True, "bucket_id": bucket_id, "merged": False,
                 "valence": explicit_v if explicit_v is not None else 0.5,
                 "arousal": explicit_a if explicit_a is not None else 0.3,
@@ -2786,9 +2903,11 @@ async def hold(
     event_context: str = "",
     milestone: bool = False,
     voice: bool = False,
+    boundary: bool = False,
+    ephemeral: bool = False,
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。milestone=True存入milestone层(高情绪浓度重要时刻/纪念日,永不衰减)。voice=True存入voice层(说话习惯/称呼/相处方式,breath()每次强制注入,永不衰减)。"""
-    bucket_type = "milestone" if milestone else ("voice" if voice else "")
+    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。milestone=True存入milestone层(高情绪浓度重要时刻/纪念日,永不衰减)。voice=True存入voice层(说话习惯/称呼/相处方式,按需检索,永不衰减)。boundary=True存入boundary层(双方确立的认知共识/逻辑底线/原则,永不衰减;检测到消极言论或认知偏差时高优先级激活)。ephemeral=True存入ephemeral短期绝密暂存区(半衰期24小时:纯发泄吐槽,未被再次引用时在nightly dream()中自然蒸发)。"""
+    bucket_type = "milestone" if milestone else ("voice" if voice else ("boundary" if boundary else ("ephemeral" if ephemeral else "")))
     result = await _hold_impl(
         content=content, tags=tags, importance=importance,
         pinned=pinned, protected=protected, feel=feel, task_flag=task_flag,
@@ -3154,6 +3273,25 @@ async def dream() -> str:
     """做梦——读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
     await decay_engine.ensure_started()
 
+    # --- Step -1: ephemeral evaporation (24h half-life) ---
+    # --- 步骤-1：ephemeral 暂存区蒸发（半衰期 24h；未被再次引用的纯发泄内容自然蒸发） ---
+    try:
+        evaporated = await bucket_mgr.purge_expired_ephemeral(half_life_hours=24)
+        if evaporated:
+            logger.info(f"Ephemeral evaporation in dream / dream 中 ephemeral 蒸发: {evaporated}")
+    except Exception as e:
+        logger.warning(f"Ephemeral purge failed / ephemeral 蒸发失败: {e}")
+
+    # --- Step -0.5: clear the dream sandbox (day-end / wake-up cleanup) ---
+    # --- 步骤-0.5：清空梦境沙盒——上一轮做梦的联想/草稿无论是否被采纳，
+    #     日终/醒来时彻底物理清空，避免垃圾梦境重复堆积 ---
+    try:
+        purged = await bucket_mgr.purge_dream_sandbox(keep_today=False)
+        if purged:
+            logger.info(f"Dream sandbox purged before dream / 做梦前清空梦境沙盒: {purged} files")
+    except Exception as e:
+        logger.warning(f"Dream sandbox purge failed / 梦境沙盒清空失败: {e}")
+
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
     except Exception as e:
@@ -3169,7 +3307,12 @@ async def dream() -> str:
         
         for b in all_buckets:
             meta = b["metadata"]
-            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
+            # Voice (expression/habits) and Ring (patterns/principles) are
+            # independent layers and must NOT be auto-merged into plain dynamic
+            # buckets — this prevents semantically overlapping crystals.
+            # voice（表达习惯）与 ring（年轮/原则）为独立层，不参与普通结晶合并，
+            # 禁止重复生成语义重叠的桶。
+            if meta.get("type") in ("permanent", "feel", "voice", "pattern", "milestone", "anchor") or meta.get("pinned") or meta.get("protected"):
                 continue
             
             created_str = meta.get("created", "")
@@ -3375,9 +3518,132 @@ async def dream() -> str:
         except Exception as e:
             logger.warning(f"Dream crystallization hint failed: {e}")
 
-    final_text = header + "\n---\n".join(parts) + connection_hint + crystal_hint
+    # --- Emotional suspension flag (housekeeper passive ping) ---
+    # --- 主动关怀标记：扫描未解决的高焦虑/极低情绪记忆，写入临时 flag ---
+    # 主 AI 在下次会话开局调用 check_suspension_flag() 读取，自然表达关心。
+    try:
+        _suspension_dir = housekeeper.echo_chamber_dir
+        _suspension_candidates = [
+            b for b in all_buckets
+            if not b["metadata"].get("resolved", False)
+            and (b["metadata"].get("type") or "dynamic") not in ("permanent", "feel", "voice", "boundary", "milestone", "identity")
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+        ]
+        _suspension_flagged = []
+        for b in _suspension_candidates:
+            meta = b["metadata"]
+            aro = safe_float(meta.get("arousal"), 0.3)
+            val = safe_float(meta.get("valence"), 0.5)
+            if (aro > 0.7 and val < 0.4) or val < 0.25:
+                _suspension_flagged.append({
+                    "bucket_id": b["id"],
+                    "name": meta.get("name", b["id"]),
+                    "theme": ",".join(meta.get("domain", [])),
+                    "arousal": round(aro, 2),
+                    "valence": round(val, 2),
+                })
+        if _suspension_flagged:
+            flag_data = {
+                "created_at": now_iso(),
+                "items": _suspension_flagged[:3],
+            }
+            flag_path = os.path.join(_suspension_dir, "emotional_suspension.json")
+            with open(flag_path, "w", encoding="utf-8") as f:
+                json.dump(flag_data, f, ensure_ascii=False, indent=2)
+            logger.info(
+                f"Emotional suspension flag written / 主动关怀标记写入: "
+                f"{len(_suspension_flagged)} items"
+            )
+    except Exception as e:
+        logger.warning(f"Emotional suspension scan failed / 主动关怀扫描失败: {e}")
+
+    # --- Nightly housekeeper sweep: incremental dream + periodic full cleanup ---
+    # --- 管家晚间整理：增量做梦（24h 新记忆 + search Top-K 精准比对）+ 周期大扫除（每15天） ---
+    # 结果只落回音壁提案与梦境沙盒，不污染本条做梦文本的主体内容。
+    dreamer_note = ""
+    try:
+        inc = await housekeeper.daily_incremental_dream()
+        if inc.get("sandbox_written") or inc.get("conflict_proposals"):
+            logger.info(f"Incremental dream done / 增量做梦完成: {inc}")
+            if inc.get("conflict_proposals"):
+                dreamer_note += (
+                    f"\n\n[管家] 增量扫描发现 {inc.get('conflict_proposals')} 条高置信冲突候选，"
+                    f"已入回音壁待静默审阅（review_pending_actions）。\n"
+                )
+        full = await housekeeper.periodic_full_cleanup(force=False)
+        if full.get("run"):
+            logger.info(f"Periodic full cleanup done / 周期大扫除完成: {full}")
+            dreamer_note += (
+                f"[管家] 本次为周期大扫除：{full.get('faded_memories_created', 0)} 条旧记忆压缩为模糊印象，"
+                f"新增 {full.get('ring_buckets_created', 0)} 个年轮认知桶。\n"
+            )
+    except Exception as e:
+        logger.warning(f"Nightly housekeeper sweep failed / 管家晚间整理失败: {e}")
+
+    final_text = header + "\n---\n".join(parts) + connection_hint + crystal_hint + dreamer_note
     await _fire_webhook("dream", {"recent": len(recent), "chars": len(final_text)})
     return final_text
+
+
+# =============================================================
+# Emotional suspension flag (主动关怀标记)
+# 管家在 dream() 中写入临时标记；主 AI 会话开局读取，自然表达关心。
+# =============================================================
+@mcp.tool()
+async def check_suspension_flag() -> str:
+    """读取主动关怀标记（emotional_suspension_flag）。
+    管家在 dream() 中扫描到上一会话存在未解决的高焦虑问题或极低情绪时写入该临时标记。
+    在会话开局初始化时调用：若有标记，可在合适的时机向顾尘自然表达关心。
+    标记为一次性，读取后自动清除。无标记时返回空说明。"""
+    flag_path = os.path.join(housekeeper.echo_chamber_dir, "emotional_suspension.json")
+    if not os.path.exists(flag_path):
+        return "（无待关怀标记）"
+    try:
+        with open(flag_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        os.remove(flag_path)
+        items = data.get("items", [])
+        if not items:
+            return "（无待关怀标记）"
+        parts = []
+        for it in items:
+            parts.append(
+                f"[{it.get('name', it.get('bucket_id', ''))}] "
+                f"主题:{it.get('theme', '')} "
+                f"唤醒:{it.get('arousal', '')} 效价:{it.get('valence', '')} "
+                f"bucket_id:{it.get('bucket_id', '')}"
+            )
+        return (
+            "=== 主动关怀提示 ===\n"
+            "上一会话存在未解决的高焦虑/低情绪问题，可以在合适的时机自然地关心她：\n"
+            + "\n".join(parts)
+        )
+    except Exception as e:
+        logger.warning(f"Check suspension flag failed / 读取关怀标记失败: {e}")
+        return "（关怀标记读取失败）"
+
+
+@mcp.tool()
+async def recall_faded(limit: int = 5) -> str:
+    """回忆模糊印象（faded memories）。
+    久远的普通记忆衰减后不彻底删除，已被降维为轻量的模糊印象标签（一两句话）。
+    当你想表达自然的沧桑感或模糊回忆时调用：返回若干条模糊印象。
+    limit=返回条数(默认5,最大20)。"""
+    try:
+        faded = await bucket_mgr.list_faded_memories(limit=max(1, min(limit, 20)))
+    except Exception as e:
+        logger.error(f"Recall faded failed / 模糊印象读取失败: {e}")
+        return "模糊印象读取失败。"
+    if not faded:
+        return "（还没有沉淀成模糊印象的记忆）"
+    lines = ["=== 模糊印象 ==="]
+    for f in faded:
+        lines.append(
+            f"[{f.get('name', f['id'])}] {f.get('label', '')} "
+            f"（原:{f.get('original_id', '')}）"
+        )
+    return "\n".join(lines)
 
 
 # =============================================================
@@ -4579,6 +4845,59 @@ async def reject_action(action_id: str) -> str:
 
 
 @mcp.tool()
+async def review_pending_actions(json_verdicts: str) -> str:
+    """【静默决策通道】批量审阅管家提案并授权执行落库。
+    管家后台扫描生成的候选提案（Feel 结晶、桶沉底/清理等）已暂存于回音壁独立临时缓存（echo_chamber/pending_actions/），
+    主 AI 以 JSON 数组一次性静默审阅（Approve/Reject），由管家执行落库。
+    该通道不打断用户，也严禁把管家报告作为普通上下文拼入 breath() 返回值。
+    json_verdicts = JSON 数组，每条形如：
+      [{"action_id": "提案ID", "decision": "approve"|"reject", "note": "可选备注"}]
+    返回每条的执行结果（JSON 文本）。"""
+    await housekeeper.ensure_started()
+
+    try:
+        verdicts = json.loads(json_verdicts)
+        if not isinstance(verdicts, list):
+            return "格式错误：json_verdicts 必须是 JSON 数组。"
+    except Exception as e:
+        return f"JSON 解析失败: {e}"
+
+    results = []
+    for v in verdicts:
+        action_id = str(v.get("action_id", "")).strip()
+        decision = str(v.get("decision", "")).strip().lower()
+        note = str(v.get("note", "")).strip()
+        if not action_id or decision not in ("approve", "reject"):
+            results.append({
+                "action_id": action_id,
+                "status": "skipped",
+                "reason": "缺少 action_id 或 decision 无效（应为 approve/reject）",
+            })
+            continue
+        try:
+            if decision == "approve":
+                ok = await housekeeper.approve_action(action_id)
+            else:
+                ok = await housekeeper.reject_action(action_id)
+            results.append({
+                "action_id": action_id,
+                "decision": decision,
+                "status": "executed" if ok else "not_found",
+                "note": note,
+            })
+        except Exception as e:
+            logger.error(f"review_pending_actions failed for {action_id}: {e}")
+            results.append({
+                "action_id": action_id,
+                "decision": decision,
+                "status": "error",
+                "reason": str(e),
+            })
+
+    return json.dumps(results, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 async def inject_context(user_input: str = "") -> str:
     """
     静默预处理中间件：自动检索相关记忆并注入上下文。
@@ -4711,7 +5030,8 @@ async def inject_context(user_input: str = "") -> str:
         + "\n</context>\n"
         "[输出要求]\n"
         "请严格基于 <context> 中与用户输入直接相关的信息作答："
-        "能回答则精确引用，不能回答则明示缺失，不臆测、不编造、不冗余发散。"
+        "能回答则精确引用，不能回答则明示缺失，不臆测、不编造、不冗余发散。\n"
+        "[Memory Layer] 仅作为后台背景事实与情境参考。管家整理的系统数据严禁直接复述，请始终保持自然口语风格进行交互。"
     )
 
 

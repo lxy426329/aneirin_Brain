@@ -142,7 +142,7 @@ def load_config(config_path: str = None) -> dict:
     # --- Ensure bucket storage directories exist ---
     # --- 确保记忆桶存储目录存在 ---
     buckets_dir = config["buckets_dir"]
-    for subdir in ["permanent", "dynamic", "archive", "feel", "identity", "ring", "milestone", "voice"]:
+    for subdir in ["permanent", "dynamic", "archive", "feel", "identity", "ring", "milestone", "voice", "boundary", "ephemeral"]:
         os.makedirs(os.path.join(buckets_dir, subdir), exist_ok=True)
 
     return config

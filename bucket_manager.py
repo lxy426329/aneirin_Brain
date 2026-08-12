@@ -94,9 +94,26 @@ class BucketManager:
         self.milestone_dir = os.path.join(self.base_dir, "milestone")
         os.makedirs(self.milestone_dir, exist_ok=True)
         # --- Voice layer (说话习惯/称呼/相处方式): always injected by breath(), no scoring/decay ---
-        # --- voice 层：说话习惯、称呼、相处方式；breath() 每次强制注入，不走评分、不走衰减 ---
+        # --- voice 层：说话习惯、称呼、相处方式；按需检索，不走评分、不走衰减 ---
         self.voice_dir = os.path.join(self.base_dir, "voice")
         os.makedirs(self.voice_dir, exist_ok=True)
+        # --- Boundary layer (认知共识/逻辑底线/原则): activated on severe cognitive distortion ---
+        # --- boundary 层：双方确立的认知共识、逻辑底线与原则；消极言论/认知偏差时高优先级激活，永不衰减 ---
+        self.boundary_dir = os.path.join(self.base_dir, "boundary")
+        os.makedirs(self.boundary_dir, exist_ok=True)
+        # --- Faded memory (模糊印象标签): decayed dynamic memories compressed to light tags ---
+        # --- faded 层：久远普通记忆衰减后降维为轻量模糊印象标签，不物理删除 ---
+        self.faded_dir = os.path.join(self.base_dir, "faded")
+        os.makedirs(self.faded_dir, exist_ok=True)
+        # --- Ephemeral layer (短期绝密暂存区): 24h half-life vent-only content, evaporated in nightly dream() ---
+        # --- ephemeral 层：半衰期 24 小时的临时吐槽暂存区；未被再次引用的内容在 nightly dream() 中自然蒸发 ---
+        self.ephemeral_dir = os.path.join(self.base_dir, "ephemeral")
+        os.makedirs(self.ephemeral_dir, exist_ok=True)
+        # --- Dream sandbox (临时梦境沙盒): sleep-time intermediate associations & drafts ONLY live here,
+        # --- never as permanent memory; physically cleared at day-end regardless of approval outcome.
+        # --- 梦境沙盒：睡眠做梦的中间联想与草稿只允许写入临时文件，绝不直接落库；日终物理清空 ---
+        self.temp_dreams_dir = os.path.join(self.base_dir, "temp_dreams")
+        os.makedirs(self.temp_dreams_dir, exist_ok=True)
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 30)
         self.max_results = config.get("matching", {}).get("max_results", 5)
 
@@ -944,9 +961,18 @@ class BucketManager:
             # milestone：高情绪浓度重要时刻（纪念日/重要事件），永不衰减，检索与 permanent 分离。
             type_dir = self.milestone_dir
         elif bucket_type == "voice":
-            # Voice: speech habits / nicknames / interaction style, always injected by breath().
-            # voice：说话习惯、称呼、相处方式，breath() 强制注入，不走评分/衰减。
+            # Voice: speech habits / nicknames / interaction style, retrieved on demand.
+            # voice：说话习惯、称呼、相处方式；按需检索，不走评分/衰减。
             type_dir = self.voice_dir
+        elif bucket_type == "boundary":
+            # Boundary: cognitive consensus / logical bottom lines / principles, never decayed,
+            # activated at high priority when severe cognitive distortion is detected.
+            # boundary：认知共识、逻辑底线与原则；永不衰减，检测到认知偏差时高优先级激活。
+            type_dir = self.boundary_dir
+        elif bucket_type == "ephemeral":
+            # Ephemeral: short-term vent-only stash with a 24h half-life.
+            # ephemeral：短期绝密暂存区，半衰期 24 小时；未被再次引用的纯发泄内容在 dream() 中自然蒸发。
+            type_dir = self.ephemeral_dir
         elif bucket_type == "pattern":
             # Ring layer (year-ring experiences) lives in ring/ dir.
             # ring 层（年轮经验）存放于 ring/ 目录。
@@ -971,12 +997,10 @@ class BucketManager:
             filename = f"{bucket_id}.md"
         file_path = safe_path(target_dir, filename)
 
-        # --- Thread-safe file write ---
-        # --- 线程安全的文件写入 ---
+        # --- Thread-safe atomic file write / 线程安全的原子文件写入 ---
         with _file_lock:
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(post))
+                self._atomic_write(file_path, frontmatter.dumps(post))
             except OSError as e:
                 logger.error(f"Failed to write bucket file / 写入桶文件失败: {file_path}: {e}")
                 raise
@@ -1024,6 +1048,35 @@ class BucketManager:
             os.rename(file_path, new_path)
             logger.info(f"Moved bucket / 移动记忆桶: {filename} → {target_dir}/")
         return new_path
+
+    # ---------------------------------------------------------
+    # Atomic file write / 原子化文件写入
+    # 所有写桶/改桶操作统一走这里：先写同目录 .tmp 临时文件，
+    # 再 os.replace() 原子替换，防止管家后台扫描与前台实时写入
+    # 并发产生读写冲突或半截坏文件。
+    # ---------------------------------------------------------
+    @staticmethod
+    def _atomic_write(file_path: str, content: str) -> None:
+        """
+        Atomic write: dump content to a .tmp file in the same directory,
+        then os.replace() it onto the target path.
+        原子写入：将内容先写入同目录 .tmp 临时文件，再 os.replace 原子替换目标文件。
+        中途失败不会留下半截目标文件；残留临时文件会被清理。
+        """
+        directory = os.path.dirname(file_path) or "."
+        tmp_path = os.path.join(directory, f".{os.path.basename(file_path)}.{os.getpid()}.tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            # --- Atomic replace: readers see either the old file or the new one ---
+            # --- 原子替换：任何读者看到的要么是旧文件、要么是新文件，绝不可能是半截文件 ---
+            os.replace(tmp_path, file_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     # ---------------------------------------------------------
     # Update bucket
@@ -1106,7 +1159,7 @@ class BucketManager:
             if "model_valence" in kwargs:
                 post["model_valence"] = max(0.0, min(1.0, safe_float(kwargs["model_valence"], 0.5)))
             
-            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "resolved_reason"):
+            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports"):
                 if key in kwargs:
                     post[key] = kwargs[key]
 
@@ -1119,8 +1172,7 @@ class BucketManager:
             post["last_active"] = now_iso()
 
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(post))
+                self._atomic_write(file_path, frontmatter.dumps(post))
             except OSError as e:
                 logger.error(f"Failed to write bucket update / 写入桶更新失败: {file_path}: {e}")
                 return False
@@ -1133,8 +1185,7 @@ class BucketManager:
             domain = post.get("domain", ["未分类"])
             if kwargs.get("pinned") and post.get("type") != "permanent":
                 post["type"] = "permanent"
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(frontmatter.dumps(post))
+                self._atomic_write(file_path, frontmatter.dumps(post))
                 self._move_bucket(file_path, self.permanent_dir, domain)
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
@@ -1454,8 +1505,7 @@ class BucketManager:
         post["importance"] = max(1, min(10, round(average)))
         
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            self._atomic_write(file_path, frontmatter.dumps(post))
         except OSError as e:
             logger.error(f"Failed to update importance details: {e}")
             return False
@@ -1566,8 +1616,7 @@ class BucketManager:
                     "bucket_id": bucket_id,
                 }
                 meta_path = os.path.join(trash_dir, os.path.splitext(trash_filename)[0] + ".json")
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, ensure_ascii=False, indent=2)
+                self._atomic_write(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
             except Exception as e:
                 logger.error(f"Failed to delete bucket file / 删除桶文件失败: {file_path}: {e}")
                 return False
@@ -1959,14 +2008,14 @@ class BucketManager:
         if mask_tasks:
             all_buckets = self._mask_task_buckets(all_buckets)
 
-        # --- Layer 0: exclude superseded patterns ---
-        # --- 第0层：排除已被替代的模式 ---
-        # Voice buckets are excluded too: always injected by breath(), avoid duplicates.
-        # voice 桶同样排除：由 breath() 强制注入，避免重复。
+        # --- Layer 0: exclude superseded / expired buckets ---
+        # --- 第0层：排除已被取代（版本控制 status=superseded / superseded_by）的失效旧桶 ---
+        # Voice buckets are retrievable on demand (no longer force-injected).
+        # voice 桶可被按需检索（已取消开局强制注入）。
         all_buckets = [
             b for b in all_buckets
-            if not (b["metadata"].get("type") == "pattern" and b["metadata"].get("superseded_by") is not None)
-            and b["metadata"].get("type") != "voice"
+            if b["metadata"].get("superseded_by") is None
+            and b["metadata"].get("status") != "superseded"
         ]
 
         # --- Layer 1: domain pre-filter (fast scope reduction) ---
@@ -2073,6 +2122,12 @@ class BucketManager:
                     + topic_score * w_topic
                     + time_score * w_time
                 )
+
+                # --- Topic-relevance priority: low Topic/Vector match must not be
+                # --- hard-pushed to the top by high Priority weight ---
+                # --- 主题相关度优先：匹配度极低时，高 Priority 不能硬性推送 Top ---
+                if topic_score < 0.05 and vector_similarity < 0.1:
+                    raw_score *= 0.2
                 
                 # Normalize to [0, 1] range
                 # 归一化到 [0, 1] 区间
@@ -2583,7 +2638,7 @@ class BucketManager:
         buckets = []
 
         dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir, self.identity_dir, self.pattern_dir,
-                self.milestone_dir, self.voice_dir]
+                self.milestone_dir, self.voice_dir, self.boundary_dir, self.ephemeral_dir]
         if include_archive:
             dirs.append(self.archive_dir)
 
@@ -2607,6 +2662,21 @@ class BucketManager:
     def _invalidate_cache(self):
         """Invalidate the buckets cache when data changes."""
         self._cache_timestamp = 0
+
+    def invalidate_index(self):
+        """
+        Invalidate both the bucket file cache and the in-memory BM25 index.
+        Called by the housekeeper after bulk mutations (superseded / deleted /
+        purged) so retrieval reflects the on-disk state immediately.
+        失效内存索引（桶列表缓存 + BM25 检索索引）：
+        管家在批量变更（superseded 标记/删除/清空）后调用，确保检索不查空。
+        """
+        self._invalidate_cache()
+        if self.hybrid_search is not None:
+            try:
+                self.hybrid_search.invalidate_index()
+            except Exception as e:
+                logger.warning(f"Failed to invalidate hybrid index / 混合索引失效失败: {e}")
 
     async def find_by_domain(self, domain: str, include_archive: bool = False) -> list[dict]:
         """
@@ -2644,6 +2714,9 @@ class BucketManager:
             "feel_count": 0,
             "milestone_count": 0,
             "voice_count": 0,
+            "boundary_count": 0,
+            "faded_count": 0,
+            "ephemeral_count": 0,
             "total_size_kb": 0.0,
             "domains": {},
         }
@@ -2655,6 +2728,9 @@ class BucketManager:
             (self.feel_dir, "feel_count"),
             (self.milestone_dir, "milestone_count"),
             (self.voice_dir, "voice_count"),
+            (self.boundary_dir, "boundary_count"),
+            (self.faded_dir, "faded_count"),
+            (self.ephemeral_dir, "ephemeral_count"),
         ]:
             if not os.path.exists(subdir):
                 continue
@@ -2721,6 +2797,212 @@ class BucketManager:
         return True
 
     # ---------------------------------------------------------
+    # Faded memory (模糊印象标签)
+    # 久远普通记忆衰减后不物理删除，降维压缩为轻量级模糊印象标签，
+    # 供主 AI 表达自然的沧桑感与模糊回忆。
+    # ---------------------------------------------------------
+    async def create_faded_memory(
+        self,
+        original_bucket_id: str,
+        faded_label: str,
+        original_type: str = "dynamic",
+        decay_score: float = 0.0,
+    ) -> Optional[str]:
+        """
+        Compress a decayed bucket into a lightweight faded-memory tag.
+        将衰减记忆降维压缩为轻量模糊印象标签。
+
+        Args:
+            original_bucket_id: 原记忆桶 ID
+            faded_label: 模糊印象标签（一两句话，保留情绪基调与模糊事实）
+            original_type: 原桶类型（默认 dynamic）
+            decay_score: 触发衰减时的得分
+
+        Returns:
+            faded bucket ID，或失败时返回 None
+        """
+        faded_id = generate_bucket_id()
+        now = now_iso()
+        metadata = {
+            "id": faded_id,
+            "name": f"模糊印象: {faded_label[:24]}",
+            "type": "faded_memory",
+            "original_id": original_bucket_id,
+            "original_type": original_type,
+            "decay_score": decay_score,
+            "faded_at": now,
+            "summary": faded_label,
+            "tags": [],
+            "created": now,
+            "last_active": now,
+        }
+        post = frontmatter.Post(faded_label)
+        for k, v in metadata.items():
+            post[k] = v
+
+        file_path = safe_path(self.faded_dir, f"{faded_id}.md")
+        with _file_lock:
+            try:
+                self._atomic_write(file_path, frontmatter.dumps(post))
+            except Exception as e:
+                logger.warning(f"Create faded memory failed / 模糊印象写入失败: {e}")
+                return None
+        self._invalidate_cache()
+        logger.info(f"Faded memory created / 生成模糊印象: {faded_id} ← {original_bucket_id}")
+        return faded_id
+
+    async def list_faded_memories(self, limit: int = 5) -> list[dict]:
+        """
+        List faded-memory tags (lightweight blurred impressions).
+        列出模糊印象标签（轻量模糊回忆）。
+        """
+        if not os.path.isdir(self.faded_dir):
+            return []
+        items = []
+        try:
+            for fname in os.listdir(self.faded_dir):
+                if not fname.endswith(".md"):
+                    continue
+                fpath = os.path.join(self.faded_dir, fname)
+                try:
+                    post = frontmatter.load(fpath)
+                except Exception:
+                    continue
+                meta = dict(post.metadata)
+                items.append({
+                    "id": meta.get("id") or fname[:-3],
+                    "name": meta.get("name", ""),
+                    "label": str(post.content or "").strip(),
+                    "original_id": meta.get("original_id", ""),
+                    "original_type": meta.get("original_type", "dynamic"),
+                    "faded_at": meta.get("faded_at", ""),
+                    "decay_score": meta.get("decay_score", 0.0),
+                })
+        except Exception as e:
+            logger.warning(f"List faded memories failed / 列出模糊印象失败: {e}")
+        items.sort(key=lambda x: x.get("faded_at", ""), reverse=True)
+        return items[:max(1, limit)]
+
+    async def supersede_bucket(self, old_id: str, new_id: str, reason: str = "") -> bool:
+        """Mark an old bucket as superseded, pointing to the new bucket ID.
+        When facts change or habits are revised, the housekeeper lands the new
+        bucket and annotates the old one with status=superseded → new bucket ID;
+        superseded buckets are auto-masked in search/retrieval.
+        记忆版本控制：事实更替/习惯变更时，管家落库新桶的同时把旧桶标注
+        status=superseded + superseded_by=new_id；检索时自动屏蔽失效旧桶。"""
+        if not old_id or not new_id or old_id == new_id:
+            return False
+        return await self.update(
+            old_id,
+            status="superseded",
+            superseded_by=new_id,
+            superseded_at=now_iso(),
+            resolved=True,
+            resolved_reason=reason or "superseded",
+        )
+
+    async def purge_expired_ephemeral(self, half_life_hours: int = 24) -> int:
+        """Evaporate ephemeral buckets not re-referenced within the half-life window.
+        Called by nightly dream(): vent-only content older than the half-life AND not
+        re-accessed (retrieval refreshes last_accessed) is softly deleted to .trash/.
+        ephemeral 半衰期蒸发：dream() 夜间调用；超过半衰期且未被再次引用的
+        纯发泄内容自然蒸发（软删除移入 .trash/，并同步清理向量）。"""
+        if not os.path.isdir(self.ephemeral_dir):
+            return 0
+        all_buckets = await self.list_all(include_archive=False)
+        now = datetime.now(timezone.utc)
+        cutoff = half_life_hours * 3600
+        expired_ids = []
+        for b in all_buckets:
+            meta = b.get("metadata", {})
+            if meta.get("type") != "ephemeral":
+                continue
+            ref_str = str(meta.get("last_accessed") or meta.get("created") or "")
+            try:
+                ref_dt = datetime.fromisoformat(ref_str)
+                if ref_dt.tzinfo is None:
+                    ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                ref_dt = now
+            if (now - ref_dt).total_seconds() > cutoff:
+                expired_ids.append(b["id"])
+        evaporated = 0
+        for bid in expired_ids:
+            if await self.delete(bid):
+                # --- Sync-clean vector store / 同步清理向量库 ---
+                if self.embedding_engine is not None:
+                    try:
+                        self.embedding_engine.delete_embedding(bid)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete ephemeral embedding / ephemeral 向量清理失败: {bid}: {e}")
+                evaporated += 1
+                logger.info(f"Ephemeral bucket evaporated / ephemeral 暂存区蒸发: {bid}")
+        if evaporated:
+            self._invalidate_cache()
+        return evaporated
+
+    # ---------------------------------------------------------
+    # Dream sandbox (临时梦境沙盒)
+    # 睡眠做梦的中间联想与草稿只允许写到这里，绝不作为永久记忆落库；
+    # 每日晚间做梦整理完毕、主 AI 审阅后，日终必须彻底物理清空，避免垃圾梦境重复堆积。
+    # ---------------------------------------------------------
+    async def save_dream_sandbox(self, date_str: str, payload: dict) -> str:
+        """Write today's dream intermediate drafts to the temp sandbox.
+
+        将今日梦境中间联想/草稿写入临时沙盒文件（temp_dreams/<date>.json）。
+        绝不直接创建永久记忆桶——落库与否由主 AI 审阅后决定。
+        """
+        try:
+            os.makedirs(self.temp_dreams_dir, exist_ok=True)
+            file_path = os.path.join(self.temp_dreams_dir, f"{date_str}.json")
+            self._atomic_write(file_path, json.dumps(payload, ensure_ascii=False, indent=2))
+            logger.info(f"Dream sandbox written / 梦境沙盒已写入: {file_path}")
+            return file_path
+        except OSError as e:
+            logger.warning(f"Failed to write dream sandbox / 梦境沙盒写入失败: {e}")
+            return ""
+
+    async def load_dream_sandbox(self, date_str: str) -> dict:
+        """Read a sandbox file (used to restore yesterday's drafts if needed)."""
+        file_path = os.path.join(self.temp_dreams_dir, f"{date_str}.json")
+        if not os.path.exists(file_path):
+            return {}
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load dream sandbox / 梦境沙盒读取失败: {e}")
+            return {}
+
+    async def purge_dream_sandbox(self, keep_today: bool = True) -> int:
+        """Physically clear dream sandbox files (garbage dreams must not accumulate).
+
+        物理清空梦境沙盒文件：保留今日（若有），其余一律删除。
+        在日终整理（daily_review / run_housekeeper）与每次做梦开始时调用。
+        """
+        if not os.path.isdir(self.temp_dreams_dir):
+            return 0
+        today = now_iso()[:10]
+        removed = 0
+        try:
+            for filename in os.listdir(self.temp_dreams_dir):
+                if not filename.endswith(".json"):
+                    continue
+                if keep_today and filename == f"{today}.json":
+                    continue
+                try:
+                    os.remove(os.path.join(self.temp_dreams_dir, filename))
+                    removed += 1
+                except OSError as e:
+                    logger.warning(f"Failed to purge dream sandbox / 沙盒清理失败 {filename}: {e}")
+        except OSError as e:
+            logger.warning(f"Dream sandbox list failed / 沙盒目录读取失败: {e}")
+        if removed:
+            logger.info(f"Dream sandbox purged / 梦境沙盒已物理清空 {removed} 个文件")
+        return removed
+
+    # ---------------------------------------------------------
     # Internal: find bucket file across all three directories
     # 内部：在三个目录中查找桶文件
     # ---------------------------------------------------------
@@ -2732,7 +3014,7 @@ class BucketManager:
         """
         if not bucket_id:
             return None
-        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.identity_dir, self.pattern_dir, self.milestone_dir, self.voice_dir]:
+        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.identity_dir, self.pattern_dir, self.milestone_dir, self.voice_dir, self.boundary_dir, self.ephemeral_dir]:
             if not os.path.exists(dir_path):
                 continue
             for root, _, files in os.walk(dir_path):
@@ -2767,6 +3049,14 @@ class BucketManager:
                 "content": post.content,
                 "path": file_path,
             }
+        except json.JSONDecodeError as e:
+            # --- Corrupted payload (rare, e.g. half-written file from a crash): ---
+            # --- skip this bucket and never crash the system ---
+            # --- 极小概率读到损坏文件：跳过该桶并记录 warning，绝不引发系统崩溃 ---
+            logger.warning(
+                f"Skipping corrupted bucket file / 跳过损坏桶文件: {file_path}: {e}"
+            )
+            return None
         except Exception as e:
             logger.warning(
                 f"Failed to load bucket file / 加载桶文件失败: {file_path}: {e}"

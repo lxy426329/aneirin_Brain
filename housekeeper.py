@@ -32,7 +32,7 @@ from journal_manager import JournalManager
 
 # Safe conversion helpers / 安全类型转换工具
 try:
-    from utils import safe_int, safe_float
+    from utils import safe_int, safe_float, as_list
 except ImportError:
     def safe_int(value, default=0):
         try:
@@ -45,6 +45,15 @@ except ImportError:
             return float(value) if value is not None else default
         except (ValueError, TypeError):
             return default
+
+    def as_list(value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return list(value)
+        if isinstance(value, str):
+            return [v.strip() for v in value.split(",") if v.strip()]
+        return [value]
 
 logger = logging.getLogger("ombre_brain.housekeeper")
 
@@ -360,12 +369,31 @@ class Housekeeper:
         # auto_journal_draft：旧管线是否自动写日记草稿。默认关闭 ——
         #   管家看不到未落库的对话全文，今日总结由主 AI 依据对话写出。
         self.auto_journal_draft = bool(hk_conf.get("auto_journal_draft", False))
+        # cleanup_interval_days: full-scan interval. Every N days the housekeeper
+        #   runs a global sweep (deep decay → faded_memory; ring extraction from
+        #   recent half-month frequency). Default 15.
+        # cleanup_interval_days：周期性全局大扫除间隔天数，默认 15 天一次。
+        self.cleanup_interval_days = max(1, int(safe_int(hk_conf.get("cleanup_interval_days"), 15) or 15))
+        # cleanup_max_conflicts: hard cap for conflict proposals per single scan.
+        # cleanup_max_conflicts：单次扫描产出的冲突提案总量强制上限（防假警报刷屏）。
+        self.cleanup_max_conflicts = max(1, int(safe_int(hk_conf.get("cleanup_max_conflicts"), 5) or 5))
+        # incremental_match_top_k: how many top historical buckets to pull per
+        #   new memory during nightly incremental dream (no full scan).
+        # incremental_match_top_k：增量做梦时每个新记忆拉取的旧桶比对上限（禁止全量扫描）。
+        self.incremental_match_top_k = max(1, min(5, int(safe_int(hk_conf.get("incremental_match_top_k"), 5) or 5)))
+        # conflict_confidence_threshold: only conflicts above this confidence
+        #   (0.0~1.0) may generate proposals. Default 0.85.
+        # conflict_confidence_threshold：仅高于该置信度的冲突才允许生成提案，默认 0.85。
+        self.conflict_confidence_threshold = max(0.0, min(1.0, float(
+            safe_float(hk_conf.get("conflict_confidence_threshold"), 0.85) or 0.85
+        )))
 
         self._task: asyncio.Task | None = None
         self._running = False
         self._start_lock = asyncio.Lock()  # Prevent concurrent start races / 防并发启动竞态
         self._last_daily_run = None
         self._last_weekly_run = None
+        self._last_full_cleanup = None  # 周期大扫除上次执行时间
         
         self._load_state()
         
@@ -398,8 +426,19 @@ class Housekeeper:
                             self._last_weekly_run = self._last_weekly_run.replace(tzinfo=timezone.utc)
                     except (ValueError, TypeError):
                         self._last_weekly_run = None
-                
-                logger.info(f"Loaded housekeeper state: daily={self._last_daily_run}, weekly={self._last_weekly_run}")
+
+                if state.get("last_full_cleanup"):
+                    try:
+                        self._last_full_cleanup = datetime.fromisoformat(state["last_full_cleanup"])
+                        if self._last_full_cleanup.tzinfo is None:
+                            self._last_full_cleanup = self._last_full_cleanup.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        self._last_full_cleanup = None
+
+                logger.info(
+                    f"Loaded housekeeper state: daily={self._last_daily_run}, "
+                    f"weekly={self._last_weekly_run}, full_cleanup={self._last_full_cleanup}"
+                )
             except Exception as e:
                 logger.error(f"Failed to load housekeeper state: {e}")
     
@@ -409,6 +448,7 @@ class Housekeeper:
             state = {
                 "last_daily_run": self._last_daily_run.isoformat() if self._last_daily_run else None,
                 "last_weekly_run": self._last_weekly_run.isoformat() if self._last_weekly_run else None,
+                "last_full_cleanup": self._last_full_cleanup.isoformat() if self._last_full_cleanup else None,
                 "saved_at": datetime.now(timezone.utc).isoformat()
             }
             with open(self._state_file, "w", encoding="utf-8") as f:
@@ -732,7 +772,7 @@ class Housekeeper:
         for b in all_buckets:
             meta = b["metadata"]
             btype = meta.get("type")
-            if btype in ("permanent", "feel", "identity", "pattern", "experience", "milestone", "voice"):
+            if btype in ("permanent", "feel", "identity", "pattern", "experience", "milestone", "voice", "boundary", "ephemeral"):
                 continue
             if meta.get("pinned") or meta.get("protected"):
                 continue
@@ -790,7 +830,7 @@ class Housekeeper:
         # Only compare regular memory buckets / 仅比较常规记忆桶
         pool = [
             b for b in all_buckets
-            if b.get("metadata", {}).get("type") not in ("permanent", "feel", "identity", "pattern", "experience", "milestone", "voice")
+            if b.get("metadata", {}).get("type") not in ("permanent", "feel", "identity", "pattern", "experience", "milestone", "voice", "boundary", "ephemeral")
         ]
         # Bounded O(n²): cap the pool by creation order / 限制比较规模，按创建时间排序取前 300
         pool.sort(key=lambda b: b.get("metadata", {}).get("created", ""))
@@ -864,6 +904,9 @@ class Housekeeper:
         seen = set()
         for tb in today_buckets:
             for hb in history_buckets:
+                # --- 主题隔离优先：不同主题域禁止比对 ---
+                if self._domain_isolated(tb["metadata"], hb["metadata"]):
+                    continue
                 r = self._detect_conflict(tb["content"], hb["content"])
                 if not r:
                     continue
@@ -880,12 +923,16 @@ class Housekeeper:
                     "default_suggestion": "keep",
                     "detail": {
                         "conflict_type": r["type"],
+                        "confidence_score": r.get("confidence_score", 0.0),
                         "new_bucket_id": tb["id"],
                         "old_bucket_id": hb["id"],
                         "old_content_preview": hb["content"][:120],
                         "new_content_preview": tb["content"][:120],
                     },
                 })
+                # --- 单次扫描产出上限：超过 cleanup_max_conflicts 立即停止 ---
+                if len(candidates) >= self.cleanup_max_conflicts:
+                    return candidates
         return candidates
 
     # ---------------------------------------------------------
@@ -1401,8 +1448,14 @@ class Housekeeper:
         
         for today_bucket in today_buckets:
             today_content = today_bucket["content"]
+            today_meta = today_bucket["metadata"]
             
             for history_bucket in history_buckets:
+                # --- 主题隔离优先：不同主题域的记忆桶绝对禁止进行矛盾比对 ---
+                # --- Topic-first filtering: isolated domains must never be compared ---
+                if self._domain_isolated(today_meta, history_bucket["metadata"]):
+                    continue
+                
                 history_content = history_bucket["content"]
                 
                 conflict_result = self._detect_conflict(today_content, history_content)
@@ -1421,6 +1474,7 @@ class Housekeeper:
                             "old_content": history_content[:200],
                             "conflict_type": conflict_result["type"],
                             "conflict_reason": conflict_result["reason"],
+                            "confidence_score": conflict_result.get("confidence_score", 0.0),
                             "new_metadata": {
                                 "created": today_bucket["metadata"].get("created", ""),
                                 "name": today_bucket["metadata"].get("name", ""),
@@ -1433,83 +1487,130 @@ class Housekeeper:
                     )
                     
                     logger.info(f"Conflict detected: {conflict_result['reason']}")
+                    # --- 单次扫描产出上限：超过 cleanup_max_conflicts 立即停止 ---
+                    # --- Hard cap: stop as soon as the per-scan proposal limit is reached ---
+                    if conflicts_found >= self.cleanup_max_conflicts:
+                        return {"conflicts_found": conflicts_found, "capped": True}
         
         return {"conflicts_found": conflicts_found}
     
-    def _detect_conflict(self, new_content: str, old_content: str) -> dict | None:
+    # ---------------------------------------------------------
+    # Conflict detection: topic isolation + structured propositions
+    # 冲突检测：主题隔离优先 + 语义主旨比对（命题化）+ 置信度门槛
+    # ---------------------------------------------------------
+    def _extract_propositions(self, text: str) -> list:
         """
-        Detect semantic conflicts between two memory contents.
-        Returns conflict info dict or None if no conflict.
+        Extract structured propositions (subject + action + object + polarity).
+        Rule-based lightweight parser — no LLM, no keyword-only regex matching.
+        轻量规则式命题抽取：按标点切句 → 定位主语/动作/对象 → 判断否定极性。
+        用于语义主旨比对，替代旧的“要/不要”字面正则粗暴匹配。
         """
         import re
-        
-        conflict_patterns = [
-            {
-                "type": "preference",
-                "patterns": [
-                    (r'(不喜欢|讨厌|不想|不要|不爱)', r'(喜欢|爱|想|要)'),
-                    (r'(不吃|不喝|不用)', r'(吃|喝|用)'),
-                    (r'(不买|不想要)', r'(买|想要)'),
-                    (r'(太甜|太咸|太辣|太苦)', r'(全糖|很甜|很甜)'),
-                    (r'(清淡|少油|少盐|无糖)', r'(重口味|油腻|全糖|很甜)'),
-                ],
-                "reason_template": "偏好冲突：之前说过'{old_match}'，但今天说'{new_match}'",
-            },
-            {
-                "type": "health",
-                "patterns": [
-                    (r'(病好了|康复了|不痛了|没事了)', r'(生病|不舒服|痛|难受)'),
-                    (r'(痊愈|恢复正常)', r'(发烧|感冒|咳嗽|胃痛)'),
-                    (r'(已经好了|不难受了)', r'(痛经|头痛|头晕)'),
-                ],
-                "reason_template": "健康状态冲突：之前记录'{old_match}'，但今天记录'{new_match}'",
-            },
-            {
-                "type": "status",
-                "patterns": [
-                    (r'(不在|走了|离开了)', r'(在|来了|到达)'),
-                    (r'(完成了|做完了|结束了)', r'(开始|正在做|进行中)'),
-                    (r'(放弃|取消|不做了)', r'(计划|打算|准备)'),
-                ],
-                "reason_template": "状态冲突：之前记录'{old_match}'，但今天记录'{new_match}'",
-            },
-            {
-                "type": "fact",
-                "patterns": [
-                    (r'(没有|从未|从没)', r'(有|曾经|以前)'),
-                    (r'(不是|并非)', r'(是|确实是)'),
-                    (r'(不知道|不清楚)', r'(知道|清楚|了解)'),
-                ],
-                "reason_template": "事实冲突：之前说'{old_match}'，但今天说'{new_match}'",
-            },
-        ]
-        
-        for conflict_type_info in conflict_patterns:
-            for old_pattern, new_pattern in conflict_type_info["patterns"]:
-                old_match = re.search(old_pattern, old_content)
-                new_match = re.search(new_pattern, new_content)
-                
-                if old_match and new_match:
+        _NEG = re.compile(
+            r'(不|没|无|别|勿|未|从不|从未|不再|从没|尚未|禁止|拒绝|不要|不想|不愿意|没法|无法|不能|不会|还没)'
+        )
+        _SENT = re.compile(r'[。！？!?；;\n]+')
+        # 主语候选：人称代词与常用称呼（voice/identity 常用实体）
+        _SUBJ = re.compile(
+            r'^(我|你|我们|咱们|您|他|她|它|他们|她们|它们|TA|ta|Ta|顾尘|祁桉|宝宝|爸妈|妈妈|爸爸|朋友|客户|同事|老板|老婆|老公)'
+        )
+        # 动作动词候选：常见谓词（中文无空格分词，采用谓词词典最长前缀命中）
+        _VERB = re.compile(
+            r'(喜欢|讨厌|希望|期望|愿意|坚持|放弃|开始|结束|完成|安排|决定|同意|反对|答应|拒绝|允许|禁止|打算|计划|'
+            r'需要|必须|应该|可以|不能|想吃|不想吃|吃|喝|用|买|做|打|玩|睡|去|来|说|写|看|听|学|带|穿|戴|住|开|关|改|删|存)'
+        )
+        props = []
+        for sent in _SENT.split(text):
+            sent = sent.strip().strip('“”"\'‘’（）()…、').strip()
+            if not sent or len(sent) < 3:
+                continue
+            negated = bool(_NEG.search(sent))
+            subj_m = _SUBJ.search(sent)
+            subject = subj_m.group(0) if subj_m else sent[:2]
+            verb_m = _VERB.search(sent)
+            if verb_m:
+                verb = verb_m.group(0)
+                obj = sent[verb_m.end():][:40]
+            else:
+                verb = ""
+                obj = sent[:40]
+            props.append({
+                "subject": subject,
+                "verb": verb,
+                "object": obj.strip(),
+                "negated": negated,
+                "raw": sent[:80],
+            })
+        return props
+
+    def _propositions_conflict(self, props_new: list, props_old: list) -> dict | None:
+        """
+        Compare propositions between new and old content.
+        A conflict is reported only when the same subject+action core opposes in
+        polarity AND similarity lifts confidence above the threshold (> 0.85).
+        语义主旨比对：同一主语+动作的核心命题若极性相反且相似度足够，
+        计算 confidence_score；仅高于门槛才判为冲突。
+        """
+        def _ratio(a: str, b: str) -> float:
+            if not a or not b:
+                return 0.0
+            if HAS_RAPIDFUZZ:
+                return float(fuzz.ratio(a, b))
+            return 100.0 if a == b else 0.0
+
+        for pn in props_new:
+            for po in props_old:
+                # 同极性不构成矛盾 / Same polarity cannot contradict
+                if pn["negated"] == po["negated"]:
+                    continue
+                vratio = _ratio(pn["verb"], po["verb"])
+                # 动作不一致 → 非同一命题 / Different action → different proposition
+                if pn["verb"] and po["verb"] and vratio < 60:
+                    continue
+                sratio = _ratio(pn["subject"], po["subject"])
+                oratio = _ratio(pn["object"], po["object"])
+                # confidence = 极性对立基础分 + 动词/主语/对象相似度加权
+                confidence = 0.45 + 0.20 * (vratio / 100.0) + 0.15 * (sratio / 100.0) + 0.20 * (oratio / 100.0)
+                confidence = min(0.99, confidence)
+                if confidence > self.conflict_confidence_threshold:
                     return {
-                        "type": conflict_type_info["type"],
-                        "reason": conflict_type_info["reason_template"].format(
-                            old_match=old_match.group(0),
-                            new_match=new_match.group(0)
+                        "type": "proposition",
+                        "confidence_score": round(confidence, 2),
+                        "reason": (
+                            f"命题冲突：旧记录「{po['raw']}」与新记录「{pn['raw']}」"
+                            f"围绕同一动作「{pn['verb'] or po['verb']}」立场相反（置信 {confidence * 100:.0f}%）"
                         ),
                     }
-                
-                old_match_rev = re.search(old_pattern, new_content)
-                new_match_rev = re.search(new_pattern, old_content)
-                
-                if old_match_rev and new_match_rev:
-                    return {
-                        "type": conflict_type_info["type"],
-                        "reason": conflict_type_info["reason_template"].format(
-                            old_match=new_match_rev.group(0),
-                            new_match=old_match_rev.group(0)
-                        ),
-                    }
-        
+        return None
+
+    def _domain_isolated(self, meta_new: dict, meta_old: dict) -> bool:
+        """
+        Topic-first filtering: buckets belonging to different topic domains must
+        never be compared for contradictions. Returns True when the comparison
+        is FORBIDDEN (isolated topic domains).
+        主题隔离优先：属于不同主题域的记忆桶绝对禁止进行矛盾比对。
+        缺失主题域时保守放行（避免漏检），但域集合明确分离时禁止比对。
+        """
+        dom_new = {str(d).strip() for d in as_list(meta_new.get("domain")) if str(d).strip()}
+        dom_old = {str(d).strip() for d in as_list(meta_old.get("domain")) if str(d).strip()}
+        if not dom_new or not dom_old:
+            return False
+        return dom_new.isdisjoint(dom_old)
+
+    def _detect_conflict(self, new_content: str, old_content: str) -> dict | None:
+        """
+        Detect semantic conflicts via structured proposition matching.
+        Returns {"type", "reason", "confidence_score"} only when confidence
+        exceeds the threshold (default 0.85). No keyword/regex brute matching.
+        结构化命题比对判定冲突：仅当置信度 > 门槛（默认 0.85）才返回结果。
+        """
+        props_new = self._extract_propositions(new_content)
+        props_old = self._extract_propositions(old_content)
+        if not props_new or not props_old:
+            return None
+        result = self._propositions_conflict(props_new, props_old)
+        if result and result.get("confidence_score", 0.0) > self.conflict_confidence_threshold:
+            return result
         return None
 
     async def _daily_identity_detection(self) -> dict:
@@ -1647,6 +1748,352 @@ class Housekeeper:
             logger.info(f"Identity proposal created for: {person} (mentioned {count} times)")
 
         return {"identity_proposals_created": proposals_created}
+
+    # =========================================================
+    # Nightly incremental dream (每日增量做梦) — incremental scan only
+    # 增量扫描模式：只读当天 24h 新记忆，search() Top-K 精准比对，
+    # 禁止无脑载入全量数据库进行 Full Scan。
+    # =========================================================
+    async def daily_incremental_dream(self, date_str: str = "") -> dict:
+        """
+        Nightly incremental dream scan (runs at end-of-day / sleep time).
+        每日增量扫描模式（晚间做梦时运行）。
+
+        - Reads ONLY memories created within the last 24h (raw slices / dynamic).
+        - For each new memory, extracts core topic/vector keywords and calls
+          search() to pull top-K (incremental_match_top_k, 3~5) highly relevant
+          HISTORICAL old buckets — no full-database load & compare.
+        - Compares new vs old via structured-proposition conflict detection;
+          high-confidence conflicts go to the echo chamber (hard-capped).
+        - Intermediate associations/drafts are written ONLY to the dream sandbox
+          (temp_dreams/<date>.json), never persisted as permanent memory.
+        """
+        now = datetime.now(timezone.utc)
+        today = date_str or now.strftime("%Y-%m-%d")
+        since = now - timedelta(hours=24)
+
+        # --- 1) Enumerate recent memories (metadata-only, cheap) ---
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            logger.error(f"Incremental dream: list failed / 增量做梦列表失败: {e}")
+            return {"error": str(e)}
+
+        new_memories = []
+        for b in all_buckets:
+            meta = b["metadata"]
+            btype = meta.get("type", "dynamic")
+            if meta.get("pinned") or meta.get("protected"):
+                continue
+            # Raw slices / dynamic buckets only — skip curated layers.
+            # Note: list_all() normalizes type "dynamic" → "event".
+            # 仅处理新记忆（动态/原始切片）；list_all 会把 dynamic 归一化为 event。
+            if btype not in ("event", "dynamic", "raw_slice", "slice"):
+                continue
+            created_str = meta.get("created", "")
+            if not created_str:
+                continue
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created < since:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            new_memories.append(b)
+
+        if not new_memories:
+            return {
+                "date": today,
+                "new_memories": 0,
+                "topics": [],
+                "conflict_proposals": 0,
+                "sandbox_written": False,
+            }
+
+        # --- 2) Per new memory: search() top-K historical buckets & compare ---
+        sandbox_entries = []
+        conflict_proposals = 0
+        topics_found = set()
+        for nb in new_memories:
+            content = nb["content"] or ""
+            meta = nb["metadata"]
+            query = (meta.get("name") or "") + " " + content[:120]
+            try:
+                results = await self.bucket_mgr.search(
+                    query=query,
+                    limit=self.incremental_match_top_k,
+                    mask_tasks=True,
+                )
+            except Exception as e:
+                logger.warning(f"Incremental dream search failed: {e}")
+                results = []
+
+            # Keep only HISTORICAL old buckets (created before the 24h window)
+            old_candidates = []
+            for r in results:
+                if r.get("id") == nb["id"]:
+                    continue
+                rc = r.get("metadata", {}).get("created", "")
+                try:
+                    rcreated = datetime.fromisoformat(str(rc)) if rc else now
+                    if rcreated.tzinfo is None:
+                        rcreated = rcreated.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    rcreated = now
+                if rcreated >= since:
+                    continue
+                old_candidates.append(r)
+
+            for oc in old_candidates:
+                oc_meta = oc.get("metadata", {})
+                # --- 主题隔离优先：不同主题域禁止比对 ---
+                if self._domain_isolated(meta, oc_meta):
+                    continue
+                cr = self._detect_conflict(content, oc.get("content", ""))
+                if cr and conflict_proposals < self.cleanup_max_conflicts:
+                    conflict_proposals += 1
+                    await self.echo_chamber.add_pending_action(
+                        action_type="conflict",
+                        data={
+                            "new_bucket_id": nb["id"],
+                            "old_bucket_id": oc["id"],
+                            "new_memory_id": nb["id"],
+                            "old_memory_id": oc["id"],
+                            "new_content": content[:200],
+                            "old_content": (oc.get("content") or "")[:200],
+                            "conflict_type": cr.get("type", ""),
+                            "conflict_reason": cr.get("reason", ""),
+                            "confidence_score": cr.get("confidence_score", 0.0),
+                            "new_metadata": {
+                                "created": meta.get("created", ""),
+                                "name": meta.get("name", ""),
+                            },
+                            "old_metadata": {
+                                "created": oc_meta.get("created", ""),
+                                "name": oc_meta.get("name", ""),
+                            },
+                            "source": "daily_incremental_dream",
+                        },
+                    )
+                    logger.info(f"Incremental dream conflict: {cr.get('reason')}")
+
+            # --- Dream association note → sandbox ONLY (never permanent memory) ---
+            sandbox_entries.append({
+                "new_bucket_id": nb["id"],
+                "name": meta.get("name", nb["id"]),
+                "linked_old_buckets": [oc.get("id") for oc in old_candidates[:3]],
+            })
+            for d in as_list(meta.get("domain")):
+                if d and str(d).strip():
+                    topics_found.add(str(d).strip())
+
+        # --- 3) Write associations to dream sandbox (temp file only) ---
+        sandbox_payload = {
+            "date": today,
+            "created_at": now.isoformat(),
+            "new_memories": len(new_memories),
+            "topics": sorted(topics_found)[:20],
+            "conflict_proposals": conflict_proposals,
+            "entries": sandbox_entries,
+        }
+        written = ""
+        try:
+            written = await self.bucket_mgr.save_dream_sandbox(today, sandbox_payload)
+        except Exception as e:
+            logger.warning(f"Incremental dream sandbox write failed: {e}")
+
+        # --- 4) Sync in-memory index with disk (proposals may have mutated status) ---
+        # --- 内存索引热重载：本轮可能产生 superseded 标记/新提案，强制索引与硬盘一致 ---
+        try:
+            self.bucket_mgr.invalidate_index()
+        except Exception as e:
+            logger.warning(f"Incremental dream index reload failed: {e}")
+
+        return {
+            "date": today,
+            "new_memories": len(new_memories),
+            "topics": sorted(topics_found)[:20],
+            "conflict_proposals": conflict_proposals,
+            "sandbox_written": bool(written),
+        }
+
+    # =========================================================
+    # Periodic global cleanup (周期大扫除) — every cleanup_interval_days
+    # 仅每隔 cleanup_interval_days（默认 15 天）或收到显式指令时运行一次全量扫描：
+    #   1. 深度遗忘衰减：长期未激活的普通记忆压缩为 faded_memory
+    #   2. 近半月频次提炼：总结真正的 ring/（年轮认知桶）
+    # =========================================================
+    async def _should_run_full_cleanup(self, now: datetime | None = None) -> bool:
+        """Whether the periodic full cleanup is due (cleanup_interval_days)."""
+        now = now or datetime.now(timezone.utc)
+        if self._last_full_cleanup is None:
+            return False  # first run: skip auto-trigger to avoid surprises
+        return (now - self._last_full_cleanup).total_seconds() >= self.cleanup_interval_days * 86400
+
+    async def periodic_full_cleanup(self, force: bool = False) -> dict:
+        """
+        Periodic global cleanup (周期大扫除).
+        Runs a full scan every cleanup_interval_days (default 15) or when
+        explicitly instructed (force=True).
+
+        - Deep decay: long-inactive ordinary memories → faded_memory (lightweight
+          blurred impressions), marking the originals superseded.
+        - Ring extraction: distills real ring/ (年轮认知桶) from recent half-month
+          frequency; strictly separated from Voice (expression/habits) to avoid
+          semantically overlapping buckets.
+        """
+        now = datetime.now(timezone.utc)
+        if not force and not await self._should_run_full_cleanup(now):
+            return {"run": False, "reason": "not_due"}
+
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            logger.error(f"Full cleanup: list failed / 大扫除列表失败: {e}")
+            return {"run": False, "error": str(e)}
+
+        faded_created = 0
+        # --- 1) Deep decay: low-activity ordinary memories → faded_memory ---
+        for b in all_buckets:
+            meta = b["metadata"]
+            btype = meta.get("type", "dynamic")
+            if btype in (
+                "permanent", "feel", "identity", "ring", "voice", "boundary",
+                "milestone", "ephemeral", "faded_memory", "anchor",
+            ):
+                continue
+            if meta.get("pinned") or meta.get("protected"):
+                continue
+            if meta.get("superseded_by") or meta.get("status") == "superseded":
+                continue
+            importance = safe_int(meta.get("importance"), 5)
+            activation = safe_int(meta.get("activation_count"), 0)
+            if importance >= 6 or activation >= 3:
+                continue
+            last_str = meta.get("last_accessed", meta.get("created", ""))
+            try:
+                last = datetime.fromisoformat(str(last_str))
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                days_since = max(0, (now - last).days)
+            except (ValueError, TypeError):
+                days_since = 999
+            if days_since < 45:
+                continue
+            faded_label = (
+                f"记得很久以前有过一件关于「{meta.get('name', '')}」的事，"
+                f"具体细节已经模糊了。"
+            )
+            try:
+                fid = await self.bucket_mgr.create_faded_memory(
+                    original_bucket_id=b["id"],
+                    faded_label=faded_label,
+                    original_type=btype,
+                    decay_score=min(1.0, days_since * 0.01),
+                )
+                if fid:
+                    faded_created += 1
+                    # --- 版本控制：原桶标记为 superseded 并指向模糊印象桶 ---
+                    await self.bucket_mgr.update(
+                        b["id"], status="superseded", superseded_by=fid
+                    )
+            except Exception as e:
+                logger.warning(f"Full cleanup decay failed for {b['id']}: {e}")
+
+        # --- 2) Ring extraction: recent half-month frequency → ring bucket ---
+        ring_created = 0
+        try:
+            half_month = now - timedelta(days=15)
+            from collections import Counter
+            recent_pool = []
+            domain_counter = Counter()
+            for b in all_buckets:
+                meta = b["metadata"]
+                if meta.get("type") in (
+                    "permanent", "feel", "voice", "ring", "identity",
+                    "boundary", "milestone", "ephemeral", "faded_memory",
+                ):
+                    continue
+                created_str = meta.get("created", "")
+                if not created_str:
+                    continue
+                try:
+                    created = datetime.fromisoformat(str(created_str))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    if created < half_month:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+                recent_pool.append(b)
+                for d in as_list(meta.get("domain")):
+                    if d and str(d).strip():
+                        domain_counter[str(d).strip()] += 1
+
+            # Existing ring domains (avoid semantically overlapping rings)
+            existing_ring_domains = set()
+            try:
+                for r in await self.bucket_mgr.list_all(include_archive=False):
+                    if r["metadata"].get("type") == "ring":
+                        for d in as_list(r["metadata"].get("domain")):
+                            if d and str(d).strip():
+                                existing_ring_domains.add(str(d).strip())
+            except Exception:
+                pass
+
+            for domain, cnt in domain_counter.most_common():
+                if cnt < 5 or domain in existing_ring_domains:
+                    continue
+                domain_buckets = [
+                    b for b in recent_pool
+                    if domain in {str(d).strip() for d in as_list(b["metadata"].get("domain"))}
+                ]
+                combined = "\n".join((b["content"] or "")[:200] for b in domain_buckets[:8])
+                ring_content = (
+                    f"近半个月围绕「{domain}」共积累了 {cnt} 条相关记忆。"
+                    f"沉淀出的认知与原则：{combined[:300]}"
+                )
+                try:
+                    await self.bucket_mgr.create(
+                        content=ring_content,
+                        tags=[f"ring:{domain}"],
+                        importance=6,
+                        domain=[domain],
+                        name=f"年轮·{domain}",
+                        bucket_type="ring",
+                    )
+                    ring_created += 1
+                    logger.info(f"Ring bucket created for domain: {domain} ({cnt} memories)")
+                except Exception as e:
+                    logger.warning(f"Full cleanup ring creation failed for {domain}: {e}")
+        except Exception as e:
+            logger.warning(f"Full cleanup ring extraction failed: {e}")
+
+        # --- 3) Update state & physically clear stale dream sandbox files ---
+        self._last_full_cleanup = now
+        self._save_state()
+        try:
+            await self.bucket_mgr.purge_dream_sandbox(keep_today=True)
+        except Exception as e:
+            logger.warning(f"Full cleanup sandbox purge failed: {e}")
+
+        # --- 4) Sync in-memory index with disk: superseded/delete/purge above ---
+        # --- 内存索引热重载：本次大扫除产生了 superseded 标记、模糊印象与清空操作，
+        #     强制 BM25 索引与硬盘桶状态保持一致，避免主 AI 查空 ---
+        try:
+            self.bucket_mgr.invalidate_index()
+        except Exception as e:
+            logger.warning(f"Full cleanup index reload failed: {e}")
+
+        return {
+            "run": True,
+            "date": now.strftime("%Y-%m-%d"),
+            "faded_memories_created": faded_created,
+            "ring_buckets_created": ring_created,
+            "interval_days": self.cleanup_interval_days,
+        }
 
     async def _should_create_chain(self, topic: str) -> bool:
         """Check if a new chain should be created (topic mentioned across multiple days)."""
@@ -2327,8 +2774,8 @@ class Housekeeper:
                 new_id = action_data.get("new_memory_id") or action_data.get("new_bucket_id", "")
                 if old_id:
                     # --- Mark old memory resolved + superseded, completing the replacement ---
-                    # --- 将旧记忆标记为已解决并被新记忆取代，完成新旧替换 ---
-                    update_kwargs = {"resolved": True}
+                    # --- 将旧记忆标记为已解决并被新记忆取代，完成新旧替换（版本控制） ---
+                    update_kwargs = {"resolved": True, "status": "superseded"}
                     if new_id:
                         update_kwargs["superseded_by"] = new_id
                     ok = await self.bucket_mgr.update(old_id, **update_kwargs)
@@ -2431,8 +2878,21 @@ class Housekeeper:
         return True
     
     async def reject_action(self, action_id: str) -> bool:
-        """Reject a pending action."""
-        return await self.echo_chamber.update_action_status(action_id, "rejected")
+        """
+        Reject a pending action and physically remove the proposal file from the
+        echo chamber — unapproved proposals are cleared immediately, never kept.
+        拒绝提案：立即物理清空回音壁中的提案文件，未通过的提案不保留。
+        """
+        file_path = os.path.join(self.echo_chamber.pending_actions_dir, f"{action_id}.json")
+        if not os.path.exists(file_path):
+            return False
+        try:
+            os.remove(file_path)
+            logger.info(f"Rejected & removed pending action: {action_id}")
+            return True
+        except OSError as e:
+            logger.error(f"Failed to remove rejected action {action_id}: {e}")
+            return False
     
     def _generate_id(self) -> str:
         """Generate a unique ID."""

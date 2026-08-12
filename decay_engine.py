@@ -146,6 +146,16 @@ class DecayEngine:
         if metadata.get("type") == "voice":
             return 999.0
 
+        # --- Boundary buckets (cognitive consensus / bottom lines / principles): never decay ---
+        # --- boundary 桶（认知共识/逻辑底线/原则）：永不衰减 ---
+        if metadata.get("type") == "boundary":
+            return 999.0
+
+        # --- Ephemeral buckets (vent-only stash, 24h half-life): never decay here ---
+        # --- ephemeral 桶（临时吐槽暂存区，半衰期 24h）：不走普通衰减，由 nightly dream() 统一蒸发 ---
+        if metadata.get("type") == "ephemeral":
+            return 999.0
+
         # --- Feel buckets: never decay, fixed moderate score ---
         if metadata.get("type") == "feel":
             return 50.0
@@ -184,6 +194,11 @@ class DecayEngine:
             if metadata.get("superseded_by") is not None:
                 return 0.1
             return 999.0
+
+        # --- Superseded buckets (version control): low score → naturally archived ---
+        # --- 被取代的普通桶（版本控制）：低分 → 自然归档，配合检索屏蔽双保险 ---
+        if metadata.get("superseded_by") is not None or metadata.get("status") == "superseded":
+            return 0.1
 
         # --- Continuous base weight: 1.0 + emotion_arousal * 9.0 (maps 0.0~1.0 to 1~10) ---
         emotion_arousal = self._calc_emotion_arousal(metadata)
@@ -312,6 +327,7 @@ class DecayEngine:
         lowest_score = float("inf")
         ttl_deleted = 0
         cold_marked = 0
+        faded_count = 0
 
         for bucket in buckets:
             meta = bucket.get("metadata", {})
@@ -433,6 +449,50 @@ class DecayEngine:
             # --- Below threshold → archive (simulate forgetting) ---
             # --- 低于阈值 → 归档（模拟遗忘）---
             if score < self.threshold:
+                # --- Fading memory: compress ancient low-score dynamic memories into
+                # --- lightweight blurred impressions, never hard-delete the content ---
+                # --- 记忆模糊：久远低分普通记忆降维为模糊印象标签（不彻底物理删除，保留归档副本）---
+                try:
+                    if not meta.get("faded", False):
+                        last_active_str = meta.get("last_active", meta.get("created", ""))
+                        try:
+                            last_active = datetime.fromisoformat(str(last_active_str))
+                            if last_active.tzinfo is None:
+                                last_active = last_active.replace(tzinfo=timezone.utc)
+                            days_since = max(0.0, (datetime.now(timezone.utc) - last_active).total_seconds() / 86400)
+                        except (ValueError, TypeError):
+                            days_since = 999
+                        is_ancient = (
+                            meta.get("digested", False)
+                            or int(meta.get("decay_stage", 1)) >= 3
+                            or days_since >= 60
+                        )
+                        if is_ancient:
+                            faded_src = (
+                                meta.get("one_line_summary")
+                                or meta.get("dehydrated_summary")
+                                or bucket.get("content", "")
+                            )
+                            faded_label = "".join(str(faded_src).split())[:40] + "……"
+                            faded_id = await self.bucket_mgr.create_faded_memory(
+                                original_bucket_id=bucket["id"],
+                                faded_label=faded_label,
+                                original_type=meta.get("type", "dynamic"),
+                                decay_score=float(score),
+                            )
+                            if faded_id:
+                                faded_count += 1
+                                await self.bucket_mgr.update(bucket["id"], faded=True)
+                                logger.info(
+                                    f"Faded memory created / 记忆模糊化: "
+                                    f"{meta.get('name', bucket['id'])} → {faded_id}"
+                                )
+                except Exception as e:
+                    logger.warning(
+                        f"Fading memory failed for {bucket.get('id', '?')} / "
+                        f"记忆模糊失败: {e}"
+                    )
+
                 try:
                     success = await self.bucket_mgr.archive(bucket["id"])
                     if success:
@@ -483,6 +543,7 @@ class DecayEngine:
             "timelines_decayed": timelines_decayed,
             "ttl_deleted": ttl_deleted,
             "cold_marked": cold_marked,
+            "faded_count": faded_count,
             "lowest_score": lowest_score if checked > 0 else 0,
         }
         logger.info(f"Decay cycle complete / 衰减周期完成: {result}")

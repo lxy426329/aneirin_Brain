@@ -23,9 +23,22 @@ class HybridSearchEngine:
         self._bm25_index = None
         self._bm25_corpus = []
         self._bm25_bucket_ids = []
+        self._bm25_hash_key = None
         self._is_initialized = False
         
         self._lock = asyncio.Lock()
+
+    def invalidate_index(self) -> None:
+        """
+        Mark the in-memory BM25 index as dirty so the next search() rebuilds it.
+        Called after bucket storage mutations (superseded / deleted / purged) so
+        the in-memory index stays consistent with the on-disk bucket state.
+        将内存中的 BM25 索引标记为失效：下次检索时强制重建，
+        保证内存索引与硬盘存储桶状态实时一致，避免查空。
+        """
+        self._bm25_hash_key = None
+        self._bm25_index = None
+        logger.info("BM25 index invalidated / BM25 内存索引已标记失效，下次检索将重建")
     
     async def initialize(self):
         """Initialize BM25 index. No local model loading."""

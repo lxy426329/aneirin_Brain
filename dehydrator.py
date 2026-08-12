@@ -51,7 +51,7 @@ DEHYDRATE_PROMPT = """你是一个信息压缩专家。请将以下内容脱水�
 5. 去除冗余：去掉口水话、重复信息、语气词，但绝对不要丢失任何关键信息
 6. 禁止笼统：summary 绝对禁止用「用户提到了」「记录了关于」「讨论了某事」等空泛开头
 7. 必须具体：人名用全名，动作要明确，结果要清晰
-8. 禁止AI腔：绝对禁止「用户表示」「用户表达」「情绪状态为」「该用户」「用户」等第三人称观察者视角词汇。改用第一人称口语化记录，站在当事人视角直述。例如：写「她说她不想学习」而不是「用户表达了对学习的抵触」；写「她今天很开心」而不是「用户情绪状态良好」；写「她决定……」而不是「用户做出了……的决定」
+8. 事实类记录禁止AI腔：提取客观事实，严禁使用「用户表示」「用户表达」「情绪状态为」「该用户」「用户」等第三人称观察者视角词汇，统一改用第一人称口语化与事实性记录，站在当事人视角直述。例如：写「她说她不想学习」而不是「用户表达了对学习的抵触」；写「她今天很开心」而不是「用户情绪状态良好」；写「她决定……」而不是「用户做出了……的决定」
 
 输出格式（纯 JSON，无其他内容）：
 {
@@ -402,6 +402,13 @@ class Dehydrator:
         # --- 内容已经很短，不需要压缩 ---
         if count_tokens_approx(content) < 100:
             return self._format_output(content, metadata, brief=brief)
+
+        # --- Raw text slice for high-emotion / habit layers: preserve original tone ---
+        # --- 高情绪时刻（anchor/milestone）与说话习惯（voice）不做 LLM 摘要，直接保留原文切片 ---
+        if metadata:
+            mtype = str(metadata.get("type", ""))
+            if mtype in ("anchor", "milestone", "voice"):
+                return self._format_output(content[:500], metadata, brief=brief)
 
         # --- Check cache first ---
         # --- 先查缓存 ---
