@@ -4,7 +4,9 @@
 # ============================================================
 
 # MCP 协议 SDK（Claude 通信核心）
-mcp>=1.0.0
+# 注意：MCP SDK 2.x 已移除 mcp.server.fastmcp，本仓库依赖 1.x API（FastMCP / transport_security），
+# 故钉在 <2，防止无上限安装拉到 2.x 导致 ModuleNotFoundError。
+mcp>=1.8.0,<2
 
 # 模糊匹配（记忆桶搜索）
 rapidfuzz>=3.0.0
