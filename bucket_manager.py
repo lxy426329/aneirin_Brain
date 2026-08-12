@@ -85,7 +85,18 @@ class BucketManager:
         self.archive_dir = os.path.join(self.base_dir, "archive")
         self.feel_dir = os.path.join(self.base_dir, "feel")
         self.identity_dir = os.path.join(self.base_dir, "identity")
-        self.pattern_dir = os.path.join(self.base_dir, "pattern")
+        # --- Ring layer (年轮经验层): replaced legacy pattern/ dir, with auto-migration ---
+        # --- ring 层：取代旧 pattern/ 目录；旧数据自动迁移，pattern_dir 变量继续指向 ring/ ---
+        self.ring_dir = os.path.join(self.base_dir, "ring")
+        self._migrate_legacy_dir("pattern", "ring", "pattern_dir", self.ring_dir)
+        # --- Milestone layer (重要时刻/纪念日): high emotional intensity, never decay ---
+        # --- milestone 层：高情绪浓度重要时刻（纪念日/重要事件），永不衰减，检索与 permanent 分离 ---
+        self.milestone_dir = os.path.join(self.base_dir, "milestone")
+        os.makedirs(self.milestone_dir, exist_ok=True)
+        # --- Voice layer (说话习惯/称呼/相处方式): always injected by breath(), no scoring/decay ---
+        # --- voice 层：说话习惯、称呼、相处方式；breath() 每次强制注入，不走评分、不走衰减 ---
+        self.voice_dir = os.path.join(self.base_dir, "voice")
+        os.makedirs(self.voice_dir, exist_ok=True)
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 30)
         self.max_results = config.get("matching", {}).get("max_results", 5)
 
@@ -157,6 +168,41 @@ class BucketManager:
         self.similarity_threshold = activation_cfg.get("similarity_threshold", 0.75)
         self.cooldown_decay_factor = activation_cfg.get("cooldown_decay_factor", 0.5)
         self._injection_history: dict[str, float] = {}  # {bucket_id: timestamp}
+
+    def _migrate_legacy_dir(self, legacy_name: str, new_name: str, dir_attr: str, target_dir: str):
+        """
+        Migrate a legacy directory into the new-named directory (rename if target
+        absent, otherwise merge missing files). The class attribute `dir_attr` keeps
+        pointing at `target_dir`, so all existing callers pick up the new location.
+        把旧目录迁移到新目录：目标不存在则整体改名，已存在则合并缺失文件。
+        `dir_attr` 属性始终指向新目录，现有调用方无需改动。
+        """
+        legacy_dir = os.path.join(self.base_dir, legacy_name)
+        setattr(self, dir_attr, target_dir)
+        if os.path.isdir(legacy_dir):
+            try:
+                if not os.path.isdir(target_dir):
+                    os.rename(legacy_dir, target_dir)
+                    logger.info(
+                        f"Migrated legacy directory / 目录迁移：{legacy_name}/ → {new_name}/"
+                    )
+                else:
+                    for entry in os.listdir(legacy_dir):
+                        src = os.path.join(legacy_dir, entry)
+                        dst = os.path.join(target_dir, entry)
+                        if os.path.isfile(src) and not os.path.exists(dst):
+                            os.rename(src, dst)
+                    try:
+                        if not os.listdir(legacy_dir):
+                            os.rmdir(legacy_dir)
+                    except OSError:
+                        pass
+            except OSError as e:
+                logger.warning(
+                    f"Legacy directory migration failed, using target directly / "
+                    f"旧目录迁移失败，直接使用新目录: {e}"
+                )
+        os.makedirs(target_dir, exist_ok=True)
 
     # ---------------------------------------------------------
     # Timeline operations / 时间链操作
@@ -892,6 +938,19 @@ class BucketManager:
                 metadata["type"] = "permanent"
         elif bucket_type == "feel":
             type_dir = self.feel_dir
+        elif bucket_type == "milestone":
+            # Milestone: high-emotional-intensity moments (anniversaries / important events),
+            # never decayed, retrieved separately from permanent.
+            # milestone：高情绪浓度重要时刻（纪念日/重要事件），永不衰减，检索与 permanent 分离。
+            type_dir = self.milestone_dir
+        elif bucket_type == "voice":
+            # Voice: speech habits / nicknames / interaction style, always injected by breath().
+            # voice：说话习惯、称呼、相处方式，breath() 强制注入，不走评分/衰减。
+            type_dir = self.voice_dir
+        elif bucket_type == "pattern":
+            # Ring layer (year-ring experiences) lives in ring/ dir.
+            # ring 层（年轮经验）存放于 ring/ 目录。
+            type_dir = self.ring_dir
         else:
             type_dir = self.dynamic_dir
         if bucket_type == "feel":
@@ -1902,9 +1961,12 @@ class BucketManager:
 
         # --- Layer 0: exclude superseded patterns ---
         # --- 第0层：排除已被替代的模式 ---
+        # Voice buckets are excluded too: always injected by breath(), avoid duplicates.
+        # voice 桶同样排除：由 breath() 强制注入，避免重复。
         all_buckets = [
             b for b in all_buckets
             if not (b["metadata"].get("type") == "pattern" and b["metadata"].get("superseded_by") is not None)
+            and b["metadata"].get("type") != "voice"
         ]
 
         # --- Layer 1: domain pre-filter (fast scope reduction) ---
@@ -2520,7 +2582,8 @@ class BucketManager:
         
         buckets = []
 
-        dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir, self.identity_dir, self.pattern_dir]
+        dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir, self.identity_dir, self.pattern_dir,
+                self.milestone_dir, self.voice_dir]
         if include_archive:
             dirs.append(self.archive_dir)
 
@@ -2579,6 +2642,8 @@ class BucketManager:
             "dynamic_count": 0,
             "archive_count": 0,
             "feel_count": 0,
+            "milestone_count": 0,
+            "voice_count": 0,
             "total_size_kb": 0.0,
             "domains": {},
         }
@@ -2588,6 +2653,8 @@ class BucketManager:
             (self.dynamic_dir, "dynamic_count"),
             (self.archive_dir, "archive_count"),
             (self.feel_dir, "feel_count"),
+            (self.milestone_dir, "milestone_count"),
+            (self.voice_dir, "voice_count"),
         ]:
             if not os.path.exists(subdir):
                 continue
@@ -2665,7 +2732,7 @@ class BucketManager:
         """
         if not bucket_id:
             return None
-        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.identity_dir, self.pattern_dir]:
+        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.identity_dir, self.pattern_dir, self.milestone_dir, self.voice_dir]:
             if not os.path.exists(dir_path):
                 continue
             for root, _, files in os.walk(dir_path):

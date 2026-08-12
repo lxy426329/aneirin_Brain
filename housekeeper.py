@@ -732,7 +732,7 @@ class Housekeeper:
         for b in all_buckets:
             meta = b["metadata"]
             btype = meta.get("type")
-            if btype in ("permanent", "feel", "identity", "pattern", "experience"):
+            if btype in ("permanent", "feel", "identity", "pattern", "experience", "milestone", "voice"):
                 continue
             if meta.get("pinned") or meta.get("protected"):
                 continue
@@ -790,7 +790,7 @@ class Housekeeper:
         # Only compare regular memory buckets / 仅比较常规记忆桶
         pool = [
             b for b in all_buckets
-            if b.get("metadata", {}).get("type") not in ("permanent", "feel", "identity", "pattern", "experience")
+            if b.get("metadata", {}).get("type") not in ("permanent", "feel", "identity", "pattern", "experience", "milestone", "voice")
         ]
         # Bounded O(n²): cap the pool by creation order / 限制比较规模，按创建时间排序取前 300
         pool.sort(key=lambda b: b.get("metadata", {}).get("created", ""))

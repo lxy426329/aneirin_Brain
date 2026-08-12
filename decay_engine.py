@@ -136,6 +136,16 @@ class DecayEngine:
         if metadata.get("type") == "permanent":
             return 999.0
 
+        # --- Milestone buckets (anniversaries/important moments): never decay ---
+        # --- milestone 桶（纪念日/重要时刻）：永不衰减 ---
+        if metadata.get("type") == "milestone":
+            return 999.0
+
+        # --- Voice buckets (speech habits/nicknames): never decay ---
+        # --- voice 桶（说话习惯/称呼）：永不衰减 ---
+        if metadata.get("type") == "voice":
+            return 999.0
+
         # --- Feel buckets: never decay, fixed moderate score ---
         if metadata.get("type") == "feel":
             return 50.0

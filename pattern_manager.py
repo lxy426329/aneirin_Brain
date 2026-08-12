@@ -25,8 +25,18 @@ class PatternManager:
     
     def __init__(self, config: dict):
         self.base_dir = config["buckets_dir"]
-        self.pattern_dir = os.path.join(self.base_dir, "pattern")
-        os.makedirs(self.pattern_dir, exist_ok=True)
+        # --- Ring layer (year-ring experiences) / ring 层（年轮经验）---
+        # Patterns now live in ring/ dir; legacy pattern/ data auto-migrated.
+        # 年轮经验现存放于 ring/ 目录；旧 pattern/ 数据自动迁移。
+        self.ring_dir = os.path.join(self.base_dir, "ring")
+        legacy_dir = os.path.join(self.base_dir, "pattern")
+        if os.path.isdir(legacy_dir) and not os.path.isdir(self.ring_dir):
+            try:
+                os.rename(legacy_dir, self.ring_dir)
+            except OSError:
+                pass
+        os.makedirs(self.ring_dir, exist_ok=True)
+        self.pattern_dir = self.ring_dir
     
     async def create(
         self,

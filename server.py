@@ -471,7 +471,7 @@ async def breath_hook(request):
 
         unresolved = [b for b in all_buckets
                       if not b["metadata"].get("resolved", False)
-                      and b["metadata"].get("type") not in ("permanent", "feel", "identity", "pattern", "experience", "candlestick")
+                      and b["metadata"].get("type") not in ("permanent", "feel", "identity", "pattern", "experience", "candlestick", "milestone", "voice")
                       and not b["metadata"].get("pinned")
                       and not b["metadata"].get("protected")]
         
@@ -547,10 +547,24 @@ async def breath_hook(request):
                 parts.append(entry)
                 token_budget -= 200
 
+        # --- Dream introspection: auto-trigger after breath on every session start ---
+        # --- 自省：breath 之后自动触发 dream()，确保每次新对话都跑一遍自省 ---
+        dream_text = ""
+        try:
+            dream_text = await dream()
+            if dream_text:
+                dream_text = "[Ombre Brain - 自省]\n" + dream_text
+        except Exception as e:
+            logger.warning(f"Dream introspection failed / 自省失败: {e}")
+
         if not parts:
             await _fire_webhook("breath_hook", {"surfaced": 0})
+            if dream_text:
+                return PlainTextResponse(dream_text)
             return PlainTextResponse("")
         body_text = "[Ombre Brain - 记忆浮现]\n" + "\n---\n".join(parts)
+        if dream_text:
+            body_text += "\n\n" + dream_text
         await _fire_webhook("breath_hook", {"surfaced": len(parts), "chars": len(body_text)})
         return PlainTextResponse(body_text)
     except Exception as e:
@@ -1147,7 +1161,7 @@ async def _breath_surfacing(
     unresolved = [
         b for b in all_buckets
         if not b["metadata"].get("resolved", False)
-        and b["metadata"].get("type") not in ("permanent", "feel", "identity", "experience")
+        and b["metadata"].get("type") not in ("permanent", "feel", "identity", "experience", "milestone", "voice")
         and not b["metadata"].get("pinned", False)
         and not b["metadata"].get("protected", False)
     ]
@@ -1689,6 +1703,7 @@ async def _breath_lightweight(
                 b for b in all_buckets
                 if not b["metadata"].get("resolved", False)
                 and not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+                and b["metadata"].get("type") not in ("voice", "milestone")
                 and b["metadata"].get("last_active", "") >= seven_days_ago
             ]
             recent.sort(key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
@@ -1754,6 +1769,46 @@ async def _breath_lightweight(
     }
 
 
+# ---------------------------------------------------------
+# Voice layer (说话习惯/称呼/相处方式)
+# voice 层：每次 breath() 强制注入，不走评分、不走衰减
+# ---------------------------------------------------------
+async def _load_voice_layer() -> list:
+    """从 voice/ 目录加载 voice 桶，返回结构化条目列表。
+    纯读取，不触发评分/衰减；读取失败时返回空列表。
+    """
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        logger.warning(f"Voice layer load failed / voice 层读取失败: {e}")
+        return []
+    voices = [b for b in all_buckets if b["metadata"].get("type") == "voice"]
+    if not voices:
+        return []
+    entries = []
+    for v in voices:
+        meta = v["metadata"]
+        name = meta.get("name") or v["id"]
+        summary = meta.get("one_line_summary") or meta.get("dehydrated_summary") or ""
+        content = strip_wikilinks(v.get("content", ""))
+        body = summary or content
+        entries.append({"name": str(name), "bucket_id": v["id"], "text": str(body)[:300]})
+    return entries
+
+
+def _format_voice_block(voice_entries: list) -> str:
+    """把 voice 条目拼装为固定注入块；无条目时返回空串。"""
+    if not voice_entries:
+        return ""
+    parts = []
+    for e in voice_entries:
+        line = f"[{e['name']}] [bucket_id:{e['bucket_id']}]"
+        if e.get("text"):
+            line += f"\n  {e['text']}"
+        parts.append(line)
+    return "=== 说话方式 ===\n" + "\n---\n".join(parts) + "\n\n"
+
+
 @mcp.tool()
 async def breath(
     query: str = "",
@@ -1776,22 +1831,28 @@ async def breath(
     await decay_engine.ensure_started()
     await housekeeper.ensure_started()
 
+    # --- Voice layer: always injected into every breath(), bypass scoring/decay ---
+    # --- voice 层：每次 breath() 都强制注入，不走评分、不走衰减 ---
+    voice_entries = await _load_voice_layer()
+    voice_block = _format_voice_block(voice_entries)
+
     # --- Lightweight mode: return stable JSON string, no fallback, minimal tokens ---
     # --- 轻量模式：返回稳定 JSON 字符串，省 token，不做 fallback ---
     if lightweight:
-        return _json_lib.dumps(
-            await _breath_lightweight(
-                query=query.strip() if query else "",
-                limit=limit,
-                min_score=min_score,
-                recent_days=recent_days,
-                type_filter=type.strip().lower() if type else None,
-                domain=domain,
-                valence=valence,
-                arousal=arousal,
-            ),
-            ensure_ascii=False,
+        result = await _breath_lightweight(
+            query=query.strip() if query else "",
+            limit=limit,
+            min_score=min_score,
+            recent_days=recent_days,
+            type_filter=type.strip().lower() if type else None,
+            domain=domain,
+            valence=valence,
+            arousal=arousal,
         )
+        # Voice layer appended as a fixed field (not scored, not decayed)
+        # voice 层作为固定字段附加（不走评分、不走衰减）
+        result["voice"] = voice_entries
+        return _json_lib.dumps(result, ensure_ascii=False)
     
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1867,10 +1928,10 @@ async def breath(
         brief = False
 
     if type_filter == "identity":
-        return await _breath_identity(max_tokens)
+        return voice_block + await _breath_identity(max_tokens)
 
     if type_filter == "feel":
-        return await _breath_feel(max_tokens)
+        return voice_block + await _breath_feel(max_tokens)
 
     if importance_min >= 1:
         try:
@@ -1891,7 +1952,7 @@ async def breath(
         filtered.sort(key=lambda b: safe_int(b["metadata"].get("importance"), 0), reverse=True)
         filtered = filtered[:20]
         if not filtered:
-            return f"没有重要度 >= {importance_min} 的记忆。"
+            return voice_block + f"没有重要度 >= {importance_min} 的记忆。"
         results = []
         token_used = 0
         for b in filtered:
@@ -1911,13 +1972,13 @@ async def breath(
                 token_used += t
             except Exception as e:
                 logger.warning(f"importance_min dehydrate failed: {e}")
-        return "\n---\n".join(results) if results else "没有可以展示的记忆。"
+        return voice_block + ("\n---\n".join(results) if results else "没有可以展示的记忆。")
 
     if not query or not query.strip():
         # --- Casual chat detection: inject candlestick flavor only in casual mode ---
         # --- 闲聊检测：仅在闲聊模式下注入烛台调味料 ---
         inject_candlestick_flavor = is_casual_chat(query)
-        return await _breath_surfacing(
+        return voice_block + await _breath_surfacing(
             max_tokens, max_results, brief, type_filter, summary_report, mask_tasks,
             inject_candlestick_flavor=inject_candlestick_flavor
         )
@@ -1936,7 +1997,7 @@ async def breath(
                 results.append(entry)
                 if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                     break
-            return "=== 你留下的 feel ===\n" + "\n---\n".join(results)
+            return voice_block + "=== 你留下的 feel ===\n" + "\n---\n".join(results)
         except Exception as e:
             logger.error(f"Feel retrieval failed: {e}")
             return "读取 feel 失败。"
@@ -2412,7 +2473,7 @@ async def breath(
 
     if not results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
-        return "未找到相关记忆。"
+        return voice_block + "未找到相关记忆。"
 
     final_text = "\n".join(results)
     
@@ -2420,7 +2481,7 @@ async def breath(
         final_text += housekeeper_prefetch
     
     await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "shown": shown_count, "summarized": len(summarized_buckets), "chars": len(final_text)})
-    return final_text
+    return voice_block + final_text
 
 
 # =============================================================
@@ -2441,6 +2502,7 @@ async def _hold_impl(
     valence: float = -1,
     arousal: float = -1,
     event_context: str = "",
+    bucket_type: str = "",
 ) -> dict:
     """核心记忆写入逻辑，供 MCP hold() 与 HTTP /api/hold 共用。
     自动打标 + 查重合并 + 异步 summary/embedding，与原有 hold() 行为完全一致。
@@ -2511,6 +2573,58 @@ async def _hold_impl(
         return {"success": True, "bucket_id": bucket_id, "merged": False,
                 "valence": feel_valence, "arousal": feel_arousal, "action": "feel",
                 "message": f"🫧feel→{bucket_id}"}
+
+    # --- Milestone / Voice modes: dedicated layers, never decay ---
+    # --- milestone（重要时刻）/ voice（说话方式）专用层：永不衰减 ---
+    if bucket_type in ("milestone", "voice"):
+        is_ms = bucket_type == "milestone"
+        # --- Auto-tagging for metadata / 自动打标生成元数据 ---
+        try:
+            analysis = await dehydrator.analyze(content)
+        except Exception as e:
+            logger.warning(f"Auto-tagging failed, using defaults / 自动打标失败: {e}")
+            analysis = {
+                "domain": ["未分类"], "emotions": [], "dominant_emotion": "",
+                "emotion_metrics": {"overall_intensity": 0.3, "emotional_range": 0.0, "emotional_valence": 0.0},
+                "tags": [], "suggested_name": "",
+            }
+        domain = analysis.get("domain", ["未分类"])
+        auto_emotions = analysis.get("emotions", [])
+        auto_dominant = analysis.get("dominant_emotion", "")
+        all_tags = list(dict.fromkeys((analysis.get("tags", []) + extra_tags)))
+        explicit_v = valence if 0 <= valence <= 1 else None
+        explicit_a = arousal if 0 <= arousal <= 1 else None
+        bucket_id = await bucket_mgr.create(
+            content=content,
+            tags=all_tags,
+            importance=10,  # 永不衰减
+            domain=domain,
+            emotions=auto_emotions,
+            dominant_emotion=auto_dominant,
+            emotion_metrics=analysis.get("emotion_metrics", {}),
+            name=title or analysis.get("suggested_name", "") or None,
+            bucket_type=bucket_type,
+            task_flag=task_flag,
+            valence=explicit_v,
+            arousal=explicit_a,
+        )
+        try:
+            await embedding_engine.generate_and_store(bucket_id, content)
+        except Exception as e:
+            logger.warning(f"Failed to store {bucket_type} embedding / {bucket_type} 向量存储失败: {bucket_id}: {e}")
+        asyncio.create_task(_generate_one_line_summary_async(bucket_id, content))
+        tag_normalizer.notify_new_record(1)
+        if source:
+            try:
+                await bucket_mgr.update(bucket_id, source=source)
+            except Exception as e:
+                logger.warning(f"Failed to set source on {bucket_type} bucket: {e}")
+        layer_name = "重要时刻" if is_ms else "说话方式"
+        return {"success": True, "bucket_id": bucket_id, "merged": False,
+                "valence": explicit_v if explicit_v is not None else 0.5,
+                "arousal": explicit_a if explicit_a is not None else 0.3,
+                "action": bucket_type,
+                "message": f"{layer_name}→{bucket_id} {','.join(domain)}"}
 
     # --- Step 0: Extract Event Context / 提取事件背景 ---
     # 如果没有显式提供 event_context，则尝试从 content 中提取
@@ -2670,13 +2784,17 @@ async def hold(
     valence: float = -1,
     arousal: float = -1,
     event_context: str = "",
+    milestone: bool = False,
+    voice: bool = False,
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。"""
+    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。milestone=True存入milestone层(高情绪浓度重要时刻/纪念日,永不衰减)。voice=True存入voice层(说话习惯/称呼/相处方式,breath()每次强制注入,永不衰减)。"""
+    bucket_type = "milestone" if milestone else ("voice" if voice else "")
     result = await _hold_impl(
         content=content, tags=tags, importance=importance,
         pinned=pinned, protected=protected, feel=feel, task_flag=task_flag,
         source_bucket=source_bucket, source=source, title=title,
         valence=valence, arousal=arousal, event_context=event_context,
+        bucket_type=bucket_type,
     )
     return result["message"]
 
@@ -6233,7 +6351,7 @@ async def import_brain(zip_path: str, overwrite: bool = False) -> str:
             
             # Check extracted structure — support both "buckets/" prefix and flat layout
             # 检查解压结构——兼容 "buckets/" 前缀和扁平结构
-            _known_subdirs = ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]
+            _known_subdirs = ["permanent", "dynamic", "archive", "feel", "identity", "pattern", "ring", "milestone", "voice"]
             extracted_buckets = os.path.join(tmp_dir, "buckets")
             if not os.path.isdir(extracted_buckets):
                 # Fallback: check if subdirs exist directly (flat layout from sync_to_render.py)
@@ -6386,6 +6504,7 @@ async def api_hold(request):
             title=str(body.get("title", "")).strip(),
             valence=valence,
             arousal=arousal,
+            bucket_type=str(body.get("bucket_type", "")).strip().lower(),
         )
     except Exception as e:
         logger.error(f"/api/hold failed: {e}")
@@ -8626,7 +8745,7 @@ async def api_health(request):
             "buckets_dir_env": os.environ.get("OMBRE_BUCKETS_DIR", "(not set)"),
             "md_file_count": sum(
                 len([f for f in os.listdir(os.path.join(config.get("buckets_dir", ""), d)) if f.endswith(".md")])
-                for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]
+                for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern", "ring", "milestone", "voice"]
                 if os.path.isdir(os.path.join(config.get("buckets_dir", ""), d))
             ),
             "model": dehydrator.model if dehydrator else "?",
@@ -8642,7 +8761,7 @@ async def api_health(request):
             "buckets_dir_env": os.environ.get("OMBRE_BUCKETS_DIR", "(not set)"),
             "md_file_count": sum(
                 len([f for f in os.listdir(os.path.join(config.get("buckets_dir", ""), d)) if f.endswith(".md")])
-                for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]
+                for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern", "ring", "milestone", "voice"]
                 if os.path.isdir(os.path.join(config.get("buckets_dir", ""), d))
             ),
             "model": dehydrator.model if dehydrator else "?",
@@ -9535,7 +9654,7 @@ if __name__ == "__main__":
     _buckets_dir = config.get("buckets_dir", "?")
     _md_count = 0
     _subdirs = {}
-    for _subdir in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]:
+    for _subdir in ["permanent", "dynamic", "archive", "feel", "identity", "pattern", "ring", "milestone", "voice"]:
         _sub_path = os.path.join(_buckets_dir, _subdir)
         if os.path.isdir(_sub_path):
             _files = [f for f in os.listdir(_sub_path) if f.endswith(".md")]

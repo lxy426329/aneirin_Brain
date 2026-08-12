@@ -22,7 +22,7 @@ async def isolated_env(test_config, tmp_path, monkeypatch):
     """Setup isolated environment with temp buckets directory."""
     buckets_dir = str(tmp_path / "buckets")
     
-    for d in ["permanent", "dynamic", "archive", "feel", "identity", "pattern"]:
+    for d in ["permanent", "dynamic", "archive", "feel", "identity", "ring", "milestone", "voice"]:
         os.makedirs(os.path.join(buckets_dir, d), exist_ok=True)
     
     config_path = str(tmp_path / "config.yaml")
@@ -190,12 +190,12 @@ class TestPatternLayer:
     
     @pytest.mark.asyncio
     async def test_pattern_file_location(self, isolated_env):
-        """Pattern files stored in pattern/ directory."""
+        """Pattern files stored in ring/ directory (year-ring layer)."""
         bm, id_mgr, pt_mgr, de, bd = isolated_env
         
         pattern_id = await pt_mgr.create(summary="测试模式")
         
-        pattern_dir = os.path.join(bd, "pattern")
+        pattern_dir = os.path.join(bd, "ring")
         files = os.listdir(pattern_dir)
         assert any(pattern_id in f for f in files), f"Pattern {pattern_id} not found in {pattern_dir}"
     

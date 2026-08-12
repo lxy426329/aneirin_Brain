@@ -70,9 +70,9 @@ last_active: ISO8601 # 最后活跃时间
 
 ---
 
-### Pattern 层（模式层）
+### Pattern 层（模式层 / 年轮经验层）
 
-**存储路径**: `buckets/pattern/`
+**存储路径**: `buckets/ring/`（原 `buckets/pattern/`，启动时自动迁移）
 
 **字段定义**:
 ```yaml
