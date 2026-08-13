@@ -444,32 +444,21 @@ function updateStats() {
   const identities = allBuckets.filter(b => b.type === 'identity').length;
   const patterns = allBuckets.filter(b => b.type === 'pattern').length;
   const events = allBuckets.filter(b => !b.type || b.type === 'event').length;
-  const resolved = allBuckets.filter(b => b.resolved).length;
-  const digested = allBuckets.filter(b => b.digested).length;
   
-  const emotionCounts = {};
-  allBuckets.forEach(b => {
-    if (b.emotions && Array.isArray(b.emotions)) {
-      b.emotions.forEach(e => {
-        emotionCounts[e.label] = (emotionCounts[e.label] || 0) + 1;
-      });
-    }
-  });
-  const topEmotions = Object.entries(emotionCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
-  const emotionStr = topEmotions.length > 0 ? ' · ' + topEmotions.map(e => e[0] + ':' + e[1]).join(' ') : '';
-  
-  document.getElementById('stats').innerHTML =
-    '<div style="display:flex;gap:16px;align-items:center;">' +
-    '<span style="font-weight:600;color:var(--text);">' + total + ' 记忆</span>' +
-    '<span style="color:#4A7C59;">' + identities + '</span>' +
-    '<span style="color:#6A6A8B;">' + patterns + '</span>' +
-    '<span style="color:#2F4F4F;">' + events + '</span>' +
-    '<span style="color:#9A7B4F;">' + pinned + '</span>' +
-    '<span style="color:#8B6A6A;">' + feels + '</span>' +
-    '<span style="color:#81C784;">' + resolved + '</span>' +
-    '<span style="color:#FFB74D;">' + digested + '</span>' +
-    (emotionStr ? '<span style="color:var(--text-dim);font-size:12px;">' + emotionStr + '</span>' : '') +
-    '</div>';
+  var statsHtml = '<span style="font-weight:600;color:var(--text);font-size:13px;">' + total + ' 条记忆</span>';
+  var statParts = [
+    ['身份', identities, '#4A7C59'],
+    ['模式', patterns, '#6A6A8B'],
+    ['事件', events, '#2F4F4F'],
+    ['感受', feels, '#8B6A6A'],
+    ['钉选', pinned, '#9A7B4F']
+  ];
+  statsHtml += statParts.map(function(p) {
+    return '<span style="display:inline-flex;align-items:center;gap:5px;">' +
+      '<span style="width:7px;height:7px;border-radius:50%;background:' + p[2] + ';opacity:0.75;"></span>' +
+      p[0] + ' ' + p[1] + '</span>';
+  }).join('');
+  document.getElementById('stats').innerHTML = statsHtml;
 }
 
 function buildFilters() {
@@ -2134,7 +2123,7 @@ function updateBatchDeleteButton() {
   if (btn) {
     if (selectedMemories.size > 0) {
       btn.style.display = 'flex';
-      btn.innerHTML = `🗑️ 删除选中 (${selectedMemories.size})`;
+      btn.innerHTML = `删除选中 (${selectedMemories.size})`;
     } else {
       btn.style.display = 'none';
     }
@@ -2180,11 +2169,11 @@ async function batchDelete() {
       }
     } else {
       alert('删除失败: ' + (data.error || '未知错误'));
-      if (btn) btn.innerHTML = '🗑️ 删除选中';
+      if (btn) btn.innerHTML = '删除选中';
     }
   } catch(e) {
     alert('删除失败: ' + e.message);
-    if (btn) btn.innerHTML = '🗑️ 删除选中';
+    if (btn) btn.innerHTML = '删除选中';
   }
 }
 
@@ -2244,7 +2233,7 @@ function renderDirectory(data) {
     <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:16px;padding:12px;background:var(--surface);border-radius:12px;border:1px solid var(--border);">
       <button onclick="selectAll()" style="padding:6px 12px;border:none;border-radius:8px;background:var(--text);color:white;font-size:12px;cursor:pointer;transition:background 0.2s;">全选</button>
       <button onclick="deselectAll()" style="padding:6px 12px;border:none;border-radius:8px;background:var(--border);color:var(--text);font-size:12px;cursor:pointer;transition:background 0.2s;">取消</button>
-      <button id="batch-delete-btn" onclick="batchDelete()" style="padding:6px 12px;border:none;border-radius:8px;background:#8B4A4A;color:white;font-size:12px;cursor:pointer;transition:background 0.2s;display:none;">🗑️ 删除选中</button>
+      <button id="batch-delete-btn" onclick="batchDelete()" style="padding:6px 12px;border:none;border-radius:8px;background:#8B4A4A;color:white;font-size:12px;cursor:pointer;transition:background 0.2s;display:none;">删除选中</button>
     </div>
   `;
   
@@ -2282,7 +2271,7 @@ function renderDirectory(data) {
               <input type="checkbox" class="memory-checkbox" data-id=${safeId} 
                      onclick="event.stopPropagation();toggleSelect(${safeId})"
                      style="width:16px;height:16px;border:2px solid var(--border);border-radius:4px;cursor:pointer;accent-color:${sectionColor};">
-              ${isPinned ? '<span style="font-size:14px;">📌</span>' : ''}
+              ${isPinned ? '<span style="font-size:14px;"></span>' : ''}
               <span style="font-weight:600;font-size:13px;color:var(--text);line-height:1.4;">${safeName}</span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
@@ -3770,7 +3759,7 @@ function renderAnalyticsInDirectory(analytics, container) {
 
   container.innerHTML += `
     <div style="margin-top:24px;padding-top:24px;border-top:1px solid var(--border);">
-      <h3 style="margin:0 0 16px 0;font-size:16px;">📊 数据统计</h3>
+      <h3 style="margin:0 0 16px 0;font-size:16px;">数据统计</h3>
       
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
         <div style="background:var(--surface);border-radius:12px;padding:14px;border:1px solid var(--border);">
@@ -3926,7 +3915,6 @@ function renderAnalytics(data) {
   if (!data || data.total_buckets === 0) {
     content.innerHTML = `
       <div style="text-align:center;padding:60px;color:var(--text-dim);">
-        <div style="font-size:48px;margin-bottom:16px;">📊</div>
         <div style="font-size:18px;margin-bottom:8px;">暂无数据</div>
         <div style="font-size:13px;">添加一些记忆后，数据分析将自动生成</div>
       </div>
@@ -5219,7 +5207,7 @@ async function generateTimeline() {
     
   } catch(e) {
     loading.style.display = 'none';
-    empty.innerHTML = `<div style="font-size:48px;margin-bottom:16px;">❌</div><div>生成失败: ${e.message}</div>`;
+    empty.innerHTML = `<div>生成失败: ${e.message}</div>`;
     empty.style.display = 'block';
   }
 }
@@ -5262,7 +5250,7 @@ async function sendGlobalAIChat() {
   
   messages.innerHTML += `
     <div id="global-ai-loading" style="display:flex;gap:10px;margin-bottom:12px;">
-      <div style="width:30px;height:30px;border-radius:50%;background:var(--positive);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">🤖</div>
+      <div style="width:30px;height:30px;border-radius:50%;background:var(--positive);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">A</div>
       <div style="flex:1;background:white;border-radius:10px;padding:10px;border:1px solid var(--border);color:var(--text-light);font-size:13px;">思考中...</div>
     </div>
   `;
@@ -5281,14 +5269,14 @@ async function sendGlobalAIChat() {
     if (result.ok) {
       messages.innerHTML += `
         <div style="display:flex;gap:10px;margin-bottom:12px;">
-          <div style="width:30px;height:30px;border-radius:50%;background:var(--positive);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">🤖</div>
+          <div style="width:30px;height:30px;border-radius:50%;background:var(--positive);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">A</div>
           <div style="flex:1;background:white;border-radius:10px;padding:10px;border:1px solid var(--border);font-size:13px;">${escapeHtml(result.response)}</div>
         </div>
       `;
     } else {
       messages.innerHTML += `
         <div style="display:flex;gap:10px;margin-bottom:12px;">
-          <div style="width:30px;height:30px;border-radius:50%;background:var(--negative);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">🤖</div>
+          <div style="width:30px;height:30px;border-radius:50%;background:var(--negative);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">A</div>
           <div style="flex:1;background:white;border-radius:10px;padding:10px;border:1px solid var(--border);color:var(--negative);font-size:13px;">${escapeHtml(result.error || 'AI回答失败')}</div>
         </div>
       `;
@@ -5297,7 +5285,7 @@ async function sendGlobalAIChat() {
     document.getElementById('global-ai-loading').remove();
     messages.innerHTML += `
       <div style="display:flex;gap:10px;margin-bottom:12px;">
-        <div style="width:30px;height:30px;border-radius:50%;background:var(--negative);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">🤖</div>
+        <div style="width:30px;height:30px;border-radius:50%;background:var(--negative);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">A</div>
         <div style="flex:1;background:white;border-radius:10px;padding:10px;border:1px solid var(--border);color:var(--negative);font-size:13px;">网络错误: ${escapeHtml(e.message)}</div>
       </div>
     `;
@@ -5435,18 +5423,17 @@ function renderStatsCards() {
   var resolved = allBuckets.filter(function(b) { return b.resolved; }).length;
   
   var cards = [
-    { icon: '🧠', label: '总记忆', value: total, color: 'var(--accent)' },
-    { icon: '👤', label: '身份', value: identities, color: '#4A7C59' },
-    { icon: '🔮', label: '模式', value: patterns, color: '#6A6A8B' },
-    { icon: '📌', label: '事件', value: events, color: '#2F4F4F' },
-    { icon: '📌', label: '钉选', value: pinned, color: '#9A7B4F' },
-    { icon: '💭', label: '感受', value: feels, color: '#8B6A6A' },
-    { icon: '✓', label: '已解决', value: resolved, color: '#81C784' },
+    { label: '总记忆', value: total, color: 'var(--accent)' },
+    { label: '身份', value: identities, color: '#4A7C59' },
+    { label: '模式', value: patterns, color: '#6A6A8B' },
+    { label: '事件', value: events, color: '#2F4F4F' },
+    { label: '感受', value: feels, color: '#8B6A6A' },
+    { label: '钉选', value: pinned, color: '#9A7B4F' },
+    { label: '已解决', value: resolved, color: '#81C784' },
   ];
   
   container.innerHTML = cards.map(function(c) {
     return '<div class="stat-card" style="border-top:3px solid ' + c.color + ';">' +
-      '<span class="stat-icon">' + c.icon + '</span>' +
       '<div class="stat-value" style="color:' + c.color + ';">' + c.value + '</div>' +
       '<div class="stat-label">' + c.label + '</div>' +
     '</div>';
