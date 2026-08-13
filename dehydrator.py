@@ -178,7 +178,9 @@ DIGEST_PROMPT = """你是一个日记整理专家。用户会发送一段包含�
     "domain": ["主题域1"],
     "emotions": [{"label": "情绪1", "intensity": 0.8}, {"label": "情绪2", "intensity": 0.5}],
     "dominant_emotion": "情绪1",
-    "tags": ["核心词1", "核心词2", "扩展词1", "扩展词2"],
+    "primary_tags": ["主标签（只能从 生活/健康/学习/工作/关系/情绪/约定/兴趣/其它 中选择 1~2 个）"],
+    "sub_tags": ["副标签（从正文提取 3~8 个短关键词，单个不超过 12 字，不要整句与空泛词）"],
+    "tags": ["主标签+副标签合并数组"],
     "importance": 5
   }
 ]
@@ -221,6 +223,11 @@ MERGE_PROMPT = """你是一个信息合并专家。请将旧记忆与新内容�
 
 # --- Auto-tagging prompt: analyze content for domain and emotion coords ---
 # --- 自动打标提示词：分析内容的主题域和情感坐标 ---
+
+# --- Closed vocabulary for primary tags / 主标签封闭词表 ---
+# 主标签只能是以下词之一，不得自创长句
+PRIMARY_TAG_VOCAB = ("生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣", "其它")
+
 ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出结构化的元数据。
 
 分析规则：
@@ -255,11 +262,13 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
    - emotional_range：情绪波动范围（0~1，情绪多样性和变化程度）
    - emotional_valence：情绪效价（-1~1，正值偏向正面，负值偏向负面）
 
-5. tags（标签）：分为两类，合并为一个数组：
-   A. 固定泛化标签（必选 1~3 个）：从以下列表中选择最相关的
-      ["工作", "学习", "生活", "健康", "人际关系", "兴趣爱好", "财务", "内心世界", "数字技术", "事务管理", "休闲娱乐", "家庭", "情感", "成长", "创造"]
-   B. 具体内容标签（选 3~5 个）：从原文提取的具体关键词
-   总计 4~8 个标签
+5. tags（标签体系，分主副两类）：
+   A. primary_tags（主标签，必选 1~2 个）：只能从以下封闭词表中选择最相关的，禁止自创或写长句
+      ["生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣", "其它"]
+      完全无法归入任何一类时用"其它"，能判断时必须选具体类
+   B. sub_tags（副标签，选 3~8 个）：从原文提取的短关键词（如"加班"、"跑步"、"失眠"），
+      每个不超过 12 字，禁止整句，禁止"用户表示""情绪状态""相关"这类空泛词，去重
+   tags 字段 = primary_tags + sub_tags 合并为一个数组
 
 6. suggested_name（建议桶名）：8~12字的精炼标题，必须满足以下要求：
    - 使用动宾结构或主谓结构，如"学习Python"、"和朋友聚餐"、"心情低落"
@@ -269,7 +278,7 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
    - 如果文本是对话或思考，提炼核心主题作为标题
    - 优先使用动词+名词的组合，如"完成项目"、"制定计划"、"阅读书籍"
 
-7. 在 tags 和 suggested_name 中不要使用 [[]] 双链标记
+7. 在 tags、primary_tags、sub_tags 和 suggested_name 中不要使用 [[]] 双链标记
 
 输出格式（纯 JSON，无其他内容）：
 {
@@ -277,7 +286,9 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
   "emotions": [{"label": "情绪1", "intensity": 0.8, "polarity": "positive", "arousal_level": "high", "duration": "short"}, {"label": "情绪2", "intensity": 0.5, "polarity": "negative", "arousal_level": "medium", "duration": "momentary"}],
   "dominant_emotion": "情绪1",
   "emotion_metrics": {"overall_intensity": 0.65, "emotional_range": 0.7, "emotional_valence": 0.3},
-  "tags": ["泛化标签1", "泛化标签2", "具体标签1", "具体标签2", "..."],
+  "primary_tags": ["主标签1"],
+  "sub_tags": ["副标签1", "副标签2", "副标签3"],
+  "tags": ["主标签1", "副标签1", "副标签2", "副标签3"],
   "suggested_name": "精炼标题"
 }"""
 
@@ -741,7 +752,44 @@ class Dehydrator:
         emotional_valence = float(emotion_metrics.get("emotional_valence", 0.0))
         emotional_valence = max(-1.0, min(1.0, emotional_valence))
 
-        tags = result.get("tags", [])[:10]
+        raw_tags = [t for t in result.get("tags", []) if isinstance(t, str) and t.strip()][:10]
+
+        # --- Split primary / sub tags with closed-vocab enforcement ---
+        # --- 拆分主/副标签：主标签强制封闭词表，副标签短词去重 ---
+        primary_tags = []
+        for t in result.get("primary_tags", []) or []:
+            if isinstance(t, str) and t.strip() in PRIMARY_TAG_VOCAB and t.strip() not in primary_tags:
+                primary_tags.append(t.strip())
+            if len(primary_tags) >= 2:
+                break
+        if not primary_tags:
+            for t in raw_tags:
+                if t.strip() in PRIMARY_TAG_VOCAB and t.strip() not in primary_tags:
+                    primary_tags.append(t.strip())
+        if not primary_tags:
+            primary_tags = ["其它"]
+
+        sub_tags = []
+        for t in result.get("sub_tags", []) or []:
+            if not isinstance(t, str):
+                continue
+            t = t.strip()
+            if not t or len(t) > 12 or t in sub_tags:
+                continue
+            sub_tags.append(t)
+            if len(sub_tags) >= 8:
+                break
+        if not sub_tags:
+            for t in raw_tags:
+                t = t.strip()
+                if t and len(t) <= 12 and t not in PRIMARY_TAG_VOCAB and t not in sub_tags:
+                    sub_tags.append(t)
+                    if len(sub_tags) >= 8:
+                        break
+
+        # --- tags remains a merged array for backward compatibility ---
+        # --- tags 保持合并数组以兼容现有消费方 ---
+        tags = list(dict.fromkeys(primary_tags + sub_tags))[:10]
 
         return {
             "domain": result.get("domain", ["未分类"])[:3],
@@ -753,6 +801,8 @@ class Dehydrator:
                 "emotional_valence": emotional_valence,
             },
             "tags": tags,
+            "primary_tags": primary_tags,
+            "sub_tags": sub_tags,
             "suggested_name": str(result.get("suggested_name", ""))[:20],
         }
 
@@ -775,6 +825,8 @@ class Dehydrator:
                 "emotional_valence": 0.0,
             },
             "tags": [],
+            "primary_tags": ["其它"],
+            "sub_tags": [],
             "suggested_name": "",
         }
 
@@ -987,13 +1039,50 @@ class Dehydrator:
             else:
                 dominant_emotion = item.get("dominant_emotion", "")
 
+            raw_tags = [t for t in item.get("tags", []) if isinstance(t, str) and t.strip()][:15]
+
+            # --- Same primary/sub split as analyze() ---
+            # --- 与 analyze() 相同的主/副标签拆分规则 ---
+            primary_tags = []
+            for t in item.get("primary_tags", []) or []:
+                if isinstance(t, str) and t.strip() in PRIMARY_TAG_VOCAB and t.strip() not in primary_tags:
+                    primary_tags.append(t.strip())
+                if len(primary_tags) >= 2:
+                    break
+            if not primary_tags:
+                for t in raw_tags:
+                    if t.strip() in PRIMARY_TAG_VOCAB and t.strip() not in primary_tags:
+                        primary_tags.append(t.strip())
+            if not primary_tags:
+                primary_tags = ["其它"]
+
+            sub_tags = []
+            for t in item.get("sub_tags", []) or []:
+                if not isinstance(t, str):
+                    continue
+                t = t.strip()
+                if not t or len(t) > 12 or t in sub_tags:
+                    continue
+                sub_tags.append(t)
+                if len(sub_tags) >= 8:
+                    break
+            if not sub_tags:
+                for t in raw_tags:
+                    t = t.strip()
+                    if t and len(t) <= 12 and t not in PRIMARY_TAG_VOCAB and t not in sub_tags:
+                        sub_tags.append(t)
+                        if len(sub_tags) >= 8:
+                            break
+
             validated.append({
                 "name": str(item.get("name", ""))[:20],
                 "content": str(item.get("content", "")),
                 "domain": item.get("domain", ["未分类"])[:3],
                 "emotions": emotions,
                 "dominant_emotion": dominant_emotion,
-                "tags": item.get("tags", [])[:15],
+                "tags": list(dict.fromkeys(primary_tags + sub_tags))[:15],
+                "primary_tags": primary_tags,
+                "sub_tags": sub_tags,
                 "importance": importance,
             })
         return validated

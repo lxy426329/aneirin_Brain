@@ -55,7 +55,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from bucket_manager import BucketManager
-from dehydrator import Dehydrator
+from dehydrator import Dehydrator, PRIMARY_TAG_VOCAB
 from decay_engine import DecayEngine
 from housekeeper import Housekeeper
 from embedding_engine import EmbeddingEngine
@@ -774,6 +774,8 @@ async def _merge_or_create(
     context_metadata: dict = None,
     ttl: int = None,
     status_key: str = None,
+    primary_tags: list = None,
+    sub_tags: list = None,
 ) -> tuple[str, str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -799,6 +801,17 @@ async def _merge_or_create(
                     "importance": max(bucket["metadata"].get("importance", 5), importance),
                     "domain": list(set(bucket["metadata"].get("domain", []) + domain)),
                 }
+
+                # --- Merge primary/sub tags (keep closed-vocab primary) ---
+                # --- 合并主/副标签（主标签保持封闭词表） ---
+                if primary_tags:
+                    merged_primary = list(dict.fromkeys(
+                        [t for t in (bucket["metadata"].get("primary_tags", []) or []) if t in PRIMARY_TAG_VOCAB] + primary_tags
+                    ))[:2]
+                    update_kwargs["primary_tags"] = merged_primary
+                if sub_tags:
+                    merged_sub = list(dict.fromkeys((bucket["metadata"].get("sub_tags", []) or []) + sub_tags))[:8]
+                    update_kwargs["sub_tags"] = merged_sub
 
                 # --- Propagate task_flag on merge ---
                 # --- 合并时传递 task_flag ---
@@ -870,6 +883,14 @@ async def _merge_or_create(
             create_kwargs["emotion_metrics"] = emotion_metrics
 
     bucket_id = await bucket_mgr.create(**create_kwargs)
+
+    # --- Persist primary/sub tags as separate frontmatter fields ---
+    # --- 主/副标签作为独立 frontmatter 字段持久化 ---
+    if primary_tags or sub_tags:
+        try:
+            await bucket_mgr.update(bucket_id, primary_tags=primary_tags or [], sub_tags=sub_tags or [])
+        except Exception:
+            pass
 
     try:
         await embedding_engine.generate_and_store(bucket_id, content)
@@ -2599,6 +2620,27 @@ async def breath(
 # Tool 2: hold — Hold on to this
 # 工具 2：hold — 握住，留下来
 # =============================================================
+def _split_primary_sub_tags(analysis: dict, extra_tags: list) -> tuple:
+    """
+    Split primary / sub tags from auto-analysis plus manual tags.
+    从自动分析与手动标签中拆分主/副标签。
+    - primary tags: closed vocabulary only, 1~2 items
+    - sub tags: short keywords, deduped, <= 8 items, each <= 12 chars
+    """
+    primary = [t for t in (analysis.get("primary_tags", []) or []) if isinstance(t, str) and t.strip()][:2]
+    sub = [t for t in (analysis.get("sub_tags", []) or []) if isinstance(t, str) and t.strip()][:8]
+    extra = [t.strip() for t in extra_tags if t and t.strip()]
+    for t in extra:
+        if t in PRIMARY_TAG_VOCAB and t not in primary:
+            primary.append(t)
+    for t in extra:
+        if t not in PRIMARY_TAG_VOCAB and len(t) <= 12 and t not in sub:
+            sub.append(t)
+    if not primary:
+        primary = ["其它"]
+    return primary[:2], sub[:8]
+
+
 async def _hold_impl(
     content: str,
     tags: str = "",
@@ -2684,6 +2726,14 @@ async def _hold_impl(
             name=title or None,
             bucket_type="feel",
         )
+        # --- Feel 记忆主标签固定为"情绪"，副标签来自分析 ---
+        feel_sub = []
+        if feel_analysis:
+            feel_sub = [t for t in (feel_analysis.get("sub_tags", []) or []) if isinstance(t, str) and t.strip()][:8]
+        try:
+            await bucket_mgr.update(bucket_id, primary_tags=["情绪"], sub_tags=feel_sub)
+        except Exception:
+            pass
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
         except Exception as e:
@@ -2760,6 +2810,12 @@ async def _hold_impl(
             valence=explicit_v,
             arousal=explicit_a,
         )
+        # --- 主/副标签：主标签封闭词表，副标签短词 ---
+        primary_tags, sub_tags = _split_primary_sub_tags(analysis, extra_tags)
+        try:
+            await bucket_mgr.update(bucket_id, primary_tags=primary_tags, sub_tags=sub_tags)
+        except Exception:
+            pass
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
         except Exception as e:
@@ -2847,6 +2903,7 @@ async def _hold_impl(
         }
 
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    primary_tags, sub_tags = _split_primary_sub_tags(analysis, extra_tags)
 
     if pinned:
         bucket_id = await bucket_mgr.create(
@@ -2867,6 +2924,10 @@ async def _hold_impl(
             valence=explicit_v,
             arousal=explicit_a,
         )
+        try:
+            await bucket_mgr.update(bucket_id, primary_tags=primary_tags, sub_tags=sub_tags)
+        except Exception:
+            pass
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
         except Exception as e:
@@ -2903,6 +2964,8 @@ async def _hold_impl(
         context_metadata=context_metadata,
         ttl=ttl,
         status_key=status_key,
+        primary_tags=primary_tags,
+        sub_tags=sub_tags,
     )
 
     if source:
@@ -2991,6 +3054,8 @@ async def grow(content: str) -> str:
             dominant_emotion=dominant,
             name=analysis.get("suggested_name", ""),
             dehydrator=dehydrator,
+            primary_tags=analysis.get("primary_tags", []),
+            sub_tags=analysis.get("sub_tags", []),
         )
         action = "合并" if is_merged else "新建"
         emo_str = ",".join(f"{e['label']}({e['intensity']:.1f})" for e in emotions) if emotions else ""
@@ -3026,6 +3091,8 @@ async def grow(content: str) -> str:
                 dominant_emotion=dominant,
                 name=item.get("name", ""),
                 dehydrator=dehydrator,
+                primary_tags=item.get("primary_tags", []),
+                sub_tags=item.get("sub_tags", []),
             )
 
             if is_merged:
@@ -6854,12 +6921,17 @@ async def api_hold(request):
         return JSONResponse({"success": False, "error": "importance 越界，必须位于 1~10"}, status_code=400)
 
     tags = body.get("tags", [])
-    if isinstance(tags, str):
-        tags_str = tags
-    elif isinstance(tags, list):
-        tags_str = ",".join(str(t) for t in tags)
-    else:
-        tags_str = ""
+    primary_tags = body.get("primary_tags", [])
+    sub_tags = body.get("sub_tags", [])
+    # --- Merge tags / primary_tags / sub_tags into one extra-tag stream ---
+    # --- 主/副标签与普通标签合并；_split_primary_sub_tags 会自动分流 ---
+    extra_all = []
+    for chunk in (tags, primary_tags, sub_tags):
+        if isinstance(chunk, str):
+            extra_all.extend(t.strip() for t in chunk.split(",") if t.strip())
+        elif isinstance(chunk, list):
+            extra_all.extend(str(t).strip() for t in chunk if str(t).strip())
+    tags_str = ",".join(dict.fromkeys(extra_all))
 
     # --- Strict bool coercion: treat "false"/"0"/"" as False ---
     # --- 严格布尔转换：字符串 "false"/"0"/"" 视为 False ---

@@ -283,26 +283,28 @@ function getEmotionColor(label) {
 
 const GENERIC_TAGS = ['工作', '学习', '生活', '健康', '人际关系', '兴趣爱好', '财务', '内心世界', '数字技术', '事务管理', '休闲娱乐', '家庭', '情感', '成长', '创造'];
 
-function buildTagDisplay(tags) {
-  if (!tags || tags.length === 0) return '—';
-  
-  var genericTags = tags.filter(t => GENERIC_TAGS.includes(t));
-  var specificTags = tags.filter(t => !GENERIC_TAGS.includes(t));
-  
+function buildTagDisplay(tags, primaryTags, subTags) {
+  if ((!tags || tags.length === 0) && (!primaryTags || primaryTags.length === 0)) return '—';
+
+  // --- 优先使用主/副标签字段；旧数据回退到泛化/具体划分 ---
+  // --- prefer primary/sub tags; fall back to generic/specific split ---
+  var primary = primaryTags && primaryTags.length > 0 ? primaryTags : tags.filter(t => GENERIC_TAGS.includes(t));
+  var sub = subTags && subTags.length > 0 ? subTags : tags.filter(t => !GENERIC_TAGS.includes(t));
+
   var html = '';
-  if (genericTags.length > 0) {
+  if (primary.length > 0) {
     html += '<div style="margin-bottom:4px;">';
-    html += '<span style="font-size:10px;color:var(--text-light);margin-right:4px;">泛化标签:</span>';
-    html += genericTags.map(t => '<span style="background:var(--accent);color:white;padding:2px 8px;border-radius:10px;font-size:11px;margin-right:4px;">' + esc(t) + '</span>').join('');
+    html += '<span style="font-size:10px;color:var(--text-light);margin-right:4px;">主:</span>';
+    html += primary.map(t => '<span style="background:var(--accent);color:white;padding:2px 8px;border-radius:10px;font-size:11px;margin-right:4px;">' + esc(t) + '</span>').join('');
     html += '</div>';
   }
-  if (specificTags.length > 0) {
+  if (sub.length > 0) {
     html += '<div>';
-    html += '<span style="font-size:10px;color:var(--text-light);margin-right:4px;">具体标签:</span>';
-    html += specificTags.map(t => '<span style="background:var(--border);color:var(--text);padding:2px 8px;border-radius:10px;font-size:11px;margin-right:4px;">' + esc(t) + '</span>').join('');
+    html += '<span style="font-size:10px;color:var(--text-light);margin-right:4px;">副:</span>';
+    html += sub.map(t => '<span style="background:var(--border);color:var(--text);padding:2px 8px;border-radius:10px;font-size:11px;margin-right:4px;">' + esc(t) + '</span>').join('');
     html += '</div>';
   }
-  
+
   return html;
 }
 
@@ -726,7 +728,7 @@ async function showDetail(id, prefetched) {
         '<div class="field"><label>ID</label>' + id + '</div>' +
         '<div class="field"><label>类型</label>' + bucketType + '</div>' +
         '<div class="field"><label>域</label>' + (meta.domain || []).join(', ') + '</div>' +
-        '<div class="field"><label>标签</label>' + buildTagDisplay(meta.tags || []) + '</div>';
+        '<div class="field"><label>标签</label>' + buildTagDisplay(meta.tags || [], meta.primary_tags || [], meta.sub_tags || []) + '</div>';
       
       if (emotionHtml) {
         detailHtml += '<div class="field"><label>情绪</label>' + emotionHtml + '</div>';

@@ -1168,7 +1168,7 @@ class BucketManager:
             if "model_valence" in kwargs:
                 post["model_valence"] = max(0.0, min(1.0, safe_float(kwargs["model_valence"], 0.5)))
             
-            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports"):
+            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags"):
                 if key in kwargs:
                     post[key] = kwargs[key]
 
@@ -2200,9 +2200,18 @@ class BucketManager:
             )
             * 2
         )
+        # --- Primary tag gets extra boost: closed vocabulary, high precision ---
+        # --- 主标签额外加分：封闭词表、精确度高 ---
+        primary_tag_score = (
+            max(
+                (fuzz.partial_ratio(query, t) for t in as_list(meta.get("primary_tags"))),
+                default=0,
+            )
+            * 1.5
+        )
         content_score = fuzz.partial_ratio(query, bucket.get("content", "")[:1000]) * self.content_weight
 
-        return (name_score + domain_score + tag_score + content_score) / (100 * (3 + 2.5 + 2 + self.content_weight))
+        return (name_score + domain_score + tag_score + primary_tag_score + content_score) / (100 * (3 + 2.5 + 2 + 1.5 + self.content_weight))
 
     def _is_exact_match_query(self, query: str) -> bool:
         """
