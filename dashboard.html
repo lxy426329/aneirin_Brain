@@ -710,6 +710,42 @@
     color: var(--accent);
     opacity: 0.9;
   }
+  /* 详情面板底部操作按钮：统一主题配色 */
+  .detail-action-btn {
+    flex: 1;
+    padding: 10px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    transition: all 0.2s ease;
+  }
+  .detail-action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .detail-action-btn.primary {
+    border: none;
+    background: var(--accent);
+    color: #fff;
+  }
+  .detail-action-btn.primary:hover {
+    background: var(--accent);
+    opacity: 0.88;
+  }
+  .detail-action-btn.danger {
+    border: 1px solid rgba(229, 72, 77, 0.35);
+    color: #B5534E;
+  }
+  .detail-action-btn.danger:hover {
+    border-color: rgba(229, 72, 77, 0.5);
+    color: #C0392B;
+    background: rgba(229, 72, 77, 0.08);
+  }
 
   .identity-card {
     background: linear-gradient(135deg, rgba(74,124,89,0.06), rgba(74,124,89,0.02));
@@ -1216,7 +1252,6 @@
 
 <div class="tabs">
   <div class="tab active" data-tab="list">记忆桶</div>
-  <div class="tab" data-tab="directory">记忆目录</div>
   <div class="tab" data-tab="experience">年轮</div>
   <div class="tab" data-tab="anchor">锚点</div>
   <div class="tab" data-tab="identity">名册</div>
@@ -1267,49 +1302,6 @@
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中...</div>
   </div>
-</div>
-
-<div class="content" id="directory-view" style="display:none;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-    <div>
-      <h2 style="margin:0;font-size:22px;font-weight:600;">记忆目录</h2>
-      <p style="color:var(--text-dim);font-size:13px;margin:4px 0 0 0;">快速了解记忆库整体结构，按类型分类展示关键记忆条目和数据分析</p>
-    </div>
-    <button onclick="loadDirectory(true)" class="btn-secondary" style="padding:8px 16px;">刷新</button>
-  </div>
-
-  <div id="directory-stats" style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:24px;"></div>
-
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px;">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);">
-      <h3 style="margin:0 0 18px 0;font-size:15px;color:var(--text);font-weight:600;">类型分布</h3>
-      <div style="position:relative;height:280px;width:100%;">
-        <canvas id="directory-type-chart"></canvas>
-      </div>
-    </div>
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);">
-      <h3 style="margin:0 0 18px 0;font-size:15px;color:var(--text);font-weight:600;">重要度分布</h3>
-      <div style="position:relative;height:280px;width:100%;">
-        <canvas id="directory-importance-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);margin-bottom:24px;">
-    <h3 style="margin:0 0 18px 0;font-size:15px;color:var(--text);font-weight:600;">重要度维度分析</h3>
-    <div style="position:relative;height:320px;width:100%;">
-      <canvas id="directory-importance-radar"></canvas>
-    </div>
-  </div>
-
-  <div style="background:var(--surface);border-radius:var(--radius-md);padding:16px;border:1px solid var(--border);margin-bottom:24px;">
-    <h3 style="margin:0 0 12px 0;font-size:13px;color:var(--text-dim);font-weight:500;">活跃热力图</h3>
-    <div id="directory-heatmap" style="overflow-x:auto;"></div>
-  </div>
-
-  <div id="directory-content" style="min-height:200px;"></div>
-
-  <div id="directory-empty" class="loading" style="display:none;text-align:center;padding:40px;color:var(--text-dim);">暂无记忆数据</div>
 </div>
 
 <div class="content" id="experience-view" style="display:none">

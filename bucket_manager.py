@@ -881,7 +881,7 @@ class BucketManager:
             domain = domain if domain is not None else []
         else:
             domain = domain or ["未分类"]
-        tags = tags or []
+        tags = [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []
         linked_content = content
 
         if pinned or protected:
@@ -1110,7 +1110,8 @@ class BucketManager:
             if "content" in kwargs:
                 post.content = kwargs["content"]
             if "tags" in kwargs:
-                post["tags"] = kwargs["tags"]
+                t = kwargs["tags"]
+                post["tags"] = [x for x in t if isinstance(x, str)] if isinstance(t, list) else []
             if "importance" in kwargs:
                 post["importance"] = max(1, min(10, safe_int(kwargs["importance"], 5)))
             if "domain" in kwargs:

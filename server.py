@@ -3892,7 +3892,7 @@ async def memory_directory(detail_level: str = "medium") -> str:
                     meta = b.get("metadata", {})
                     name = meta.get("name", b["id"])
                     importance = meta.get("importance", 0)
-                    tags = meta.get("tags", [])[:3]
+                    tags = meta["tags"][:3] if isinstance(meta.get("tags"), list) else []
                     tags_str = " ".join([f"#{t}" for t in tags])
                     result += f"  [{importance}] {name} {tags_str}\n"
             elif detail_level == "medium":
@@ -7760,8 +7760,8 @@ async def api_directory(request):
                         "name": meta.get("name", b["id"]),
                         "importance": meta.get("importance", 0),
                         "importance_details": meta.get("importance_details", {}),
-                        "tags": meta.get("tags", [])[:3],
-                        "emotions": [e["label"] for e in meta.get("emotions", [])[:3]],
+                        "tags": meta["tags"][:3] if isinstance(meta.get("tags"), list) else [],
+                        "emotions": [e["label"] for e in meta["emotions"][:3]] if isinstance(meta.get("emotions"), list) else [],
                         "created": meta.get("created", ""),
                         "decay_stage": meta.get("decay_stage", 1),
                         "pinned": meta.get("pinned", False),
@@ -7779,8 +7779,8 @@ async def api_directory(request):
                         "name": meta.get("name", b["id"]),
                         "importance": meta.get("importance", 0),
                         "importance_details": meta.get("importance_details", {}),
-                        "emotions": [e["label"] for e in meta.get("emotions", [])[:3]],
-                        "tags": meta.get("tags", [])[:3],
+                        "emotions": [e["label"] for e in meta["emotions"][:3]] if isinstance(meta.get("emotions"), list) else [],
+                        "tags": meta["tags"][:3] if isinstance(meta.get("tags"), list) else [],
                         "created": meta.get("created", ""),
                         "decay_stage": meta.get("decay_stage", 1),
                         "pinned": meta.get("pinned", False),
