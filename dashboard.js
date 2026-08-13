@@ -324,7 +324,9 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'config') loadConfig();
     if (target === 'identity') loadIdentities();
     if (target === 'experience') loadExperiences();
-    if (target === 'anchor') loadAnchors();
+    // --- 锚点自动触发：进入页面即扫描高情绪记忆生成锚点，无需手动点击 ---
+    // --- anchors trigger automatically on entering the tab, no manual click ---
+    if (target === 'anchor') { loadAnchors(); autoCreateAnchors(); }
     if (target === 'timeline') loadTimelines();
     if (target === 'candlestick') loadCandlesticks();
     if (target === 'cycle') loadCycle();
@@ -2549,29 +2551,9 @@ async function deleteAnchor(anchorId) {
 }
 
 async function autoCreateAnchors() {
-  const thresholdInput = prompt('请输入情绪强度阈值 (0-1，建议值0.5-0.7):', '0.6');
-  if (thresholdInput === null) return;
-  
-  const threshold = parseFloat(thresholdInput);
-  if (isNaN(threshold) || threshold < 0 || threshold > 1) {
-    alert('请输入有效的阈值（0到1之间的数字）');
-    return;
-  }
-  
-  const list = document.getElementById('anchor-list');
-  const loadingHtml = `
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;">
-      <div style="width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>
-      <div style="margin-top:16px;font-size:14px;color:var(--text-dim);">正在扫描记忆桶...</div>
-      <div style="margin-top:8px;font-size:12px;color:var(--text-light);" id="auto-anchor-progress">分析中，请稍候...</div>
-      <div style="margin-top:12px;width:200px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
-        <div id="auto-anchor-bar" style="height:100%;width:0%;background:var(--accent);transition:width 0.3s;"></div>
-      </div>
-    </div>
-    <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
-  `;
-  list.innerHTML = loadingHtml;
-  
+  // --- 自动触发：无需手动点击，静默扫描高情绪记忆并刷新锚点列表 ---
+  // --- auto-trigger: silently scan high-emotion buckets and refresh the list ---
+  const threshold = 0.6;
   try {
     const resp = await authFetch('/api/bucket-auto-anchor', {
       method: 'POST',
@@ -2582,25 +2564,9 @@ async function autoCreateAnchors() {
       loadAnchors();
       return;
     }
-    
-    const data = await resp.json();
-    
-    document.getElementById('auto-anchor-bar').style.width = '100%';
-    
-    let msg = `检测完成！\n\n`;
-    msg += `扫描记忆桶: ${data.total_scanned} 个\n`;
-    msg += `含情绪数据: ${data.buckets_with_emotions || 0} 个\n`;
-    msg += `情绪未达标: ${data.buckets_below_threshold || 0} 个\n`;
-    msg += `创建锚点: ${data.anchors_created} 个\n\n`;
-    if (data.anchors_created === 0 && data.buckets_with_emotions > 0) {
-      msg += `提示：当前阈值${threshold}较高，可尝试降低阈值`;
-    } else if (data.buckets_with_emotions === 0) {
-      msg += '提示：没有找到带有情绪数据的记忆桶';
-    }
-    alert(msg);
+    await resp.json();
     loadAnchors();
   } catch(e) {
-    alert('自动检测失败: ' + e.message);
     loadAnchors();
   }
 }
@@ -3552,13 +3518,25 @@ function renderIdentities(identities) {
     return;
   }
   empty.style.display = 'none';
-  list.innerHTML = identities.map(i => `
+  list.innerHTML = identities.map(i => {
+    // --- 激活次数 → 重要度：次数越多越重要 ---
+    // --- activation count → importance tier ---
+    const act = i.activation_count || 0;
+    let importanceBadge = '';
+    if (act >= 10) importanceBadge = '<span style="background:rgba(47,79,79,0.12);color:var(--accent);padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;">重要</span>';
+    else if (act >= 3) importanceBadge = '<span style="background:rgba(74,124,89,0.12);color:#4A7C59;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;">熟悉</span>';
+    else importanceBadge = '<span style="background:rgba(176,168,152,0.15);color:var(--text-dim);padding:3px 10px;border-radius:12px;font-size:11px;font-weight:500;">普通</span>';
+    return `
     <div class="identity-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
         <div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <h3 style="margin:0;font-size:18px;">${escapeHtml(i.name || i.topic || '未命名')}</h3>
             ${i.relation_tags && i.relation_tags.length > 0 ? i.relation_tags.map(t => `<span class="identity-tag">${escapeHtml(t)}</span>`).join('') : ''}
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+            ${importanceBadge}
+            <span style="font-size:11px;color:var(--text-dim);">激活 ${act} 次</span>
           </div>
           ${i.aliases && i.aliases.length > 0 ? `<div style="font-size:13px;color:var(--text-dim);margin-top:4px;">别名: ${escapeHtml(i.aliases.join(', '))}</div>` : ''}
         </div>
@@ -3567,6 +3545,12 @@ function renderIdentities(identities) {
           <button onclick="deleteIdentity('${i.id}')" style="padding:6px 12px;border:none;background:var(--negative);color:white;border-radius:8px;cursor:pointer;font-size:12px;">删除</button>
         </div>
       </div>
+      ${i.relations && i.relations.length > 0 ? `
+        <div style="margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">关系</div>
+          <div>${i.relations.map(r => `<span style="background:var(--accent-glow);color:var(--accent);padding:3px 10px;border-radius:12px;font-size:12px;margin-right:6px;margin-bottom:4px;display:inline-block;">${escapeHtml(r.relation_type || '朋友')} · ${escapeHtml(r.target_name || '')}</span>`).join('')}</div>
+        </div>
+      ` : ''}
       
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
         ${i.gender ? `
@@ -3630,7 +3614,8 @@ function renderIdentities(identities) {
         创建: ${new Date(i.created_at).toLocaleString()} | 更新: ${new Date(i.updated_at).toLocaleString()}
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 async function loadIdentities() {
@@ -3643,8 +3628,87 @@ async function loadIdentities() {
     _identityList = identities;
     renderSelfProfile(data.self_profile || null);
     renderIdentities(identities);
+    loadRelationMap();
   } catch(e) {
     list.innerHTML = `<p style="color:var(--negative)">加载失败: ${e.message}</p>`;
+  }
+}
+
+// ========================================
+// 人际关系地图：以 AI 自我认知为中心，人物为节点，关系类型为连线
+// ========================================
+const RELATION_COLORS = {
+  '恋人': '#C0392B', '配偶': '#B03A2E', '家人': '#D35400', '父母': '#E67E22',
+  '子女': '#E67E22', '兄弟姐妹': '#F39C12', '亲戚': '#D4AC0D',
+  '挚友': '#16A085', '朋友': '#27AE60', '同事': '#2980B9', '同学': '#2E86C1',
+  '师生': '#8E44AD', '领导': '#7D3C98', '下属': '#A569BD', '合作伙伴': '#34495E',
+  '网友': '#95A5A6', '其他': '#7F8C8D'
+};
+
+async function loadRelationMap() {
+  const container = document.getElementById('relation-map');
+  if (!container) return;
+  try {
+    const resp = await authFetch('/api/relations');
+    if (!resp) return;
+    const data = await resp.json();
+    const identities = data.identities || [];
+    const edges = data.edges || [];
+    const self = data.self_profile || null;
+    if (identities.length === 0) {
+      container.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:360px;color:var(--text-dim);font-size:13px;">暂无人物，创建名册后这里会自动生成人际关系地图</div>';
+      return;
+    }
+    // --- 节点集合：中心 = 自我认知（无档案时用 AI 自我占位） ---
+    // --- nodes: center = self-profile (fallback placeholder) ---
+    const nodes = [];
+    if (self) nodes.push({ id: self.id, name: self.name || '自我认知', isSelf: true, act: self.activation_count || 0 });
+    identities.forEach(p => nodes.push({ id: p.id, name: p.name, isSelf: false, act: p.activation_count || 0 }));
+    if (!self) nodes.push({ id: '__self__', name: 'AI 自我', isSelf: true, act: 0 });
+
+    const W = Math.max(container.clientWidth || 720, 400);
+    const H = 380;
+    const cx = W / 2, cy = H / 2;
+    const R = Math.min(cx, cy) - 64;
+    const others = nodes.filter(n => !n.isSelf);
+    others.forEach((n, i) => {
+      const angle = -Math.PI / 2 + (i * 2 * Math.PI / Math.max(others.length, 1));
+      n.x = cx + R * Math.cos(angle);
+      n.y = cy + R * Math.sin(angle);
+    });
+    const centerNode = nodes.find(n => n.isSelf);
+    centerNode.x = cx; centerNode.y = cy;
+
+    // --- 边：关系类型文字标在线中点 ---
+    // --- edges: relation-type label at line midpoint ---
+    const edgeParts = edges.map(e => {
+      const a = nodes.find(n => n.id === e.from_id) || centerNode;
+      const b = nodes.find(n => n.id === e.to_id) || centerNode;
+      if (!a || !b) return '';
+      const color = RELATION_COLORS[e.relation_type] || '#7F8C8D';
+      const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+      return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${color}" stroke-width="1.6" stroke-opacity="0.6" />
+        <text x="${midX}" y="${midY - 6}" text-anchor="middle" font-size="11" fill="${color}" font-weight="500" paint-order="stroke" stroke="#F7F5F0" stroke-width="4">${escapeHtml(e.relation_type)}</text>`;
+    }).join('');
+
+    // --- 节点：重要的人（激活多）圆更大；点击打开编辑 ---
+    // --- nodes: higher activation = bigger circle; click to edit ---
+    const nodeParts = nodes.map(n => {
+      const size = n.isSelf ? 34 : (14 + Math.min(n.act * 2, 16));
+      const color = n.isSelf ? '#2F4F4F' : '#4A7C59';
+      const onclick = n.isSelf ? 'editSelfProfile()' : `showIdentityEditor('${n.id}')`;
+      const label = n.name || 'AI 自我';
+      return `<g onclick="${onclick}" style="cursor:pointer;">
+        <circle cx="${n.x}" cy="${n.y}" r="${size}" fill="${color}" fill-opacity="0.12" stroke="${color}" stroke-width="1.6" />
+        <circle cx="${n.x}" cy="${n.y}" r="4" fill="${color}" />
+        <text x="${n.x}" y="${n.y - size - 8}" text-anchor="middle" font-size="12" fill="#2D2A25" font-weight="600">${escapeHtml(label)}</text>
+        ${n.isSelf ? '' : `<text x="${n.x}" y="${n.y + size + 4}" text-anchor="middle" font-size="10" fill="#8C8478">激活${n.act}</text>`}
+      </g>`;
+    }).join('');
+
+    container.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;">${edgeParts}${nodeParts}</svg>`;
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--negative);font-size:13px;text-align:center;padding:40px;">关系地图加载失败: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -3654,11 +3718,13 @@ async function loadIdentities() {
 function renderSelfProfile(sp) {
   const section = document.getElementById('self-profile-section');
   const body = document.getElementById('self-profile-body');
+  // --- 板块始终显示：AI 对自身的了解固定位于名册最上方 ---
+  // --- Section always visible: AI self-understanding sits at the very top of roster ---
+  section.style.display = '';
   if (!sp || (!sp.content && !(sp.core_traits && sp.core_traits.length) && !(sp.relation_tags && sp.relation_tags.length))) {
-    section.style.display = 'none';
+    body.innerHTML = '<div style="color:var(--text-dim);font-size:13px;line-height:1.7;">这里记录 AI 对自身的了解（性格、偏好、相处原则等）。点击右上角「编辑」开始填写。</div>';
     return;
   }
-  section.style.display = '';
   const parts = [];
   if (sp.relation_tags && sp.relation_tags.length) {
     parts.push(`<div style="margin-bottom:8px;">${sp.relation_tags.map(t => `<span class="identity-tag">${escapeHtml(t)}</span>`).join('')}</div>`);
@@ -3898,70 +3964,99 @@ function checkIdentityDuplicate() {
   }
 }
 
+// --- 关系类型：建立关系时必须选择具体类型（恋爱/亲情/友情/同事等） ---
+// --- relation types: a relation always carries a concrete type ---
+const RELATION_TYPES = ['恋人','配偶','家人','父母','子女','兄弟姐妹','亲戚','挚友','朋友','同事','同学','师生','领导','下属','合作伙伴','网友','其他'];
+
 function loadIdentityRelatedList(currentId) {
   const list = document.getElementById('identity-related-list');
-  authFetch('/api/buckets')
+  authFetch('/api/identities')
     .then(r => r.json())
     .then(data => {
-      const identities = (data.buckets || data).filter(b => b.type === 'identity' && b.id !== currentId);
+      const identities = (data.identities || []).filter(i => i.id !== currentId);
       if (identities.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:16px;">暂无其他名册</div>';
+        list.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:16px;">暂无其他名册，先创建后再来建立关系</div>';
         return;
       }
-      
-      let currentRelations = [];
-      if (currentId) {
-        authFetch('/api/bucket/' + currentId)
-          .then(r => r.json())
-          .then(bucket => {
-            currentRelations = bucket.related_buckets || [];
-            renderRelatedList(identities, currentId, currentRelations);
-          });
-      } else {
-        renderRelatedList(identities, currentId, []);
+      // --- 当前身份已有的关系（含类型），用于回显 ---
+      // --- existing relations of this identity (with types) for echo ---
+      const relMap = {};
+      const me = (data.identities || []).find(i => i.id === currentId);
+      if (me && me.relations) {
+        me.relations.forEach(r => { relMap[r.target_id] = r.relation_type || '朋友'; });
       }
-      
-      function renderRelatedList(items, cid, rels) {
-        list.innerHTML = items.map(i => {
-          const isRelated = rels.includes(i.id);
-          return `
-            <div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;cursor:pointer;transition:background 0.2s;" 
-                 onclick="toggleIdentityRelation('${cid || ''}', '${i.id}')"
-                 ${isRelated ? 'style="background:var(--accent);color:white;"' : 'onmouseover="this.style.background=var(--border)" onmouseout="this.style.background=\'\'"'}>
-              <input type="checkbox" ${isRelated ? 'checked' : ''} style="margin:0;" />
-              <span style="font-size:13px;">${escapeHtml(i.name || i.topic || '未命名')}</span>
-            </div>
-          `;
-        }).join('');
-      }
+      list.innerHTML = identities.map(i => {
+        const has = relMap[i.id];
+        const checked = has ? 'checked' : '';
+        const sel = RELATION_TYPES.map(t => `<option value="${t}" ${t === (has || '朋友') ? 'selected' : ''}>${t}</option>`).join('');
+        return `
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;margin-bottom:4px;${has ? 'background:var(--accent-glow);' : ''}" class="identity-rel-row">
+            <input type="checkbox" ${checked} onchange="toggleIdentityRelation('${currentId || ''}', '${i.id}', this)" style="margin:0;cursor:pointer;" />
+            <span style="flex:1;font-size:13px;">${escapeHtml(i.name || '未命名')}</span>
+            <select onchange="updateRelationType('${currentId || ''}', '${i.id}', this)" style="font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);${has ? '' : 'opacity:0.55;'}" ${has ? '' : 'disabled'}>${sel}</select>
+          </div>
+        `;
+      }).join('');
     });
 }
 
-async function toggleIdentityRelation(sourceId, targetId) {
+async function toggleIdentityRelation(sourceId, targetId, checkbox) {
   if (!sourceId) {
     alert('请先保存名册，再添加关联');
+    checkbox.checked = false;
     return;
   }
-  
-  const list = document.getElementById('identity-related-list');
-  const checkbox = list.querySelector(`input[onclick*="${targetId}"]`);
+  const row = checkbox.closest('.identity-rel-row');
+  const select = row ? row.querySelector('select') : null;
   const isChecked = checkbox.checked;
-  
   try {
-    const action = isChecked ? 'link' : 'unlink';
-    const resp = await authFetch('/api/manage-relation', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action, bucket_id: sourceId, target_id: targetId})
-    });
-    const result = await resp.json();
-    if (!result.success) {
-      checkbox.checked = !isChecked;
-      alert('操作失败: ' + result.message);
+    if (isChecked) {
+      const resp = await authFetch('/api/relations/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({from_id: sourceId, to_id: targetId, relation_type: select ? select.value : '朋友'})
+      });
+      const result = await resp.json();
+      if (!result.success) {
+        checkbox.checked = false;
+        alert('建立关系失败，请重试');
+        return;
+      }
+      if (select) { select.disabled = false; select.style.opacity = '1'; }
+      if (row) row.style.background = 'var(--accent-glow)';
+    } else {
+      const resp = await authFetch('/api/relations/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({from_id: sourceId, to_id: targetId})
+      });
+      const result = await resp.json();
+      if (!result.success) {
+        checkbox.checked = true;
+        alert('移除关系失败，请重试');
+        return;
+      }
+      if (select) { select.disabled = true; select.style.opacity = '0.55'; }
+      if (row) row.style.background = '';
     }
   } catch (e) {
     checkbox.checked = !isChecked;
     alert('操作失败: ' + e.message);
+  }
+}
+
+async function updateRelationType(sourceId, targetId, select) {
+  if (!sourceId) return;
+  try {
+    const resp = await authFetch('/api/relations/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({from_id: sourceId, to_id: targetId, relation_type: select.value})
+    });
+    const result = await resp.json();
+    if (!result.success) alert('更新关系类型失败');
+  } catch (e) {
+    alert('更新关系类型失败: ' + e.message);
   }
 }
 

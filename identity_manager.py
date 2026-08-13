@@ -632,6 +632,30 @@ class IdentityManager:
                 self._save_relationships(rels)
                 return
 
+    async def remove_relation(self, from_id: str, to_id: str) -> bool:
+        """
+        Remove a relationship between two identities.
+        
+        删除两个身份之间的关系。
+        
+        Args:
+            from_id: Source identity ID
+            to_id: Target identity ID
+        
+        Returns:
+            True if a relation was removed
+        """
+        rels = self._load_relationships()
+        if from_id not in rels:
+            return False
+        before = len(rels[from_id])
+        rels[from_id] = [r for r in rels[from_id] if r.get("target_id") != to_id]
+        if len(rels[from_id]) == before:
+            return False
+        self._save_relationships(rels)
+        logger.info(f"Removed relation / 删除关系: {from_id} -> {to_id}")
+        return True
+
     async def update_relation_weight(self, from_id: str, to_id: str, base_weight: float):
         """
         Update the base weight of a relationship.

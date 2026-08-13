@@ -1388,7 +1388,6 @@
       <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">记录高情绪瞬间，用于快速定位重要记忆</p>
     </div>
     <div style="display:flex;gap:10px;">
-      <button class="btn-secondary" onclick="autoCreateAnchors()">自动检测</button>
       <button class="btn-primary" onclick="showAnchorEditor()">+ 添加锚点</button>
     </div>
   </div>
@@ -1520,6 +1519,18 @@
         </div>
         <div id="self-profile-body" style="font-size:13px;line-height:1.7;color:var(--text-secondary);"></div>
       </div>
+    </div>
+
+    <!-- 人际关系地图：以 AI 自我认知为中心，人物为节点，关系类型为连线 -->
+    <div id="relation-map-section" style="margin-bottom:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:15px;font-weight:600;">人际关系地图</span>
+          <span style="font-size:11px;color:var(--text-dim);">以「自我认知」为中心 · 点击节点可编辑</span>
+        </div>
+        <button onclick="loadRelationMap()" style="padding:6px 14px;border:1px solid var(--border);background:transparent;color:var(--accent);border-radius:8px;cursor:pointer;font-size:12px;">刷新</button>
+      </div>
+      <div id="relation-map" style="background:var(--surface);border-radius:var(--radius-xl);border:1px solid var(--border);padding:12px;min-height:360px;overflow:hidden;"></div>
     </div>
 
     <div style="margin-bottom:16px;font-size:12px;color:var(--text-dim);">

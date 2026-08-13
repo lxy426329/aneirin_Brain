@@ -7069,6 +7069,8 @@ async def api_identities(request):
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 0),
                 "content": ident.get("content", ""),
+                # --- 关系列表（含关系类型/权重/提及次数），供前端卡片与关系地图使用 ---
+                "relations": await identity_mgr.get_relations(ident["id"]),
                 # --- Flat convenience fields extracted from basic_info ---
                 # --- 便捷扁平字段（自 basic_info 提取，兼容前端编辑器）---
                 "gender": basic_info.get("性别", ""),
@@ -8167,6 +8169,122 @@ async def api_manage_relation(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ---------------------------------------------------------
+# Relationship graph (人际关系地图) API
+# 人际关系地图：以 AI 自我认知为中心节点，人物为节点，关系类型为连线
+# ---------------------------------------------------------
+@mcp.custom_route("/api/relations", methods=["GET"])
+async def api_relations(request):
+    """Get the full relationship graph: identities + self-profile + edges."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        identities = await identity_mgr.list_all()
+        node_list = []
+        for ident in identities:
+            meta = ident.get("metadata", {})
+            node_list.append({
+                "id": ident["id"],
+                "name": meta.get("name", ident["id"]),
+                "relation_tags": meta.get("relation_tags", []) or [],
+                "activation_count": meta.get("activation_count", 0),
+                "is_self": False,
+            })
+        # --- Self-profile as the center node ---
+        # --- 自我认知作为地图中心节点 ---
+        self_node = None
+        sp = await identity_mgr.get_self_profile()
+        if sp:
+            sp_meta = sp.get("metadata", {})
+            self_node = {
+                "id": identity_mgr.self_profile_id,
+                "name": sp_meta.get("name", "自我认知"),
+                "relation_tags": sp_meta.get("relation_tags", []) or [],
+                "activation_count": sp_meta.get("activation_count", 0),
+                "is_self": True,
+            }
+
+        # --- Collect edges from all identities (incl. self-profile) ---
+        # --- 收集所有关系边（含自我认知） ---
+        edges = []
+        all_ids = [identity_mgr.self_profile_id] + [n["id"] for n in node_list]
+        for nid in all_ids:
+            try:
+                rels = await identity_mgr.get_relations(nid, include_decayed=True)
+            except Exception:
+                rels = []
+            for r in rels:
+                edges.append({
+                    "from_id": nid,
+                    "to_id": r["target_id"],
+                    "from_name": nid,
+                    "to_name": r["target_name"],
+                    "relation_type": r["relation_type"],
+                    "base_weight": r["base_weight"],
+                    "effective_weight": r["effective_weight"],
+                    "mention_count": r["mention_count"],
+                })
+        # --- Resolve from_name for readability ---
+        # --- 补全 from_name（from 端为 self_profile 时用自我认知名称） ---
+        name_map = {n["id"]: n["name"] for n in node_list}
+        if self_node:
+            name_map[self_node["id"]] = self_node["name"]
+        for e in edges:
+            e["from_name"] = name_map.get(e["from_id"], e["from_id"])
+            e["to_name"] = name_map.get(e["to_id"], e["to_id"])
+        return JSONResponse({
+            "identities": node_list,
+            "self_profile": self_node,
+            "edges": edges,
+        })
+    except Exception as e:
+        logger.error(f"api_relations failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/relations/add", methods=["POST"])
+async def api_relations_add(request):
+    """Add/update a relationship between two identities (with relation type)."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    from_id = body.get("from_id", "")
+    to_id = body.get("to_id", "")
+    relation_type = body.get("relation_type") or "朋友"
+    try:
+        base_weight = float(body.get("base_weight") or 5.0)
+    except (TypeError, ValueError):
+        base_weight = 5.0
+    base_weight = max(1.0, min(10.0, base_weight))
+    if not from_id or not to_id:
+        return JSONResponse({"error": "from_id 和 to_id 必填"}, status_code=400)
+    success = await identity_mgr.add_relation(from_id, to_id, relation_type, base_weight)
+    return JSONResponse({"success": success, "message": f"已建立关系: {from_id} → {to_id} ({relation_type})"})
+
+
+@mcp.custom_route("/api/relations/remove", methods=["POST"])
+async def api_relations_remove(request):
+    """Remove a relationship between two identities."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    from_id = body.get("from_id", "")
+    to_id = body.get("to_id", "")
+    if not from_id or not to_id:
+        return JSONResponse({"error": "from_id 和 to_id 必填"}, status_code=400)
+    success = await identity_mgr.remove_relation(from_id, to_id)
+    return JSONResponse({"success": success, "message": f"已移除关系: {from_id} → {to_id}"})
+
+
 @mcp.custom_route("/api/network", methods=["GET"])
 async def api_network(request):
     """Get memory network visualization with multiple edge types."""
@@ -8322,6 +8440,21 @@ async def api_get_anchors(request):
         anchor_type = request.query_params.get("anchor_type", None)
 
         anchors = await bucket_mgr.get_anchors(active_only=active_only, anchor_type=anchor_type)
+        # --- Normalize fields for the frontend renderer ---
+        # --- 新格式锚点（name/related_bucket_ids）规范化为前端期望字段 ---
+        for a in anchors:
+            if not a.get("summary"):
+                a["summary"] = a.get("name", "未命名锚点")
+            if not a.get("bucket_id"):
+                rids = a.get("related_bucket_ids", []) or []
+                a["bucket_id"] = rids[0] if rids else ""
+            if a.get("emotion_intensity") in (None, "", 0.0):
+                bl = a.get("emotional_baseline", []) or []
+                a["emotion_intensity"] = 0.8 if bl else 0.0
+            if not a.get("emotion_tags"):
+                a["emotion_tags"] = a.get("emotional_baseline", []) or []
+            if not a.get("coordinates"):
+                a["coordinates"] = {"valence": 0.5, "arousal": 0.6}
         return JSONResponse({"anchors": anchors})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
