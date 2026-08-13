@@ -39,6 +39,11 @@ class IdentityManager:
     def __init__(self, config: dict):
         self.base_dir = os.path.join(config["buckets_dir"], "identity")
         os.makedirs(self.base_dir, exist_ok=True)
+
+        # --- Self-profile: the main AI's own self-understanding ---
+        # --- 自我认知档案：主 AI 对自己了解的专门存储（固定文件，不随名册列表展示）---
+        self.self_profile_path = os.path.join(self.base_dir, "self_profile.md")
+        self.self_profile_id = "self_profile"
         
         # --- Relationship graph storage / 关系图存储 ---
         # Simple JSON adjacency list structure:
@@ -72,6 +77,7 @@ class IdentityManager:
         core_traits: List[str] = None,
         relationships: List[str] = None,
         content: str = "",
+        relation_tags: List[str] = None,
     ) -> str:
         """
         Create a new identity profile.
@@ -83,6 +89,7 @@ class IdentityManager:
             core_traits: 性格特征关键词数组
             relationships: 关系描述数组（如"与张三是朋友"）
             content: 补充描述内容
+            relation_tags: 关系标签数组（简易判断标签，如 ["家人","同事"]；正常读取时优先返回）
         
         Returns:
             identity_id
@@ -95,6 +102,7 @@ class IdentityManager:
         basic_info = basic_info or {}
         core_traits = core_traits or []
         relationships = relationships or []
+        relation_tags = relation_tags or []
 
         metadata = {
             "id": identity_id,
@@ -103,6 +111,7 @@ class IdentityManager:
             "basic_info": basic_info,
             "core_traits": core_traits,
             "relationships": relationships,
+            "relation_tags": relation_tags,
             "type": "identity",
             "created": now_iso(),
             "last_active": now_iso(),
@@ -240,6 +249,7 @@ class IdentityManager:
         content: str = None,
         pinned: bool = None,
         protected: bool = None,
+        relation_tags: List[str] = None,
     ) -> bool:
         """
         Update identity profile.
@@ -261,6 +271,8 @@ class IdentityManager:
             post["core_traits"] = core_traits
         if relationships is not None:
             post["relationships"] = relationships
+        if relation_tags is not None:
+            post["relation_tags"] = relation_tags
         if content is not None:
             post.content = content
         if pinned is not None:
@@ -274,6 +286,44 @@ class IdentityManager:
 
         logger.info(f"Updated identity / 更新身份: {identity_id}")
         return True
+
+    async def find_similar(self, name: str) -> Optional[dict]:
+        """
+        Find an existing identity profile similar to the given name.
+        Preferred flow for adding a roster entry: scan the whole roster first —
+        if the same person already exists, update that entry instead of creating
+        a duplicate. Matches on name or aliases with fuzzy similarity.
+        
+        新增名册时优先复用已有档案：先扫视整个名册是否存在同一个人。
+        若已有（姓名/别名模糊匹配），返回该档案，调用方应更新而非新建。
+        """
+        if not name or not name.strip():
+            return None
+        target = name.strip()
+        identities = await self.list_all()
+        best_match = None
+        best_score = 0.0
+        for ident in identities:
+            meta = ident.get("metadata", {})
+            candidates = [meta.get("name", "")] + list(meta.get("aliases", []) or [])
+            for cand in candidates:
+                if not cand:
+                    continue
+                if cand == target:
+                    return ident  # exact hit / 精确命中
+                try:
+                    from rapidfuzz import fuzz as _fuzz
+                    score = _fuzz.ratio(cand, target) / 100.0
+                except Exception:
+                    score = 0.0
+                if score > best_score:
+                    best_score = score
+                    best_match = ident
+        # --- Threshold: >= 0.78 means the same person (e.g. "小明" vs "小明同学") ---
+        # --- 阈值：相似度 >= 0.78 视为同一人 ---
+        if best_match is not None and best_score >= 0.78:
+            return best_match
+        return None
 
     async def toggle_pin(self, identity_id: str) -> bool:
         """
@@ -610,7 +660,7 @@ class IdentityManager:
 
     async def list_all(self) -> list[dict]:
         """
-        List all identities.
+        List all identities (excludes the self-profile which is shown separately).
         """
         identities = []
         if not os.path.exists(self.base_dir):
@@ -619,12 +669,75 @@ class IdentityManager:
         for filename in os.listdir(self.base_dir):
             if not filename.endswith(".md"):
                 continue
+            # --- Self-profile is displayed in its own top section, not in the roster list ---
+            # --- 自我认知档案在名册顶部独立展示，不混入名册列表 ---
+            if filename == os.path.basename(self.self_profile_path):
+                continue
             file_path = os.path.join(self.base_dir, filename)
             identity = self._load_identity(file_path)
             if identity:
                 identities.append(identity)
 
         return identities
+
+    async def get_self_profile(self) -> Optional[dict]:
+        """
+        Get the main AI's self-understanding profile (fixed file).
+        获取主 AI 的自我认知档案（固定文件，页面最上方独立板块）。
+        """
+        if not os.path.exists(self.self_profile_path):
+            return None
+        return self._load_identity(self.self_profile_path)
+
+    async def save_self_profile(
+        self,
+        content: str = "",
+        name: str = "自我认知",
+        core_traits: List[str] = None,
+        relation_tags: List[str] = None,
+        basic_info: Dict[str, str] = None,
+    ) -> str:
+        """
+        Save (create or update) the self-understanding profile.
+        保存/更新主 AI 的自我认知档案（固定文件，独立于名册列表）。
+        """
+        core_traits = core_traits or []
+        relation_tags = relation_tags or []
+        basic_info = basic_info or {}
+        if os.path.exists(self.self_profile_path):
+            post = frontmatter.load(self.self_profile_path)
+            post["name"] = name or "自我认知"
+            if content is not None and content != "":
+                post.content = content
+            if core_traits:
+                post["core_traits"] = core_traits
+            if relation_tags:
+                post["relation_tags"] = relation_tags
+            if basic_info:
+                post["basic_info"] = basic_info
+            post["last_active"] = now_iso()
+        else:
+            post = frontmatter.Post(
+                content or "",
+                id=self.self_profile_id,
+                name=name or "自我认知",
+                type="identity",
+                aliases=[],
+                core_traits=core_traits,
+                relation_tags=relation_tags,
+                basic_info=basic_info,
+                relationships=[],
+                related_memories=[],
+                pinned=True,
+                protected=True,
+                created=now_iso(),
+                last_active=now_iso(),
+                activation_count=0,
+            )
+        with open(self.self_profile_path, "w", encoding="utf-8") as f:
+            f.write(frontmatter.dumps(post))
+        logger.info("Self profile saved / 自我认知档案已保存")
+        return self.self_profile_id
 
     async def add_relationship(self, identity_id: str, relationship: str) -> bool:
         """

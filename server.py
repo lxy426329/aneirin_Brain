@@ -4281,17 +4281,20 @@ async def get_roster(name: str = None) -> str:
     查询名册(人物)记录。
     
     Args:
-        name: 可选，人物姓名或别名，用于精确查找。若不提供则返回所有人。
+        name: 可选，人物姓名或别名，用于专项精确查询。若不提供则仅返回所有人的
+              关系标签速览（正常读取优先返回标签，便于快速判断）。
     
     Returns:
-        名册人物信息，包括姓名、别名、特征、基础信息和关联记忆。
+        名册人物信息。正常读取返回[姓名]+关系标签速览；
+        专项查询返回详情：关系标签、别名、特征、基础信息、激活次数和关联记忆。
     """
     try:
         identities = await identity_mgr.list_all()
         if not identities:
             return "暂无名册(人物)记录。"
         
-        if name:
+        specific = bool(name)
+        if specific:
             matched = []
             for ident in identities:
                 meta = ident.get("metadata", {})
@@ -4304,31 +4307,43 @@ async def get_roster(name: str = None) -> str:
         results = []
         for ident in identities:
             meta = ident.get("metadata", {})
-            name = meta.get("name", "")
-            aliases = ", ".join(meta.get("aliases", []))
-            traits = ", ".join(meta.get("core_traits", []))
+            ident_name = meta.get("name", "")
+            aliases = meta.get("aliases", [])
+            traits = meta.get("core_traits", [])
             basic_info = meta.get("basic_info", {})
             related_memories = meta.get("related_memories", [])
+            relation_tags = meta.get("relation_tags", [])
             pinned = meta.get("pinned", False)
             activation_count = meta.get("activation_count", 0)
             
-            entry = f"[{name}]"
+            entry = f"[{ident_name}]"
             if pinned:
                 entry += " [钉选]"
-            if aliases:
-                entry += f"\n  别名: {aliases}"
-            if traits:
-                entry += f"\n  特征: {traits}"
-            if basic_info:
-                for key, value in basic_info.items():
-                    entry += f"\n  {key}: {value}"
-            if activation_count > 0:
-                entry += f"\n  激活次数: {activation_count}"
-            if related_memories:
-                entry += f"\n  关联记忆: {len(related_memories)}条"
-            content = ident.get("content", "")
-            if content:
-                entry += f"\n  描述: {content[:100]}"
+            
+            if specific:
+                # 专项查询：返回详细字段，关系标签优先显式列出
+                if relation_tags:
+                    entry += f"\n  关系: {'、'.join(relation_tags)}"
+                if aliases:
+                    entry += f"\n  别名: {', '.join(aliases)}"
+                if traits:
+                    entry += f"\n  特征: {', '.join(traits)}"
+                if basic_info:
+                    for key, value in basic_info.items():
+                        entry += f"\n  {key}: {value}"
+                if activation_count > 0:
+                    entry += f"\n  激活次数: {activation_count}"
+                if related_memories:
+                    entry += f"\n  关联记忆: {len(related_memories)}条"
+                content = ident.get("content", "")
+                if content:
+                    entry += f"\n  描述: {content[:100]}"
+            else:
+                # 正常读取：优先返回关系标签速览，快速判断与对方的关系
+                if relation_tags:
+                    entry += f"  关系: {'、'.join(relation_tags)}"
+                if traits:
+                    entry += f"  特征: {', '.join(traits[:3])}"
             
             results.append(entry)
         
@@ -6994,7 +7009,7 @@ async def api_buckets(request):
 
 @mcp.custom_route("/api/identities", methods=["GET"])
 async def api_identities(request):
-    """List all identity profiles."""
+    """List all identity profiles (self-profile returned separately on top)."""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
@@ -7003,12 +7018,15 @@ async def api_identities(request):
         result = []
         for ident in identities:
             meta = ident.get("metadata", {})
+            basic_info = meta.get("basic_info", {}) or {}
             result.append({
                 "id": ident["id"],
                 "name": meta.get("name", ident["id"]),
                 "aliases": meta.get("aliases", []),
-                "basic_info": meta.get("basic_info", {}),
+                "basic_info": basic_info,
                 "core_traits": meta.get("core_traits", []),
+                # --- 关系标签：简易判断标签，正常读取优先返回 ---
+                "relation_tags": meta.get("relation_tags", []) or [],
                 "relationships": meta.get("relationships", []),
                 "related_memories": meta.get("related_memories", []),
                 "pinned": meta.get("pinned", False),
@@ -7017,10 +7035,97 @@ async def api_identities(request):
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 0),
                 "content": ident.get("content", ""),
+                # --- Flat convenience fields extracted from basic_info ---
+                # --- 便捷扁平字段（自 basic_info 提取，兼容前端编辑器）---
+                "gender": basic_info.get("性别", ""),
+                "age": basic_info.get("年龄", ""),
+                "occupation": basic_info.get("职业", ""),
+                "interests": basic_info.get("兴趣", []),
             })
         result.sort(key=lambda x: x.get("activation_count", 0), reverse=True)
-        return JSONResponse({"identities": result, "total": len(result)})
+        # --- Self-profile: shown in its own top section ---
+        # --- 自我认知档案：名册顶部独立板块返回 ---
+        self_profile = None
+        try:
+            sp = await identity_mgr.get_self_profile()
+            if sp:
+                sp_meta = sp.get("metadata", {})
+                sp_basic = sp_meta.get("basic_info", {}) or {}
+                self_profile = {
+                    "id": sp["id"],
+                    "name": sp_meta.get("name", "自我认知"),
+                    "core_traits": sp_meta.get("core_traits", []),
+                    "relation_tags": sp_meta.get("relation_tags", []) or [],
+                    "basic_info": sp_basic,
+                    "content": sp.get("content", ""),
+                    "updated_at": sp_meta.get("last_active", ""),
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load self profile / 加载自我认知失败: {e}")
+        return JSONResponse({"identities": result, "total": len(result), "self_profile": self_profile})
     except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/roster/self", methods=["GET", "POST"])
+async def api_roster_self(request):
+    """
+    Get (GET) or save (POST) the main AI's self-understanding profile.
+    Placed at the very top of the roster page as a dedicated section.
+    自我认知板块：名册页面最上方的专属板块，用于 AI 记录对自身的了解。
+    """
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+
+    if request.method == "GET":
+        try:
+            sp = await identity_mgr.get_self_profile()
+            if not sp:
+                return JSONResponse({"self_profile": None})
+            meta = sp.get("metadata", {})
+            return JSONResponse({
+                "self_profile": {
+                    "id": sp["id"],
+                    "name": meta.get("name", "自我认知"),
+                    "core_traits": meta.get("core_traits", []),
+                    "relation_tags": meta.get("relation_tags", []) or [],
+                    "basic_info": meta.get("basic_info", {}) or {},
+                    "content": sp.get("content", ""),
+                    "updated_at": meta.get("last_active", ""),
+                }
+            })
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # --- POST: save self-understanding ---
+    # --- POST：保存自我认知 ---
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+
+    content = body.get("content", "") or ""
+    core_traits = body.get("core_traits") or []
+    relation_tags = body.get("relation_tags") or []
+    basic_info = body.get("basic_info") or {}
+    name = body.get("name") or "自我认知"
+    if isinstance(core_traits, str):
+        core_traits = [s.strip() for s in core_traits.split(",") if s.strip()]
+    if isinstance(relation_tags, str):
+        relation_tags = [s.strip() for s in relation_tags.split(",") if s.strip()]
+
+    try:
+        await identity_mgr.save_self_profile(
+            content=content,
+            name=name,
+            core_traits=core_traits,
+            relation_tags=relation_tags,
+            basic_info=basic_info,
+        )
+        return JSONResponse({"success": True, "id": identity_mgr.self_profile_id})
+    except Exception as e:
+        logger.error(f"Failed to save self profile / 保存自我认知失败: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -7053,14 +7158,30 @@ async def api_bucket_detail(request):
                 "locked": True,
             })
 
-    return JSONResponse({
+    response = {
         "id": bucket["id"],
         "metadata": meta,
         "content": strip_wikilinks(raw_content),
         "score": decay_engine.calculate_score(meta),
         "is_private": is_private,
         "locked": False,
-    })
+    }
+    # Identity (名册) 详情：附加扁平字段，供前端编辑器直接读取
+    # 名册详情：扁平化返回别名/关系标签/性格等，避免前端逐层取 metadata
+    if meta.get("type") == "identity":
+        basic_info = meta.get("basic_info", {}) or {}
+        response["name"] = meta.get("name", bucket["id"])
+        response["aliases"] = meta.get("aliases", []) or []
+        response["relation_tags"] = meta.get("relation_tags", []) or []
+        response["traits"] = meta.get("core_traits", []) or []
+        response["core_traits"] = meta.get("core_traits", []) or []
+        response["relationships"] = meta.get("relationships", []) or []
+        response["basic_info"] = basic_info
+        response["gender"] = basic_info.get("性别", "")
+        response["age"] = basic_info.get("年龄", "")
+        response["occupation"] = basic_info.get("职业", "")
+        response["interests"] = basic_info.get("兴趣", [])
+    return JSONResponse(response)
 
 
 async def _generate_one_line_summary_async(bucket_id: str, content: str):
@@ -7149,7 +7270,79 @@ async def api_bucket_create(request):
     domain = body.get("domain", [])
     name = body.get("name", None)
     bucket_type = body.get("type", "dynamic")
-    
+
+    # =========================================================
+    # Identity (名册) creation — dedicated branch
+    # 名册专用分支：
+    #   1. 先扫视已有名册（find_similar），同一个人 → 更新已有档案而非新建
+    #   2. 字段全量落库（aliases/traits/relation_tags 等），避免丢失
+    #   3. 返回 { id, merged }，前端据此提示"已更新已有档案"
+    # =========================================================
+    if bucket_type == "identity":
+        aliases = body.get("aliases", []) or []
+        traits = body.get("traits", []) or []
+        if isinstance(aliases, str):
+            aliases = [s.strip() for s in aliases.split(",") if s.strip()]
+        if isinstance(traits, str):
+            traits = [s.strip() for s in traits.split(",") if s.strip()]
+        relation_tags = body.get("relation_tags", []) or []
+        if isinstance(relation_tags, str):
+            relation_tags = [s.strip() for s in relation_tags.split(",") if s.strip()]
+        basic_info = body.get("basic_info", {}) or {}
+        # --- Flat editor fields → basic_info dict ---
+        # --- 编辑器扁平字段并入 basic_info ---
+        if body.get("gender"):
+            basic_info["性别"] = body["gender"]
+        if body.get("age") is not None:
+            basic_info["年龄"] = str(body["age"])
+        if body.get("occupation"):
+            basic_info["职业"] = body["occupation"]
+        if body.get("interests"):
+            interests = body["interests"]
+            if isinstance(interests, str):
+                interests = [s.strip() for s in interests.split(",") if s.strip()]
+            basic_info["兴趣"] = interests
+        relationships = body.get("relationships", []) or []
+        if isinstance(relationships, str):
+            relationships = [s.strip() for s in relationships.split("\n") if s.strip()]
+
+        # --- 优先修改已有名册：先扫视全册是否存在同一个人 ---
+        # --- Preferred: update existing roster entry instead of duplicating ---
+        try:
+            existing = await identity_mgr.find_similar(name or "")
+        except Exception as e:
+            logger.warning(f"Identity dedup scan failed / 名册去重扫描失败: {e}")
+            existing = None
+
+        try:
+            if existing:
+                eid = existing["id"]
+                await identity_mgr.update(
+                    eid,
+                    name=name,
+                    aliases=aliases,
+                    basic_info=basic_info,
+                    core_traits=traits,
+                    relationships=relationships,
+                    relation_tags=relation_tags,
+                    content=content or None,
+                )
+                logger.info(f"Roster updated existing identity / 名册更新已有档案: {eid} ({name})")
+                return JSONResponse({"id": eid, "merged": True}, status_code=200)
+            new_id = await identity_mgr.create(
+                name=name or "未命名",
+                aliases=aliases,
+                basic_info=basic_info,
+                core_traits=traits,
+                relationships=relationships,
+                content=content or "",
+                relation_tags=relation_tags,
+            )
+            return JSONResponse({"id": new_id, "merged": False}, status_code=201)
+        except Exception as e:
+            logger.error(f"Identity create failed / 名册创建失败: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     create_kwargs = {
         "content": content,
         "tags": tags,
@@ -7245,11 +7438,61 @@ async def api_bucket_update(request):
         update_kwargs["relationships"] = body["relationships"]
     if "notes" in body:
         update_kwargs["notes"] = body["notes"]
+    if "relation_tags" in body:
+        update_kwargs["relation_tags"] = body["relation_tags"]
     if "decay_stage" in body:
         update_kwargs["decay_stage"] = body["decay_stage"]
     if "digested" in body:
         update_kwargs["digested"] = body["digested"]
-    
+
+    # =========================================================
+    # Identity (名册) update — route to identity manager so every
+    # field (aliases/traits/relation_tags/gender/age/...) is persisted.
+    # 名册更新走 identity 管理器：确保别名/性格/关系标签等全字段落库。
+    # =========================================================
+    try:
+        existing_bucket = await bucket_mgr.get(bucket_id)
+        if existing_bucket and existing_bucket.get("metadata", {}).get("type") == "identity":
+            aliases = body.get("aliases", []) or []
+            traits = body.get("traits", []) or []
+            if isinstance(aliases, str):
+                aliases = [s.strip() for s in aliases.split(",") if s.strip()]
+            if isinstance(traits, str):
+                traits = [s.strip() for s in traits.split(",") if s.strip()]
+            relation_tags = body.get("relation_tags", []) or []
+            if isinstance(relation_tags, str):
+                relation_tags = [s.strip() for s in relation_tags.split(",") if s.strip()]
+            basic_info = body.get("basic_info", {}) or {}
+            if body.get("gender"):
+                basic_info["性别"] = body["gender"]
+            if body.get("age") is not None:
+                basic_info["年龄"] = str(body["age"])
+            if body.get("occupation"):
+                basic_info["职业"] = body["occupation"]
+            if body.get("interests"):
+                interests = body["interests"]
+                if isinstance(interests, str):
+                    interests = [s.strip() for s in interests.split(",") if s.strip()]
+                basic_info["兴趣"] = interests
+            relationships = body.get("relationships", []) or []
+            if isinstance(relationships, str):
+                relationships = [s.strip() for s in relationships.split("\n") if s.strip()]
+            success = await identity_mgr.update(
+                bucket_id,
+                name=body.get("name") or None,
+                aliases=aliases,
+                basic_info=basic_info,
+                core_traits=traits,
+                relationships=relationships,
+                relation_tags=relation_tags,
+                content=(body.get("content") or None),
+            )
+            if not success:
+                return JSONResponse({"error": "update failed"}, status_code=500)
+            return JSONResponse({"success": True})
+    except Exception as e:
+        logger.warning(f"Identity update routing failed / 名册更新路由失败: {e}")
+
     if not update_kwargs:
         return JSONResponse({"error": "no fields to update"}, status_code=400)
     

@@ -674,9 +674,32 @@
   .identity-card {
     background: linear-gradient(135deg, rgba(74,124,89,0.06), rgba(74,124,89,0.02));
     border-color: rgba(74,124,89,0.15);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    transition: box-shadow 0.2s, transform 0.2s;
+  }
+  .identity-card:hover {
+    box-shadow: 0 6px 20px rgba(74,124,89,0.16);
+    transform: translateY(-2px);
+  }
+  .identity-tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(74,124,89,0.14);
+    color: #4A7C59;
+    margin-right: 6px;
+    margin-bottom: 4px;
+  }
+  body.dark .identity-tag {
+    background: rgba(74,124,89,0.28);
   }
   body.dark .identity-card {
     background: linear-gradient(135deg, rgba(74,124,89,0.1), rgba(74,124,89,0.04));
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   }
   .pattern-card {
     background: linear-gradient(135deg, rgba(154,123,79,0.06), rgba(154,123,79,0.02));
@@ -1453,6 +1476,24 @@
       <button class="btn-primary" onclick="showIdentityEditor()">+ 创建身份</button>
     </div>
 
+    <!-- 自我认知板块：页面最上方，长方形框框，供 AI 记录对自身的了解 -->
+    <div id="self-profile-section" style="display:none;margin-bottom:24px;">
+      <div style="border-radius:var(--radius-xl);padding:20px 24px;border:1px solid rgba(74,124,89,0.28);background:linear-gradient(135deg,rgba(74,124,89,0.08),rgba(74,124,89,0.03));">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:15px;font-weight:600;">自我认知</span>
+            <span style="font-size:11px;color:var(--text-dim);">AI 对自身的了解</span>
+          </div>
+          <button onclick="editSelfProfile()" style="padding:6px 14px;border:1px solid rgba(74,124,89,0.4);background:transparent;color:var(--accent);border-radius:8px;cursor:pointer;font-size:12px;">编辑</button>
+        </div>
+        <div id="self-profile-body" style="font-size:13px;line-height:1.7;color:var(--text-secondary);"></div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;font-size:12px;color:var(--text-dim);">
+      提示：创建新名册前请先扫视下方已有名册，若已有同一人物将自动更新其档案而非新建。
+    </div>
+
     <div id="identity-list" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;"></div>
 
     <div id="identity-empty" class="loading" style="display:none;">暂无身份档案</div>
@@ -1470,12 +1511,18 @@
 
     <div class="config-row" style="margin-bottom:12px;">
       <label>姓名 *</label>
-      <input type="text" id="identity-editor-name" placeholder="请输入姓名" />
+      <input type="text" id="identity-editor-name" placeholder="请输入姓名" oninput="checkIdentityDuplicate()" />
     </div>
+    <div id="identity-duplicate-hint" style="display:none;font-size:12px;color:#FFB74D;margin:-6px 0 12px;padding-left:112px;"></div>
 
     <div class="config-row" style="margin-bottom:12px;">
       <label>别名</label>
       <input type="text" id="identity-editor-aliases" placeholder="逗号分隔，如：小张, 三哥" />
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>关系标签</label>
+      <input type="text" id="identity-editor-relation-tags" placeholder="逗号分隔的简易判断标签，如：家人, 同事, 老朋友" />
     </div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
@@ -1541,6 +1588,42 @@
     </div>
 
     <div id="identity-editor-msg" style="margin-top:12px;font-size:13px;"></div>
+  </div>
+</div>
+
+<div id="self-profile-editor-modal" class="modal-overlay" style="display:none;">
+  <div style="background:var(--surface-solid);border-radius:var(--radius-xl);padding:28px;max-width:560px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);margin-top:40px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3>编辑自我认知</h3>
+      <button onclick="closeSelfProfileEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>名称</label>
+      <input type="text" id="self-profile-editor-name" placeholder="如：自我认知" />
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>性格特征</label>
+      <input type="text" id="self-profile-editor-traits" placeholder="逗号分隔，如：理性, 温和, 善于倾听" />
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>关系标签</label>
+      <input type="text" id="self-profile-editor-relation-tags" placeholder="逗号分隔，如：助手, 倾听者, 规划者" />
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">对自身的了解</label>
+      <textarea id="self-profile-editor-content" rows="6" placeholder="写下你对自身的认知：你的定位、能力、习惯、边界等" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+
+    <div style="display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn-secondary" onclick="closeSelfProfileEditor()">取消</button>
+      <button class="btn-primary" onclick="saveSelfProfile()">保存</button>
+    </div>
+
+    <div id="self-profile-editor-msg" style="margin-top:12px;font-size:13px;"></div>
   </div>
 </div>
 

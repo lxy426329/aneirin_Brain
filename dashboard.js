@@ -4314,6 +4314,9 @@ async function deleteExperience(exp_id) {
   }
 }
 
+// 当前已加载的名册列表，用于创建时扫视查重
+let _identityList = [];
+
 function renderIdentities(identities) {
   const list = document.getElementById('identity-list');
   const empty = document.getElementById('identity-empty');
@@ -4325,13 +4328,14 @@ function renderIdentities(identities) {
   }
   empty.style.display = 'none';
   list.innerHTML = identities.map(i => `
-    <div class="identity-card" style="border-radius:16px;padding:24px;border:1px solid #4A7C59;background:linear-gradient(135deg,#4A7C5910,#4A7C5905);">
+    <div class="identity-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
         <div>
-          <div style="display:flex;align-items:center;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <h3 style="margin:0;font-size:18px;">${escapeHtml(i.name || i.topic || '未命名')}</h3>
+            ${i.relation_tags && i.relation_tags.length > 0 ? i.relation_tags.map(t => `<span class="identity-tag">${escapeHtml(t)}</span>`).join('') : ''}
           </div>
-          ${i.aliases && i.aliases.length > 0 ? `<div style="font-size:13px;color:var(--text-dim);margin-top:4px;margin-left:32px;">别名: ${escapeHtml(i.aliases.join(', '))}</div>` : ''}
+          ${i.aliases && i.aliases.length > 0 ? `<div style="font-size:13px;color:var(--text-dim);margin-top:4px;">别名: ${escapeHtml(i.aliases.join(', '))}</div>` : ''}
         </div>
         <div style="display:flex;gap:8px;">
           <button onclick="showIdentityEditor('${i.id}')" style="padding:6px 12px;border:none;background:var(--accent);color:white;border-radius:8px;cursor:pointer;font-size:12px;">编辑</button>
@@ -4360,10 +4364,10 @@ function renderIdentities(identities) {
         ` : ''}
       </div>
       
-      ${i.traits && i.traits.length > 0 ? `
+      ${(i.traits || i.core_traits) && (i.traits || i.core_traits).length > 0 ? `
         <div style="margin-bottom:12px;">
           <div style="font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">性格特征</div>
-          <div>${i.traits.map(t => `<span style="background:#4A7C5920;color:#4A7C59;padding:4px 10px;border-radius:12px;font-size:13px;margin-right:6px;margin-bottom:4px;display:inline-block;">${escapeHtml(t)}</span>`).join('')}</div>
+          <div>${(i.traits || i.core_traits).map(t => `<span style="background:#4A7C5920;color:#4A7C59;padding:4px 10px;border-radius:12px;font-size:13px;margin-right:6px;margin-bottom:4px;display:inline-block;">${escapeHtml(t)}</span>`).join('')}</div>
         </div>
       ` : ''}
       
@@ -4411,9 +4415,88 @@ async function loadIdentities() {
     if (!resp) return;
     const data = await resp.json();
     const identities = data.identities || [];
+    _identityList = identities;
+    renderSelfProfile(data.self_profile || null);
     renderIdentities(identities);
   } catch(e) {
     list.innerHTML = `<p style="color:var(--negative)">加载失败: ${e.message}</p>`;
+  }
+}
+
+// ========================================
+// 自我认知板块：页面最上方，供 AI 记录对自身的了解
+// ========================================
+function renderSelfProfile(sp) {
+  const section = document.getElementById('self-profile-section');
+  const body = document.getElementById('self-profile-body');
+  if (!sp || (!sp.content && !(sp.core_traits && sp.core_traits.length) && !(sp.relation_tags && sp.relation_tags.length))) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  const parts = [];
+  if (sp.relation_tags && sp.relation_tags.length) {
+    parts.push(`<div style="margin-bottom:8px;">${sp.relation_tags.map(t => `<span class="identity-tag">${escapeHtml(t)}</span>`).join('')}</div>`);
+  }
+  if (sp.core_traits && sp.core_traits.length) {
+    parts.push(`<div style="margin-bottom:8px;"><span style="font-size:11px;color:var(--text-dim);margin-right:6px;">性格特征:</span>${sp.core_traits.map(t => `<span style="background:#4A7C5920;color:#4A7C59;padding:3px 10px;border-radius:12px;font-size:12px;margin-right:6px;">${escapeHtml(t)}</span>`).join('')}</div>`);
+  }
+  if (sp.content) {
+    parts.push(`<div>${escapeHtml(sp.content)}</div>`);
+  }
+  body.innerHTML = parts.join('');
+}
+
+function editSelfProfile() {
+  const modal = document.getElementById('self-profile-editor-modal');
+  authFetch('/api/roster/self')
+    .then(r => r.json())
+    .then(data => {
+      const sp = data.self_profile || {};
+      document.getElementById('self-profile-editor-name').value = sp.name || '自我认知';
+      document.getElementById('self-profile-editor-traits').value = (sp.core_traits || []).join(', ');
+      document.getElementById('self-profile-editor-relation-tags').value = (sp.relation_tags || []).join(', ');
+      document.getElementById('self-profile-editor-content').value = sp.content || '';
+      document.getElementById('self-profile-editor-msg').textContent = '';
+      modal.style.display = 'flex';
+    })
+    .catch(e => alert('加载自我认知失败: ' + e.message));
+}
+
+function closeSelfProfileEditor() {
+  document.getElementById('self-profile-editor-modal').style.display = 'none';
+}
+
+async function saveSelfProfile() {
+  const msg = document.getElementById('self-profile-editor-msg');
+  const data = {
+    name: document.getElementById('self-profile-editor-name').value.trim() || '自我认知',
+    core_traits: document.getElementById('self-profile-editor-traits').value.split(',').map(s => s.trim()).filter(s => s),
+    relation_tags: document.getElementById('self-profile-editor-relation-tags').value.split(',').map(s => s.trim()).filter(s => s),
+    content: document.getElementById('self-profile-editor-content').value
+  };
+  try {
+    const resp = await authFetch('/api/roster/self', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    if (!resp) return;
+    if (resp.ok) {
+      msg.textContent = '保存成功';
+      msg.style.color = 'var(--accent)';
+      setTimeout(() => {
+        closeSelfProfileEditor();
+        loadIdentities();
+      }, 500);
+    } else {
+      const text = await resp.text();
+      msg.textContent = '保存失败: ' + text;
+      msg.style.color = 'var(--negative)';
+    }
+  } catch(e) {
+    msg.textContent = '保存失败: ' + e.message;
+    msg.style.color = 'var(--negative)';
   }
 }
 
@@ -4493,6 +4576,7 @@ function showIdentityEditor(id) {
   const title = document.getElementById('identity-editor-title');
   const nameInput = document.getElementById('identity-editor-name');
   const aliasesInput = document.getElementById('identity-editor-aliases');
+  const relationTagsInput = document.getElementById('identity-editor-relation-tags');
   const traitsInput = document.getElementById('identity-editor-traits');
   const relationshipsInput = document.getElementById('identity-editor-relationships');
   const contentInput = document.getElementById('identity-editor-content');
@@ -4503,6 +4587,10 @@ function showIdentityEditor(id) {
   const ageInput = document.getElementById('identity-editor-age');
   const occupationInput = document.getElementById('identity-editor-occupation');
   const interestsInput = document.getElementById('identity-editor-interests');
+
+  // 重置查重提示
+  const dupHint = document.getElementById('identity-duplicate-hint');
+  if (dupHint) dupHint.style.display = 'none';
   
   if (id) {
     title.textContent = '编辑身份档案';
@@ -4512,6 +4600,7 @@ function showIdentityEditor(id) {
         idInput.value = data.id;
         nameInput.value = data.name || data.topic || '';
         aliasesInput.value = data.aliases ? data.aliases.join(', ') : '';
+        relationTagsInput.value = data.relation_tags ? data.relation_tags.join(', ') : '';
         traitsInput.value = data.traits ? data.traits.join(', ') : '';
         relationshipsInput.value = data.relationships ? data.relationships.join('\n') : '';
         contentInput.value = data.content || '';
@@ -4543,6 +4632,7 @@ function showIdentityEditor(id) {
     idInput.value = '';
     nameInput.value = '';
     aliasesInput.value = '';
+    relationTagsInput.value = '';
     traitsInput.value = '';
     relationshipsInput.value = '';
     contentInput.value = '';
@@ -4556,6 +4646,31 @@ function showIdentityEditor(id) {
   }
   
   modal.style.display = 'flex';
+}
+
+// 创建新名册时先扫视已有名册：发现同名/别名相同的人物则提示将合并更新
+function checkIdentityDuplicate() {
+  const id = document.getElementById('identity-editor-id').value;
+  const hint = document.getElementById('identity-duplicate-hint');
+  if (!hint) return;
+  if (id) { hint.style.display = 'none'; return; } // 编辑模式不提示
+  const name = document.getElementById('identity-editor-name').value.trim();
+  if (!name || !_identityList || _identityList.length === 0) {
+    hint.style.display = 'none';
+    return;
+  }
+  const same = _identityList.find(i => {
+    const n = (i.name || '').toLowerCase();
+    const aliases = (i.aliases || []).map(a => a.toLowerCase());
+    const nm = name.toLowerCase();
+    return n === nm || aliases.includes(nm);
+  });
+  if (same) {
+    hint.textContent = `已存在同名人物「${same.name}」，保存后将更新其档案而非新建。`;
+    hint.style.display = '';
+  } else {
+    hint.style.display = 'none';
+  }
 }
 
 function loadIdentityRelatedList(currentId) {
@@ -4644,6 +4759,7 @@ async function saveIdentity() {
   const id = document.getElementById('identity-editor-id').value;
   const name = document.getElementById('identity-editor-name').value.trim();
   const aliases = document.getElementById('identity-editor-aliases').value.split(',').map(s => s.trim()).filter(s => s);
+  const relationTags = document.getElementById('identity-editor-relation-tags').value.split(',').map(s => s.trim()).filter(s => s);
   const traits = document.getElementById('identity-editor-traits').value.split(',').map(s => s.trim()).filter(s => s);
   const relationships = document.getElementById('identity-editor-relationships').value.split('\n').map(s => s.trim()).filter(s => s);
   const content = document.getElementById('identity-editor-content').value;
@@ -4677,6 +4793,7 @@ async function saveIdentity() {
   };
   
   if (aliases.length > 0) data.aliases = aliases;
+  if (relationTags.length > 0) data.relation_tags = relationTags;
   if (traits.length > 0) data.traits = traits;
   if (Object.keys(basicInfo).length > 0) data.basic_info = basicInfo;
   if (relationships.length > 0) data.relationships = relationships;
@@ -4697,7 +4814,12 @@ async function saveIdentity() {
     if (!resp) return;
     
     if (resp.ok) {
-      msg.textContent = id ? '更新成功' : '创建成功';
+      let merged = false;
+      try {
+        const rj = await resp.json();
+        merged = rj && rj.merged === true;
+      } catch(e) { /* PUT 返回 success 无 merged 字段 */ }
+      msg.textContent = merged ? '已更新已有档案' : (id ? '更新成功' : '创建成功');
       msg.style.color = 'var(--accent)';
       setTimeout(() => {
         closeIdentityEditor();
