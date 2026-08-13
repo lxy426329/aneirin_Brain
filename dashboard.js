@@ -321,11 +321,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('candlestick-view').style.display = target === 'candlestick' ? '' : 'none';
     document.getElementById('cycle-view').style.display = target === 'cycle' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
+    document.getElementById('housekeeper-view').style.display = target === 'housekeeper' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'identity') loadIdentities();
     if (target === 'experience') loadExperiences();
+    if (target === 'housekeeper') loadHousekeeper();
     // --- 锚点自动触发：进入页面即扫描高情绪记忆生成锚点，无需手动点击 ---
     // --- anchors trigger automatically on entering the tab, no manual click ---
     if (target === 'anchor') { loadAnchors(); autoCreateAnchors(); }
@@ -334,6 +336,51 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'cycle') loadCycle();
   });
 });
+
+// --- 顶栏关键入口：切换到指定 tab ---
+// --- header quick entries: switch to the given tab ---
+function switchTabFromHeader(target) {
+  const el = document.querySelector('.tab[data-tab="' + target + '"]');
+  if (el) el.click();
+}
+
+function loadHousekeeper() {
+  const box = document.getElementById('housekeeper-result');
+  if (!box || (box.dataset.loaded && box.textContent.trim() !== '' && !box.dataset.loaded.includes('暂无'))) return;
+  box.dataset.loaded = '1';
+}
+
+async function runHousekeeper() {
+  const box = document.getElementById('housekeeper-result');
+  if (!box) return;
+  box.className = '';
+  box.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;">' +
+    '<div style="width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+    '<div style="margin-top:16px;font-size:14px;color:var(--text-dim);">管家整理中，请稍候...</div>' +
+    '<style>@keyframes spin { to { transform: rotate(360deg); } }</style></div>';
+  try {
+    const resp = await authFetch('/api/run-housekeeper', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await resp.json();
+    let text = '';
+    if (data && data.review) {
+      text = JSON.stringify(data.review, null, 2);
+    } else if (data && data.result) {
+      text = typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2);
+    } else if (data && data.message) {
+      text = data.message;
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
+    box.className = '';
+    box.innerHTML = '<pre style="margin:0;padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--text);max-height:70vh;overflow:auto;">' + esc(text) + '</pre>';
+  } catch (e) {
+    box.className = 'empty-state';
+    box.innerHTML = '日终报告生成失败：' + esc(e.message);
+  }
+}
 
 async function loadBuckets() {
   try {
@@ -618,6 +665,7 @@ async function showDetail(id, prefetched) {
     }
     var meta = b.metadata || {};
     var bucketType = meta.type || 'event';
+    var _contentShown = false;
 
     // --- Handle locked private buckets ---
     // --- 处理隐私锁定的记忆桶 ---
@@ -724,11 +772,15 @@ async function showDetail(id, prefetched) {
       }
     } else {
       // Event/feel bucket
+      // --- 详情固定顺序：标题 → 主/副标签 → 正文 → 元数据（时间/权重/情绪） ---
+      // --- fixed order: title → primary/sub tags → body → metadata ---
+      _contentShown = true;
+      detailHtml += '<div class="detail-tags">' + buildTagDisplay(meta.tags || [], meta.primary_tags || [], meta.sub_tags || []) + '</div>';
+      detailHtml += '<div class="detail-content">' + esc(b.content) + '</div>';
       detailHtml += '<div class="detail-meta">' +
         '<div class="field"><label>ID</label>' + id + '</div>' +
         '<div class="field"><label>类型</label>' + bucketType + '</div>' +
-        '<div class="field"><label>域</label>' + (meta.domain || []).join(', ') + '</div>' +
-        '<div class="field"><label>标签</label>' + buildTagDisplay(meta.tags || [], meta.primary_tags || [], meta.sub_tags || []) + '</div>';
+        '<div class="field"><label>域</label>' + (meta.domain || []).join(', ') + '</div>';
       
       if (emotionHtml) {
         detailHtml += '<div class="field"><label>情绪</label>' + emotionHtml + '</div>';
@@ -789,7 +841,9 @@ async function showDetail(id, prefetched) {
       detailHtml += '</div>';
     }
     
-    detailHtml += '<div class="detail-content">' + esc(b.content) + '</div>';
+    if (!_contentShown) {
+      detailHtml += '<div class="detail-content">' + esc(b.content) + '</div>';
+    }
     
     detailHtml += '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);display:flex;gap:12px;">';
     // 编辑：类型专用编辑器优先，其余走通用编辑弹窗
@@ -1720,12 +1774,12 @@ function escapeHtml(s) {
 
 function showLoading(container) {
   if (typeof container === 'string') container = document.getElementById(container);
-  if (container) container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);">加载中...</div>';
+  if (container) container.innerHTML = '<div class="empty-state" style="border:none;">加载中...</div>';
 }
 
 function showError(container, msg) {
   if (typeof container === 'string') container = document.getElementById(container);
-  if (container) container.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">加载失败: ' + escapeHtml(msg) + '</div>';
+  if (container) container.innerHTML = '<div class="empty-state" style="border-color:rgba(244,67,54,0.4);color:#f44336;">加载失败: ' + escapeHtml(msg) + '</div>';
 }
 
 function formatTimeAgo(iso) {

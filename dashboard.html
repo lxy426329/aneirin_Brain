@@ -276,6 +276,48 @@
     border-bottom-color: var(--accent);
     font-weight: 500;
   }
+  .tab-group {
+    align-self: center;
+    padding: 0 8px 0 16px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    color: var(--text-light);
+    white-space: nowrap;
+    user-select: none;
+  }
+  .tab-group:first-child { padding-left: 0; }
+  .overview-panel {
+    background: var(--surface);
+    backdrop-filter: blur(8px);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .overview-panel summary {
+    padding: 14px 22px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--accent);
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+  }
+  .overview-panel summary::-webkit-details-marker { display: none; }
+  .overview-panel summary::before { content: '▸ '; opacity: 0.7; }
+  .overview-panel[open] summary::before { content: '▾ '; }
+  .overview-panel summary:hover { background: var(--accent-glow); }
+  .overview-panel > div { margin: 0 22px 20px; }
+  .empty-state {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
 
   .content {
     padding: 28px 40px;
@@ -1229,7 +1271,6 @@
   <h1>Ombre Brain</h1>
   <span class="stats" id="stats">loading...</span>
   <div id="ai-status-badge" style="margin-left:4px;padding:0 12px;height:34px;border-radius:12px;font-size:11px;background:rgba(160,140,110,0.1);color:var(--text-dim);border:1px solid var(--border);display:inline-flex;align-items:center;box-sizing:border-box;">AI: 检测中</div>
-  <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">深色</button>
   <div class="search-bar" autocomplete="off">
     <div style="display:none;">
       <input type="text" autocomplete="username" />
@@ -1245,24 +1286,35 @@
     </select>
   </div>
   <div class="header-actions">
+    <button class="header-btn" onclick="switchTabFromHeader('list')">记忆</button>
     <button class="header-btn" onclick="window.location.href='/echo-chamber'">回音壁</button>
+    <button class="header-btn" onclick="switchTabFromHeader('housekeeper')">日终报告</button>
+    <button class="header-btn" onclick="switchTabFromHeader('config')">设置</button>
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">深色</button>
     <button class="header-btn" onclick="doLogout()">退出</button>
   </div>
 </div>
 
 <div class="tabs">
+  <span class="tab-group">记忆浏览</span>
   <div class="tab active" data-tab="list">记忆桶</div>
   <div class="tab" data-tab="experience">年轮</div>
   <div class="tab" data-tab="anchor">锚点</div>
   <div class="tab" data-tab="identity">名册</div>
   <div class="tab" data-tab="timeline">时间链</div>
+  <div class="tab" data-tab="network">记忆网络</div>
+  <span class="tab-group">记录</span>
   <div class="tab" data-tab="candlestick">烛台</div>
   <div class="tab" data-tab="cycle">例假</div>
-  <div class="tab" data-tab="network">记忆网络</div>
+  <span class="tab-group">管家</span>
+  <div class="tab" data-tab="housekeeper">日终报告</div>
+  <span class="tab-group">设置</span>
   <div class="tab" data-tab="config">配置</div>
 </div>
 
 <div class="content" id="list-view">
+  <details class="overview-panel" id="overview-panel">
+    <summary>总览（情绪 / 最近记忆 / 即将遗忘）</summary>
   <div class="mood-widget" id="mood-widget" style="display:none;">
     <div class="mood-widget-header">
       <h3>情绪总览</h3>
@@ -1282,8 +1334,6 @@
     </div>
   </div>
 
-  <div class="stats-cards" id="stats-cards"></div>
-
   <div id="expiring-memories" style="display:none;background:var(--surface);backdrop-filter:blur(8px);border-radius:var(--radius-lg);padding:22px;border:1px solid var(--border);margin-bottom:20px;transition:box-shadow 0.25s ease;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
       <h3 style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:600;color:var(--accent);letter-spacing:0.2px;margin:0;">即将遗忘的记忆</h3>
@@ -1291,6 +1341,9 @@
     </div>
     <div id="expiring-list"></div>
   </div>
+  </details>
+
+  <div class="stats-cards" id="stats-cards"></div>
 
   <div class="filters" id="filters"></div>
   <div id="batchToolbar" style="display:none;gap:8px;padding:8px 12px;background:var(--card);border-radius:8px;margin-bottom:8px;align-items:center;">
@@ -1736,6 +1789,19 @@
     </div>
 
     <div id="bucket-editor-msg" style="margin-top:12px;font-size:13px;"></div>
+  </div>
+</div>
+
+<div class="content" id="housekeeper-view" style="display:none">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px;border:1px solid var(--border);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+      <div>
+        <h2 style="margin:0;font-size:18px;font-weight:600;color:var(--text);">日终报告</h2>
+        <p style="margin:6px 0 0;font-size:13px;color:var(--text-dim);">运行管家整理当日记忆，生成事件链、人物收录与总结报告</p>
+      </div>
+      <button class="detail-action-btn primary" onclick="runHousekeeper()">生成日终报告</button>
+    </div>
+    <div id="housekeeper-result" class="empty-state">点击「生成日终报告」查看结果</div>
   </div>
 </div>
 
