@@ -405,10 +405,10 @@ async function loadExpiringMemories() {
           '<div style="font-size:13px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(b.name) + '</div>' +
           '<div style="font-size:11px;color:var(--text-light);">得分 ' + (b.score || 0).toFixed(2) + ' · #' + shortId + '</div>' +
         '</div>' +
-        '<span onclick="event.stopPropagation();" style="display:inline-flex;gap:6px;flex-shrink:0;">' +
-          '<button onclick="editBucket(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:12px;">编辑</button>' +
-          '<button onclick="deleteBucket(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid #f44336;background:transparent;color:#f44336;cursor:pointer;font-size:12px;">删除</button>' +
-          '<button onclick="keepMemory(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-glow);color:var(--accent);cursor:pointer;font-size:12px;">保留</button>' +
+        '<span onclick="event.stopPropagation();" class="row-actions">' +
+          '<button class="row-action-btn" onclick="editBucket(\'' + b.id + '\')" title="编辑">编辑</button>' +
+          '<button class="row-action-btn danger" onclick="deleteBucket(\'' + b.id + '\')" title="删除">删除</button>' +
+          '<button class="row-action-btn keep" onclick="keepMemory(\'' + b.id + '\')" title="保留">保留</button>' +
         '</span>' +
       '</div>';
     }
@@ -581,9 +581,9 @@ function renderBuckets(buckets) {
 
       html += '<div class="bucket-row' + (b.type === 'identity' ? ' identity-card' : b.type === 'pattern' ? ' pattern-card' : '') + '" data-bucket-id="' + b.id + '">' +
         '<div class="name">' + checkboxHtml + lockBadge + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span>' +
-          '<span style="float:right;display:inline-flex;gap:6px;margin-left:8px;">' +
-            '<button onclick="event.stopPropagation();editBucket(\'' + b.id + '\')" title="编辑" style="padding:2px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:11px;">编辑</button>' +
-            '<button onclick="event.stopPropagation();deleteBucket(\'' + b.id + '\')" title="删除" style="padding:2px 10px;border-radius:6px;border:1px solid #f44336;background:transparent;color:#f44336;cursor:pointer;font-size:11px;">删除</button>' +
+          '<span class="row-actions">' +
+            '<button class="row-action-btn" onclick="event.stopPropagation();editBucket(\'' + b.id + '\')" title="编辑">编辑</button>' +
+            '<button class="row-action-btn danger" onclick="event.stopPropagation();deleteBucket(\'' + b.id + '\')" title="删除">删除</button>' +
           '</span>' +
         '</div>' +
         (preview ? '<div class="preview">' + preview + '</div>' : '') +
@@ -3454,8 +3454,8 @@ function renderCandlesticks(candlesticks) {
             <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${candle.created ? new Date(candle.created).toLocaleString() : ''}</div>
           </div>
           <div style="display:flex;gap:6px;">
-            ${candle.bucket_id ? `<button onclick="showDetail(${JSON.stringify(candle.bucket_id)})" style="padding:6px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;color:var(--text-secondary);transition:all 0.2s;">查看记忆</button>` : ''}
-            <button onclick="deleteCandlestick(${JSON.stringify(candle.id)})" style="padding:6px 14px;border-radius:10px;border:none;background:#FF6B6B15;color:#FF6B6B;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.2s;">删除</button>
+            ${candle.bucket_id ? `<button onclick="showDetail('${candle.bucket_id}')" style="padding:6px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;color:var(--text-secondary);transition:all 0.2s;">查看记忆</button>` : ''}
+            <button onclick="deleteCandlestick('${candle.id}')" style="padding:6px 14px;border-radius:10px;border:none;background:#FF6B6B15;color:#FF6B6B;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.2s;">删除</button>
           </div>
         </div>
         <div style="font-size:14px;color:var(--text-secondary);line-height:1.7;white-space:pre-wrap;">${escapeHtml(candle.content)}</div>
@@ -5364,7 +5364,7 @@ function performSearch(query) {
         var type = r.type || 'event';
         var score = r.importance || r.score || 0;
         
-        html += '<div class="search-result-item" onclick="document.getElementById(\'search-results-panel\').classList.remove(\'open\');showDetail(' + JSON.stringify(r.id) + ')">' +
+        html += '<div class="search-result-item" onclick="document.getElementById(\'search-results-panel\').classList.remove(\'open\');showDetail(\'' + r.id + '\')">' +
           '<span class="sr-name">' + name + '</span>' +
           '<span class="sr-type">' + type + '</span>' +
           '<span class="sr-score">' + (typeof score === 'number' ? score.toFixed(1) : score) + '</span>' +
@@ -5589,7 +5589,7 @@ function renderMemoryTimeline() {
     var typeColor = typeColors[bucketType] || '#888';
     var typeLabel = typeLabels[bucketType] || bucketType;
     
-    html += '<div class="timeline-entry" onclick="showDetail(' + JSON.stringify(b.id) + ')">' +
+    html += '<div class="timeline-entry" onclick="showDetail(\'' + b.id + '\')">' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
       '<div class="tl-time">' + formatTimeAgo(timeStr) + '</div>' +
       '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(' + hexToRgb(typeColor) + ',0.1);color:' + typeColor + ';">' + typeLabel + '</span>' +
