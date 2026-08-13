@@ -1627,6 +1627,75 @@
   </div>
 </div>
 
+<!-- 通用记忆编辑弹窗：可编辑任意记忆桶的内容与元数据 -->
+<div id="bucket-editor-modal" class="modal-overlay" style="display:none;">
+  <div style="background:var(--surface-solid);border-radius:var(--radius-xl);padding:28px;max-width:620px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);margin-top:40px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="bucket-editor-title">编辑记忆</h3>
+      <button onclick="closeBucketEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
+    </div>
+
+    <input type="hidden" id="bucket-editor-id" />
+    <input type="hidden" id="bucket-editor-type" />
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>名称</label>
+      <input type="text" id="bucket-editor-name" placeholder="记忆名称" />
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>类型</label>
+      <input type="text" id="bucket-editor-type-display" disabled style="background:var(--bg);opacity:0.7;" />
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">内容</label>
+      <textarea id="bucket-editor-content" rows="6" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>标签</label>
+      <input type="text" id="bucket-editor-tags" placeholder="逗号分隔，如：工作, 项目" />
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>主题域</label>
+      <input type="text" id="bucket-editor-domain" placeholder="逗号分隔，如：工作, 编程" />
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>重要度</label>
+      <input type="number" id="bucket-editor-importance" min="1" max="10" style="max-width:120px;" />
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">情绪标签（逗号分隔，如：愤怒, 委屈）</label>
+      <input type="text" id="bucket-editor-emotions" placeholder="如：愤怒, 失望, 委屈" />
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">
+        <span>情绪效价（0=消极 → 1=积极，当前 <span id="bucket-editor-valence-value">0.50</span>）</span>
+      </label>
+      <input type="range" id="bucket-editor-valence" min="0" max="1" step="0.05" value="0.5" style="width:100%;" />
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">
+        <span>唤醒度（0=平静 → 1=激动，当前 <span id="bucket-editor-arousal-value">0.30</span>）</span>
+      </label>
+      <input type="range" id="bucket-editor-arousal" min="0" max="1" step="0.05" value="0.3" style="width:100%;" />
+    </div>
+
+    <div style="display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn-secondary" onclick="closeBucketEditor()">取消</button>
+      <button class="btn-primary" onclick="saveBucketEdit()">保存</button>
+    </div>
+
+    <div id="bucket-editor-msg" style="margin-top:12px;font-size:13px;"></div>
+  </div>
+</div>
+
 <div class="content" id="config-view" style="display:none">
   <div style="max-width:640px;margin:0 auto;">
     <div class="config-section">

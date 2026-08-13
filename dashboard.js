@@ -400,12 +400,16 @@ async function loadExpiringMemories() {
     for (var i = 0; i < expiring.length; i++) {
       var b = expiring[i];
       var shortId = b.id.substring(0, 8);
-      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--card-bg);border-radius:var(--radius-sm);border:1px solid var(--border);margin-bottom:6px;">' +
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--card-bg);border-radius:var(--radius-sm);border:1px solid var(--border);margin-bottom:6px;cursor:pointer;" onclick="showDetail(\'' + b.id + '\')">' +
         '<div style="flex:1;min-width:0;">' +
           '<div style="font-size:13px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(b.name) + '</div>' +
           '<div style="font-size:11px;color:var(--text-light);">得分 ' + (b.score || 0).toFixed(2) + ' · #' + shortId + '</div>' +
         '</div>' +
-        '<button onclick="keepMemory(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-glow);color:var(--accent);cursor:pointer;font-size:12px;flex-shrink:0;">保留</button>' +
+        '<span onclick="event.stopPropagation();" style="display:inline-flex;gap:6px;flex-shrink:0;">' +
+          '<button onclick="editBucket(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:12px;">编辑</button>' +
+          '<button onclick="deleteBucket(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid #f44336;background:transparent;color:#f44336;cursor:pointer;font-size:12px;">删除</button>' +
+          '<button onclick="keepMemory(\'' + b.id + '\')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-glow);color:var(--accent);cursor:pointer;font-size:12px;">保留</button>' +
+        '</span>' +
       '</div>';
     }
     listEl.innerHTML = html;
@@ -561,7 +565,7 @@ function renderBuckets(buckets) {
           '</span>';
         }
       } else {
-        emotionDisplay = 'V' + (b.valence || 0.5).toFixed(1) + '/A' + (b.arousal || 0.3).toFixed(1);
+        emotionDisplay = '<span style="font-size:11px;color:var(--text-light);">未标注</span>';
       }
       
       var shortId = b.id.substring(0, 8);
@@ -576,7 +580,12 @@ function renderBuckets(buckets) {
       var checkboxHtml = '<input type="checkbox" class="bucket-checkbox" ' + checkedAttr + ' onclick="event.stopPropagation();toggleBucketSelection(\'' + b.id + '\')" style="margin-right:8px;">';
 
       html += '<div class="bucket-row' + (b.type === 'identity' ? ' identity-card' : b.type === 'pattern' ? ' pattern-card' : '') + '" data-bucket-id="' + b.id + '">' +
-        '<div class="name">' + checkboxHtml + lockBadge + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span></div>' +
+        '<div class="name">' + checkboxHtml + lockBadge + esc(b.name) + '<span style="color:var(--text-light);font-size:11px;margin-left:6px;font-weight:400;">#' + shortId + '</span>' +
+          '<span style="float:right;display:inline-flex;gap:6px;margin-left:8px;">' +
+            '<button onclick="event.stopPropagation();editBucket(\'' + b.id + '\')" title="编辑" style="padding:2px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:11px;">编辑</button>' +
+            '<button onclick="event.stopPropagation();deleteBucket(\'' + b.id + '\')" title="删除" style="padding:2px 10px;border-radius:6px;border:1px solid #f44336;background:transparent;color:#f44336;cursor:pointer;font-size:11px;">删除</button>' +
+          '</span>' +
+        '</div>' +
         (preview ? '<div class="preview">' + preview + '</div>' : '') +
         '<div class="row-tags">' +
           '<span style="padding:1px 6px;border-radius:4px;background:rgba(' + hexToRgb(typeColor) + ',0.1);color:' + typeColor + ';" class="type">' + bucketType + '</span>' +
@@ -792,6 +801,15 @@ async function showDetail(id, prefetched) {
     detailHtml += '<div class="detail-content">' + esc(b.content) + '</div>';
     
     detailHtml += '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);display:flex;gap:12px;">';
+    // 编辑：类型专用编辑器优先，其余走通用编辑弹窗
+    if (bucketType === 'identity') {
+      detailHtml += '<button onclick="showIdentityEditor(\'' + id + '\')" style="flex:1;padding:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;cursor:pointer;font-size:13px;">编辑</button>';
+    } else if (bucketType === 'pattern') {
+      detailHtml += '<button onclick="editPattern(\'' + id + '\')" style="flex:1;padding:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;cursor:pointer;font-size:13px;">编辑</button>';
+    } else {
+      detailHtml += '<button onclick="editBucket(\'' + id + '\')" style="flex:1;padding:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;cursor:pointer;font-size:13px;">编辑</button>';
+    }
+    detailHtml += '<button onclick="deleteBucket(\'' + id + '\')" style="flex:1;padding:10px;border:none;background:#C0392B;color:white;border-radius:12px;cursor:pointer;font-size:13px;">删除</button>';
     detailHtml += '<button onclick="showAddRelationModal(\'' + id + '\')" style="flex:1;padding:10px;border:none;background:var(--accent);color:white;border-radius:12px;cursor:pointer;font-size:13px;">+ 添加关联记忆</button>';
     if (meta.is_private) {
       detailHtml += '<button onclick="togglePrivacyLock(\'' + id + '\', false)" style="padding:10px 16px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;cursor:pointer;font-size:13px;">解除锁定</button>';
@@ -805,6 +823,142 @@ async function showDetail(id, prefetched) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
   }
 }
+
+// ========================================
+// 通用记忆编辑 / 删除：所有入口可对任意记忆进行增删改查
+// ========================================
+
+// 兼容旧入口：详情面板/时间链中的关联记忆等点击跳转查看
+function loadBucketDetail(id) { showDetail(id); }
+
+// 打开通用编辑弹窗（event/feel/dynamic/permanent 等普通桶）
+async function editBucket(id) {
+  try {
+    const resp = await authFetch('/api/bucket/' + id);
+    if (!resp) return;
+    const b = await resp.json();
+    openBucketEditor(b);
+  } catch(e) {
+    alert('加载失败: ' + e.message);
+  }
+}
+
+function openBucketEditor(b) {
+  const meta = b.metadata || {};
+  document.getElementById('bucket-editor-id').value = b.id;
+  document.getElementById('bucket-editor-type').value = meta.type || 'event';
+  document.getElementById('bucket-editor-title').textContent = '编辑记忆';
+  document.getElementById('bucket-editor-name').value = meta.name || b.name || '';
+  document.getElementById('bucket-editor-type-display').value = meta.type || 'event';
+  document.getElementById('bucket-editor-content').value = b.content || '';
+  document.getElementById('bucket-editor-tags').value = (meta.tags || []).join(', ');
+  document.getElementById('bucket-editor-domain').value = (meta.domain || []).join(', ');
+  document.getElementById('bucket-editor-importance').value = meta.importance || 5;
+  const emotions = (meta.emotions || []).map(e => e.label).filter(Boolean);
+  document.getElementById('bucket-editor-emotions').value = emotions.join(', ');
+  const valence = (meta.valence != null && !isNaN(meta.valence)) ? meta.valence : 0.5;
+  const arousal = (meta.arousal != null && !isNaN(meta.arousal)) ? meta.arousal : 0.3;
+  document.getElementById('bucket-editor-valence').value = valence;
+  document.getElementById('bucket-editor-valence-value').textContent = valence.toFixed(2);
+  document.getElementById('bucket-editor-arousal').value = arousal;
+  document.getElementById('bucket-editor-arousal-value').textContent = arousal.toFixed(2);
+  document.getElementById('bucket-editor-msg').textContent = '';
+  document.getElementById('bucket-editor-modal').style.display = 'flex';
+}
+
+function closeBucketEditor() {
+  document.getElementById('bucket-editor-modal').style.display = 'none';
+}
+
+async function saveBucketEdit() {
+  const id = document.getElementById('bucket-editor-id').value;
+  const msg = document.getElementById('bucket-editor-msg');
+  if (!id) { closeBucketEditor(); return; }
+
+  const valence = parseFloat(document.getElementById('bucket-editor-valence').value);
+  const arousal = parseFloat(document.getElementById('bucket-editor-arousal').value);
+  const emotionLabels = document.getElementById('bucket-editor-emotions').value.split(',').map(s => s.trim()).filter(s => s);
+  const emotions = emotionLabels.map(label => ({
+    label: label,
+    intensity: Math.max(0.3, Math.abs(valence - 0.5) * 2),
+    polarity: valence > 0.55 ? 'positive' : (valence < 0.45 ? 'negative' : 'neutral'),
+    arousal_level: arousal > 0.66 ? 'high' : (arousal > 0.33 ? 'medium' : 'low'),
+    duration: 'short'
+  }));
+
+  const data = {
+    name: document.getElementById('bucket-editor-name').value.trim(),
+    content: document.getElementById('bucket-editor-content').value,
+    tags: document.getElementById('bucket-editor-tags').value.split(',').map(s => s.trim()).filter(s => s),
+    domain: document.getElementById('bucket-editor-domain').value.split(',').map(s => s.trim()).filter(s => s),
+    importance: parseInt(document.getElementById('bucket-editor-importance').value) || 5,
+    emotions: emotions,
+    valence: valence,
+    arousal: arousal
+  };
+  if (emotions.length > 0) data.dominant_emotion = emotions[0].label;
+
+  try {
+    const resp = await authFetch('/api/bucket/' + id, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    if (!resp) return;
+    if (resp.ok) {
+      msg.textContent = '保存成功';
+      msg.style.color = 'var(--accent)';
+      setTimeout(() => {
+        closeBucketEditor();
+        invalidateCache('buckets');
+        loadBuckets();
+        loadExpiringMemories();
+        showDetail(id);
+      }, 400);
+    } else {
+      const text = await resp.text();
+      msg.textContent = '保存失败: ' + text;
+      msg.style.color = 'var(--negative)';
+    }
+  } catch(e) {
+    msg.textContent = '保存失败: ' + e.message;
+    msg.style.color = 'var(--negative)';
+  }
+}
+
+// 单条删除任意记忆桶（移入回收站，24h 内可恢复）
+async function deleteBucket(id) {
+  if (!confirm('确定要删除这条记忆吗？删除后进入回收站，24 小时后自动清理。')) return;
+  try {
+    const resp = await authFetch('/api/bucket/' + id, { method: 'DELETE' });
+    if (!resp) return;
+    if (resp.ok) {
+      alert('已删除');
+      invalidateCache('buckets');
+      loadBuckets();
+      loadExpiringMemories();
+      const panel = document.getElementById('detail-panel');
+      if (panel) panel.classList.remove('open');
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      alert('删除失败: ' + (data.error || '未知错误'));
+    }
+  } catch(e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+// 滑块实时显示
+document.addEventListener('DOMContentLoaded', function() {
+  var vEl = document.getElementById('bucket-editor-valence');
+  var aEl = document.getElementById('bucket-editor-arousal');
+  if (vEl) vEl.addEventListener('input', function() {
+    document.getElementById('bucket-editor-valence-value').textContent = parseFloat(this.value).toFixed(2);
+  });
+  if (aEl) aEl.addEventListener('input', function() {
+    document.getElementById('bucket-editor-arousal-value').textContent = parseFloat(this.value).toFixed(2);
+  });
+});
 
 async function unlockPrivacyBucket(id) {
   var input = document.getElementById('privacy-unlock-input');
@@ -2121,6 +2275,7 @@ function renderDirectory(data) {
       
       return `
         <div class="memory-item${isPinned ? ' pinned' : ''}" 
+             onclick="showDetail(${safeId})"
              style="background:var(--surface);border-radius:12px;padding:14px;border:1px solid var(--border);cursor:pointer;transition:all 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;">
@@ -2128,7 +2283,7 @@ function renderDirectory(data) {
                      onclick="event.stopPropagation();toggleSelect(${safeId})"
                      style="width:16px;height:16px;border:2px solid var(--border);border-radius:4px;cursor:pointer;accent-color:${sectionColor};">
               ${isPinned ? '<span style="font-size:14px;">📌</span>' : ''}
-              <span style="font-weight:600;font-size:13px;color:var(--text);line-height:1.4;" onclick="showDetail(${safeId})">${safeName}</span>
+              <span style="font-weight:600;font-size:13px;color:var(--text);line-height:1.4;">${safeName}</span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
               ${score ? `<span style="font-size:11px;color:${sectionColor};font-weight:600;background:${sectionColor}10;padding:2px 6px;border-radius:6px;">${score}</span>` : ''}
@@ -4154,6 +4309,7 @@ function renderExperiences(data) {
             <div style="font-size:12px;color:var(--text-dim);">更新: ${exp.updated ? new Date(exp.updated).toLocaleString() : ''} | 创建: ${exp.created ? new Date(exp.created).toLocaleString() : ''}</div>
           </div>
           <div style="display:flex;gap:6px;">
+            <button onclick="showDetail('${exp.id}')" style="padding:6px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;color:var(--text-secondary);transition:all 0.2s;">查看</button>
             <button onclick="applyExperience('${exp.id}')" style="padding:6px 14px;border-radius:10px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.2s;hover:background:var(--accent-hover);">应用</button>
             <button onclick="editExperience('${exp.id}')" style="padding:6px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;color:var(--text-secondary);transition:all 0.2s;hover:background:var(--border);">编辑</button>
             <button onclick="deleteExperience('${exp.id}')" style="padding:6px 14px;border-radius:10px;border:none;background:#FF6B6B15;color:#FF6B6B;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.2s;hover:background:#FF6B6B25;">删除</button>

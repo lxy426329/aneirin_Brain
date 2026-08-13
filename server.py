@@ -2635,16 +2635,50 @@ async def _hold_impl(
         extra_tags = [t.strip() for t in tags if t and t.strip()]
 
     # --- Feel mode: store as feel type, minimal metadata ---
-    # --- Feel 模式：存为 feel 类型，最少元数据 ---
+    # --- Feel 模式：存为 feel 类型 ---
+    # 情绪必须自动分析：即使跟主 AI 吵架，也应识别为负面情绪而不是默认"平静"
+    # Feel 模式自动打标情绪，除非调用方显式提供了 valence/arousal
     if feel:
-        # Feel valence/arousal = model's own perspective
+        feel_analysis = None
+        if not (0 <= valence <= 1) or not (0 <= arousal <= 1):
+            try:
+                feel_analysis = await dehydrator.analyze(content)
+            except Exception as e:
+                logger.warning(f"Feel auto-tagging failed / feel 自动打标失败: {e}")
+
+        emotions = []
+        dominant = ""
+        metrics = {}
+        # Feel valence/arousal = model's own perspective / 模型自身视角
         feel_valence = valence if 0 <= valence <= 1 else 0.5
         feel_arousal = arousal if 0 <= arousal <= 1 else 0.3
+        if feel_analysis:
+            emotions = feel_analysis.get("emotions", []) or []
+            dominant = feel_analysis.get("dominant_emotion", "") or ""
+            metrics = feel_analysis.get("emotion_metrics", {}) or {}
+            # --- 未显式提供效价时，由分析结果推导（emotional_valence: -1~1 → 0~1）---
+            if not (0 <= valence <= 1):
+                ev = metrics.get("emotional_valence")
+                if ev is not None:
+                    try:
+                        feel_valence = max(0.0, min(1.0, (float(ev) + 1) / 2))
+                    except (TypeError, ValueError):
+                        pass
+            # --- 未显式提供唤醒度时，由情绪强度均值推导 ---
+            if not (0 <= arousal <= 1) and emotions:
+                try:
+                    feel_arousal = max(0.0, min(1.0, sum(float(e.get("intensity", 0.3)) for e in emotions) / len(emotions)))
+                except (TypeError, ValueError):
+                    pass
+
         bucket_id = await bucket_mgr.create(
             content=content,
             tags=[],
             importance=5,
             domain=[],
+            emotions=emotions,
+            dominant_emotion=dominant,
+            emotion_metrics=metrics,
             valence=feel_valence,
             arousal=feel_arousal,
             name=title or None,

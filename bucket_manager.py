@@ -888,9 +888,12 @@ class BucketManager:
             importance = 10
 
         emotions = emotions or []
-        if valence is not None or arousal is not None:
-            # NOTE: use explicit None checks — `or` would swallow legitimate 0.0 values
-            # 注意：用显式 None 判断，`or` 会吞掉合法的 0.0 值（极负面/极平静）
+        if not emotions and (valence is not None or arousal is not None):
+            # Only generate generic labels when NO explicit emotion tags provided.
+            # Explicit emotions (from analysis) take priority — otherwise an angry
+            # memory would be downgraded to a generic "平静" label.
+            # 仅当没有显式情绪标签时才从 valence/arousal 生成通用标签；
+            # 显式情绪（分析所得）优先保留，否则"愤怒"会被降级成通用"平静"。
             emotions = self._valence_arousal_to_emotions(
                 valence if valence is not None else 0.5,
                 arousal if arousal is not None else 0.3,
@@ -1121,10 +1124,15 @@ class BucketManager:
             if "valence" in kwargs or "arousal" in kwargs:
                 v = safe_float(kwargs.get("valence", post.get("valence")), 0.5)
                 a = safe_float(kwargs.get("arousal", post.get("arousal")), 0.3)
-                emotions = self._valence_arousal_to_emotions(v, a)
-                post["emotions"] = emotions
-                if not post.get("dominant_emotion") and emotions:
-                    post["dominant_emotion"] = max(emotions, key=lambda e: e["intensity"])["label"]
+                # 仅在没有显式情绪标签时才从 valence/arousal 生成通用标签；
+                # 显式情绪（分析所得）优先保留，否则"愤怒"会被降级成通用"平静"。
+                if "emotions" not in kwargs or not kwargs.get("emotions"):
+                    emotions = self._valence_arousal_to_emotions(v, a)
+                    post["emotions"] = emotions
+                    if not post.get("dominant_emotion") and emotions:
+                        post["dominant_emotion"] = max(emotions, key=lambda e: e["intensity"])["label"]
+                post["valence"] = v
+                post["arousal"] = a
             if "name" in kwargs:
                 post["name"] = sanitize_name(kwargs["name"])
             if "resolved" in kwargs:
