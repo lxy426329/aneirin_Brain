@@ -1560,26 +1560,26 @@
       <button class="btn-primary" onclick="showIdentityEditor()">+ 创建身份</button>
     </div>
 
-    <!-- 自我认知板块：页面最上方，长方形框框，供 AI 记录对自身的了解 -->
+    <!-- 自我认知板块：AI 的身份核心，独立于关系地图，位于名册最上方 -->
     <div id="self-profile-section" style="display:none;margin-bottom:24px;">
-      <div style="border-radius:var(--radius-xl);padding:20px 24px;border:1px solid rgba(74,124,89,0.28);background:linear-gradient(135deg,rgba(74,124,89,0.08),rgba(74,124,89,0.03));">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <span style="font-size:15px;font-weight:600;">自我认知</span>
-            <span style="font-size:11px;color:var(--text-dim);">AI 对自身的了解</span>
+      <div style="border-radius:var(--radius-xl);padding:24px 28px;border:1px solid rgba(74,124,89,0.30);background:linear-gradient(135deg,rgba(74,124,89,0.10),rgba(74,124,89,0.03));">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-size:18px;font-weight:600;color:var(--accent);">自我认知</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">AI 的身份核心 · 对自身的定位、性格、偏好与相处原则</div>
           </div>
-          <button onclick="editSelfProfile()" style="padding:6px 14px;border:1px solid rgba(74,124,89,0.4);background:transparent;color:var(--accent);border-radius:8px;cursor:pointer;font-size:12px;">编辑</button>
+          <button onclick="editSelfProfile()" class="detail-action-btn primary">编辑自我认知</button>
         </div>
-        <div id="self-profile-body" style="font-size:13px;line-height:1.7;color:var(--text-secondary);"></div>
+        <div id="self-profile-body" style="font-size:13px;line-height:1.8;color:var(--text-secondary);"></div>
       </div>
     </div>
 
-    <!-- 人际关系地图：以 AI 自我认知为中心，人物为节点，关系类型为连线 -->
+    <!-- 人际关系地图：辅助功能，展示 AI 与各人物的关系网络 -->
     <div id="relation-map-section" style="margin-bottom:24px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <span style="font-size:15px;font-weight:600;">人际关系地图</span>
-          <span style="font-size:11px;color:var(--text-dim);">以「自我认知」为中心 · 点击节点可编辑</span>
+          <span style="font-size:11px;color:var(--text-dim);">中心为 AI 自身 · 连线颜色代表关系类型 · 点击节点可编辑</span>
         </div>
         <button onclick="loadRelationMap()" style="padding:6px 14px;border:1px solid var(--border);background:transparent;color:var(--accent);border-radius:8px;cursor:pointer;font-size:12px;">刷新</button>
       </div>

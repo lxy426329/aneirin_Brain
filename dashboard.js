@@ -3712,26 +3712,39 @@ async function loadRelationMap() {
     const edges = data.edges || [];
     const self = data.self_profile || null;
     if (identities.length === 0) {
-      container.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:360px;color:var(--text-dim);font-size:13px;">暂无人物，创建名册后这里会自动生成人际关系地图</div>';
+      container.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:360px;gap:8px;color:var(--text-dim);font-size:13px;">' +
+        '<div>暂无人物档案</div>' +
+        '<div style="font-size:12px;">点击右上角「+ 创建身份」录入人物后，这里会自动生成人际关系地图</div>' +
+        '</div>';
       return;
     }
-    // --- 节点集合：中心 = 自我认知（无档案时用 AI 自我占位） ---
-    // --- nodes: center = self-profile (fallback placeholder) ---
-    const nodes = [];
-    if (self) nodes.push({ id: self.id, name: self.name || '自我认知', isSelf: true, act: self.activation_count || 0 });
-    identities.forEach(p => nodes.push({ id: p.id, name: p.name, isSelf: false, act: p.activation_count || 0 }));
-    if (!self) nodes.push({ id: '__self__', name: 'AI 自我', isSelf: true, act: 0 });
+    // --- 中心 = AI 自身（即自我认知档案）；地图只是关系展示，不承载填写职责 ---
+    // --- center = AI itself; the map only visualizes relations ---
+    const centerName = (self && self.name) ? self.name : '我';
+    const nodes = [{ id: self ? self.id : '__self__', name: centerName, isSelf: true, act: (self && self.activation_count) || 0 }];
+    identities.forEach(p => nodes.push({
+      id: p.id, name: p.name, isSelf: false, act: p.activation_count || 0,
+      connected: edges.some(e => e.from_id === p.id || e.to_id === p.id)
+    }));
 
     const W = Math.max(container.clientWidth || 720, 400);
     const H = 380;
     const cx = W / 2, cy = H / 2;
-    const R = Math.min(cx, cy) - 64;
-    const others = nodes.filter(n => !n.isSelf);
-    others.forEach((n, i) => {
-      const angle = -Math.PI / 2 + (i * 2 * Math.PI / Math.max(others.length, 1));
-      n.x = cx + R * Math.cos(angle);
-      n.y = cy + R * Math.sin(angle);
-    });
+    // --- 分层：有关系的人物靠内圈，尚无关系的人物散在外圈 ---
+    // --- layering: connected people inner ring, unconnected outer ring ---
+    const inner = nodes.filter(n => !n.isSelf && n.connected);
+    const outer = nodes.filter(n => !n.isSelf && !n.connected);
+    const total = Math.max(inner.length + outer.length, 1);
+    const R = Math.min(cx, cy) - (total <= 2 ? 90 : 64);
+    const place = (list, radius, startAngle) => {
+      list.forEach((n, i) => {
+        const angle = startAngle + (i * 2 * Math.PI / Math.max(list.length, 1));
+        n.x = cx + radius * Math.cos(angle);
+        n.y = cy + radius * Math.sin(angle);
+      });
+    };
+    place(inner, R * 0.78, -Math.PI / 2);
+    place(outer, R, -Math.PI / 2 + Math.PI / Math.max(outer.length + 1, 2));
     const centerNode = nodes.find(n => n.isSelf);
     centerNode.x = cx; centerNode.y = cy;
 
@@ -3747,22 +3760,35 @@ async function loadRelationMap() {
         <text x="${midX}" y="${midY - 6}" text-anchor="middle" font-size="11" fill="${color}" font-weight="500" paint-order="stroke" stroke="#F7F5F0" stroke-width="4">${escapeHtml(e.relation_type)}</text>`;
     }).join('');
 
-    // --- 节点：重要的人（激活多）圆更大；点击打开编辑 ---
-    // --- nodes: higher activation = bigger circle; click to edit ---
-    const nodeParts = nodes.map(n => {
+    // --- 节点：重要的人（激活多）圆更大；标签上下交替防重叠；点击打开编辑 ---
+    // --- nodes: higher activation = bigger circle; labels alternate up/down; click to edit ---
+    const nodeParts = nodes.map((n, idx) => {
       const size = n.isSelf ? 34 : (14 + Math.min(n.act * 2, 16));
       const color = n.isSelf ? '#2F4F4F' : '#4A7C59';
       const onclick = n.isSelf ? 'editSelfProfile()' : `showIdentityEditor('${n.id}')`;
-      const label = n.name || 'AI 自我';
+      const labelAbove = n.isSelf ? false : (idx % 2 === 0);
+      const ly = labelAbove ? n.y - size - 10 : n.y + size + 14;
+      const subLabel = n.isSelf
+        ? (self && self.core_traits && self.core_traits.length
+            ? `<text x="${n.x}" y="${n.y + size + 6}" text-anchor="middle" font-size="10" fill="#8C8478">${escapeHtml(self.core_traits[0])}</text>`
+            : '')
+        : `<text x="${n.x}" y="${n.y + size + 6}" text-anchor="middle" font-size="10" fill="#8C8478">激活${n.act}</text>`;
       return `<g onclick="${onclick}" style="cursor:pointer;">
         <circle cx="${n.x}" cy="${n.y}" r="${size}" fill="${color}" fill-opacity="0.12" stroke="${color}" stroke-width="1.6" />
         <circle cx="${n.x}" cy="${n.y}" r="4" fill="${color}" />
-        <text x="${n.x}" y="${n.y - size - 8}" text-anchor="middle" font-size="12" fill="#2D2A25" font-weight="600">${escapeHtml(label)}</text>
-        ${n.isSelf ? '' : `<text x="${n.x}" y="${n.y + size + 4}" text-anchor="middle" font-size="10" fill="#8C8478">激活${n.act}</text>`}
+        <text x="${n.x}" y="${ly}" text-anchor="middle" font-size="12" fill="#2D2A25" font-weight="600">${escapeHtml(n.name)}</text>
+        ${subLabel}
       </g>`;
     }).join('');
 
-    container.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;">${edgeParts}${nodeParts}</svg>`;
+    // --- 图例：仅显示实际用到的关系类型 ---
+    // --- legend: only relation types in use ---
+    const usedTypes = [...new Set(edges.map(e => e.relation_type))];
+    const legend = usedTypes.length > 0
+      ? `<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;padding:10px 0 2px;font-size:11px;color:var(--text-dim);">${usedTypes.map(t => `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:16px;height:2px;background:${RELATION_COLORS[t] || '#7F8C8D'};display:inline-block;"></span>${escapeHtml(t)}</span>`).join('')}</div>`
+      : '';
+
+    container.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;">${edgeParts}${nodeParts}</svg>${legend}`;
   } catch (e) {
     container.innerHTML = `<div style="color:var(--negative);font-size:13px;text-align:center;padding:40px;">关系地图加载失败: ${escapeHtml(e.message)}</div>`;
   }
@@ -3774,22 +3800,27 @@ async function loadRelationMap() {
 function renderSelfProfile(sp) {
   const section = document.getElementById('self-profile-section');
   const body = document.getElementById('self-profile-body');
-  // --- 板块始终显示：AI 对自身的了解固定位于名册最上方 ---
-  // --- Section always visible: AI self-understanding sits at the very top of roster ---
+  // --- 板块始终显示：自我认知固定位于名册最上方，独立于关系地图 ---
+  // --- Section always visible: self-understanding sits at the very top, separate from the map ---
   section.style.display = '';
   if (!sp || (!sp.content && !(sp.core_traits && sp.core_traits.length) && !(sp.relation_tags && sp.relation_tags.length))) {
-    body.innerHTML = '<div style="color:var(--text-dim);font-size:13px;line-height:1.7;">这里记录 AI 对自身的了解（性格、偏好、相处原则等）。点击右上角「编辑」开始填写。</div>';
+    body.innerHTML = '<div style="color:var(--text-dim);font-size:13px;line-height:1.9;">' +
+      'AI 尚未建立自我认知。这是你的身份核心，建议填写：<br>' +
+      '· 你的定位与角色（你是谁、在用户生活中承担什么）<br>' +
+      '· 性格与沟通偏好（理性 / 温和 / 直接……）<br>' +
+      '· 相处原则与边界<br>' +
+      '点击右上角「编辑自我认知」开始填写。</div>';
     return;
   }
   const parts = [];
   if (sp.relation_tags && sp.relation_tags.length) {
-    parts.push(`<div style="margin-bottom:8px;">${sp.relation_tags.map(t => `<span class="identity-tag">${escapeHtml(t)}</span>`).join('')}</div>`);
+    parts.push(`<div style="margin-bottom:10px;">${sp.relation_tags.map(t => `<span class="identity-tag">${escapeHtml(t)}</span>`).join('')}</div>`);
   }
   if (sp.core_traits && sp.core_traits.length) {
-    parts.push(`<div style="margin-bottom:8px;"><span style="font-size:11px;color:var(--text-dim);margin-right:6px;">性格特征:</span>${sp.core_traits.map(t => `<span style="background:#4A7C5920;color:#4A7C59;padding:3px 10px;border-radius:12px;font-size:12px;margin-right:6px;">${escapeHtml(t)}</span>`).join('')}</div>`);
+    parts.push(`<div style="margin-bottom:10px;"><span style="font-size:11px;color:var(--text-dim);margin-right:6px;">性格特征:</span>${sp.core_traits.map(t => `<span style="background:#4A7C5920;color:#4A7C59;padding:3px 10px;border-radius:12px;font-size:12px;margin-right:6px;">${escapeHtml(t)}</span>`).join('')}</div>`);
   }
   if (sp.content) {
-    parts.push(`<div>${escapeHtml(sp.content)}</div>`);
+    parts.push(`<div style="white-space:pre-wrap;">${escapeHtml(sp.content)}</div>`);
   }
   body.innerHTML = parts.join('');
 }
@@ -4026,11 +4057,12 @@ const RELATION_TYPES = ['恋人','配偶','家人','父母','子女','兄弟姐�
 
 function loadIdentityRelatedList(currentId) {
   const list = document.getElementById('identity-related-list');
-  authFetch('/api/identities')
-    .then(r => r.json())
-    .then(data => {
+  Promise.all([authFetch('/api/identities'), authFetch('/api/roster/self')])
+    .then(rs => Promise.all(rs.map(r => r.json())))
+    .then(([data, selfData]) => {
       const identities = (data.identities || []).filter(i => i.id !== currentId);
-      if (identities.length === 0) {
+      const sp = selfData.self_profile || null;
+      if (identities.length === 0 && !sp) {
         list.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:16px;">暂无其他名册，先创建后再来建立关系</div>';
         return;
       }
@@ -4041,7 +4073,26 @@ function loadIdentityRelatedList(currentId) {
       if (me && me.relations) {
         me.relations.forEach(r => { relMap[r.target_id] = r.relation_type || '朋友'; });
       }
-      list.innerHTML = identities.map(i => {
+
+      let html = '';
+      // --- 第一行：（我）AI 自身——把人物与 AI 的关系连到地图中心 ---
+      // --- first row: AI self — link this person to the map center ---
+      if (sp && sp.id) {
+        const selfRel = relMap[sp.id];
+        const checked = selfRel ? 'checked' : '';
+        const sel = RELATION_TYPES.map(t => `<option value="${t}" ${t === (selfRel || '朋友') ? 'selected' : ''}>${t}</option>`).join('');
+        html += `
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;margin-bottom:4px;${selfRel ? 'background:var(--accent-glow);' : ''}" class="identity-rel-row">
+            <input type="checkbox" ${checked} onchange="toggleIdentityRelation('${currentId || ''}', '${sp.id}', this)" style="margin:0;cursor:pointer;" />
+            <span style="flex:1;font-size:13px;font-weight:500;">（我）AI 自身</span>
+            <select onchange="updateRelationType('${currentId || ''}', '${sp.id}', this)" style="font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);${selfRel ? '' : 'opacity:0.55;'}" ${selfRel ? '' : 'disabled'}>${sel}</select>
+          </div>
+        `;
+      } else if (currentId) {
+        html += '<div style="color:var(--text-dim);font-size:12px;padding:6px 8px;margin-bottom:6px;">先在「自我认知」板块填写 AI 的身份，即可在此建立与 AI 的关系</div>';
+      }
+
+      html += identities.map(i => {
         const has = relMap[i.id];
         const checked = has ? 'checked' : '';
         const sel = RELATION_TYPES.map(t => `<option value="${t}" ${t === (has || '朋友') ? 'selected' : ''}>${t}</option>`).join('');
@@ -4053,6 +4104,7 @@ function loadIdentityRelatedList(currentId) {
           </div>
         `;
       }).join('');
+      list.innerHTML = html;
     });
 }
 
