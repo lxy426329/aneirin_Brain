@@ -178,7 +178,7 @@ DIGEST_PROMPT = """你是一个日记整理专家。用户会发送一段包含�
     "domain": ["主题域1"],
     "emotions": [{"label": "情绪1", "intensity": 0.8}, {"label": "情绪2", "intensity": 0.5}],
     "dominant_emotion": "情绪1",
-    "primary_tags": ["主标签（只能从 生活/健康/学习/工作/关系/情绪/约定/兴趣/其它 中选择 1~2 个）"],
+    "primary_tags": ["主标签（只能从 生活/健康/学习/工作/关系/情绪/约定/兴趣 中选择 1~2 个）"],
     "sub_tags": ["副标签（从正文提取 3~8 个短关键词，单个不超过 12 字，不要整句与空泛词）"],
     "tags": ["主标签+副标签合并数组"],
     "importance": 5
@@ -226,7 +226,7 @@ MERGE_PROMPT = """你是一个信息合并专家。请将旧记忆与新内容�
 
 # --- Closed vocabulary for primary tags / 主标签封闭词表 ---
 # 主标签只能是以下词之一，不得自创长句
-PRIMARY_TAG_VOCAB = ("生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣", "其它")
+PRIMARY_TAG_VOCAB = ("生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣")
 
 ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出结构化的元数据。
 
@@ -264,8 +264,8 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
 
 5. tags（标签体系，分主副两类）：
    A. primary_tags（主标签，必选 1~2 个）：只能从以下封闭词表中选择最相关的，禁止自创或写长句
-      ["生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣", "其它"]
-      完全无法归入任何一类时用"其它"，能判断时必须选具体类
+      ["生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣"]
+      完全无法归入任何一类时用"生活"兜底，能判断时必须选具体类
    B. sub_tags（副标签，选 3~8 个）：从原文提取的短关键词（如"加班"、"跑步"、"失眠"），
       每个不超过 12 字，禁止整句，禁止"用户表示""情绪状态""相关"这类空泛词，去重
    tags 字段 = primary_tags + sub_tags 合并为一个数组
@@ -767,7 +767,7 @@ class Dehydrator:
                 if t.strip() in PRIMARY_TAG_VOCAB and t.strip() not in primary_tags:
                     primary_tags.append(t.strip())
         if not primary_tags:
-            primary_tags = ["其它"]
+            primary_tags = ["生活"]
 
         sub_tags = []
         for t in result.get("sub_tags", []) or []:
@@ -825,7 +825,7 @@ class Dehydrator:
                 "emotional_valence": 0.0,
             },
             "tags": [],
-            "primary_tags": ["其它"],
+            "primary_tags": ["生活"],
             "sub_tags": [],
             "suggested_name": "",
         }
@@ -1054,7 +1054,7 @@ class Dehydrator:
                     if t.strip() in PRIMARY_TAG_VOCAB and t.strip() not in primary_tags:
                         primary_tags.append(t.strip())
             if not primary_tags:
-                primary_tags = ["其它"]
+                primary_tags = ["生活"]
 
             sub_tags = []
             for t in item.get("sub_tags", []) or []:

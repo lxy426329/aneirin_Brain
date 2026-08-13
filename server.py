@@ -2637,7 +2637,7 @@ def _split_primary_sub_tags(analysis: dict, extra_tags: list) -> tuple:
         if t not in PRIMARY_TAG_VOCAB and len(t) <= 12 and t not in sub:
             sub.append(t)
     if not primary:
-        primary = ["其它"]
+        primary = ["生活"]
     return primary[:2], sub[:8]
 
 
