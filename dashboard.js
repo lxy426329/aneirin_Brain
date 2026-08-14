@@ -321,13 +321,11 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('candlestick-view').style.display = target === 'candlestick' ? '' : 'none';
     document.getElementById('cycle-view').style.display = target === 'cycle' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
-    document.getElementById('housekeeper-view').style.display = target === 'housekeeper' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'identity') loadIdentities();
     if (target === 'experience') loadExperiences();
-    if (target === 'housekeeper') loadHousekeeper();
     // --- 锚点自动触发：进入页面即扫描高情绪记忆生成锚点，无需手动点击 ---
     // --- anchors trigger automatically on entering the tab, no manual click ---
     if (target === 'anchor') { loadAnchors(); autoCreateAnchors(); }
@@ -337,50 +335,8 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// --- 顶栏关键入口：切换到指定 tab ---
-// --- header quick entries: switch to the given tab ---
-function switchTabFromHeader(target) {
-  const el = document.querySelector('.tab[data-tab="' + target + '"]');
-  if (el) el.click();
-}
-
-function loadHousekeeper() {
-  const box = document.getElementById('housekeeper-result');
-  if (!box || (box.dataset.loaded && box.textContent.trim() !== '' && !box.dataset.loaded.includes('暂无'))) return;
-  box.dataset.loaded = '1';
-}
-
-async function runHousekeeper() {
-  const box = document.getElementById('housekeeper-result');
-  if (!box) return;
-  box.className = '';
-  box.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;">' +
-    '<div style="width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>' +
-    '<div style="margin-top:16px;font-size:14px;color:var(--text-dim);">管家整理中，请稍候...</div>' +
-    '<style>@keyframes spin { to { transform: rotate(360deg); } }</style></div>';
-  try {
-    const resp = await authFetch('/api/run-housekeeper', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    const data = await resp.json();
-    let text = '';
-    if (data && data.review) {
-      text = JSON.stringify(data.review, null, 2);
-    } else if (data && data.result) {
-      text = typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2);
-    } else if (data && data.message) {
-      text = data.message;
-    } else {
-      text = JSON.stringify(data, null, 2);
-    }
-    box.className = '';
-    box.innerHTML = '<pre style="margin:0;padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--text);max-height:70vh;overflow:auto;">' + esc(text) + '</pre>';
-  } catch (e) {
-    box.className = 'empty-state';
-    box.innerHTML = '日终报告生成失败：' + esc(e.message);
-  }
-}
+// --- 导航标签切换 ---
+// --- tab switching ---
 
 async function loadBuckets() {
   try {
@@ -3947,6 +3903,15 @@ async function loadPatterns() {
   } catch(e) {
     list.innerHTML = `<p style="color:var(--negative)">加载失败: ${e.message}</p>`;
   }
+}
+
+// Pattern（模式）编辑/删除：复用通用记忆编辑与删除弹窗
+function editPattern(id) {
+  editBucket(id);
+}
+
+function deletePattern(id) {
+  deleteBucket(id);
 }
 
 function showIdentityEditor(id) {

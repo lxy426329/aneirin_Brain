@@ -178,6 +178,40 @@ emotions:
 ---
 ```
 
+### 标签体系（主 / 副标签）
+
+每条记忆写入时自动打两套标签，存储为 frontmatter 独立字段（`primary_tags` / `sub_tags`），`tags` 字段为二者合并，兼容旧数据与外部读取。
+
+**主标签 `primary_tags`**（封闭词表，最多 2 个，通常 1 个）：
+
+```
+生活 · 健康 · 学习 · 工作 · 关系 · 情绪 · 约定 · 兴趣
+```
+
+- 只能来自上述词表，LLM 无法自由发挥；语义无法判断时兜底为「生活」。
+- 独立存储于 `primary_tags` 字段，**不参与标签归一化**（受保护词，永不映射到其它词）。
+
+**副标签 `sub_tags`**（正文抽取的短关键词，3~8 个）：
+
+- 短词、去重、禁止「用户表示」「情绪状态」等空泛词与整句。
+- 示例：`hold("项目第一阶段开发完成，登录和权限模块已上线")` →
+  `primary_tags: [工作]`，`sub_tags: [项目开发, 用户登录, 权限管理, 提前完成]`
+
+**检索使用**：`tags` 参与模糊匹配（权重 2）与向量检索文本拼接；**主标签额外加权（权重 1.5）**——主标签命中比普通副标签更显著提升排序。
+
+HTTP 写入（`POST /api/hold`）同步支持 `primary_tags` / `sub_tags` 参数。
+
+### 标签归一化（Tag Normalizer）
+
+后台批量任务，定期把历史遗留的非标准标签映射回规范词（如「项目完成」→「工作」）：
+
+- **自动触发**：每 168 小时（1 周）或新增 50 条记录，先到先触发；**服务器启动即自动运行**（启动钩子启动后台循环，每小时检查一次阈值）。
+- **主标签保护**：封闭词表（生活/健康/学习/工作/关系/情绪/约定/兴趣）中的词**永不参与归一化**，避免破坏主标签体系。
+- **手动重跑**：
+  - MCP 工具：`tag_normalize(action="run" | "status")`
+  - HTTP 接口：`GET /api/tag-normalizer/status`（状态）、`POST /api/tag-normalizer/run`（立即执行一轮）
+- 失败（如 LLM 解析失败）不重置计数，后台每小时自动重试；手动调用返回结构化结果（total_tags / non_standard / normalized / buckets_updated / mapping）。
+
 ### 双通道检索
 
 两条检索路径同时进行，结果合并后去重排序：
@@ -512,6 +546,26 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 
 访问地址：**http://localhost:8000/echo-chamber**
 
+### 名册与自我认知
+
+人物身份档案（Roster）管理 AI 记住"身边的人"以及"AI 自己是谁"：
+
+**自我认知板块**（名册页最上方，独立卡片）：
+- AI 的身份核心：定位与角色、性格与沟通偏好、相处原则与边界。
+- 独立于人际关系地图——地图只展示关系，自我认知是独立填写区。
+- MCP：`manage_record(action="self_upsert", ...)` 读写自我认知档案。
+
+**名册（人物档案）**：
+- 每个人物一份身份档案（独立 Markdown 文件，`identity/` 目录），含关系标签、性格特征、激活次数。
+- **重要度分级**：按激活次数区分「重要 ≥10 / 熟悉 ≥3 / 普通」，影响关系地图节点大小与检索优先级。
+- 建立关系时必须选择具体关系类型（17 种：恋人/配偶/家人/父母/子女/兄弟姐妹/亲戚/挚友/朋友/同事/同学/师生/领导/下属/合作伙伴/网友/其他），支持改类型、解除关系。
+- 人物可建立"与 AI 自身"的关系（关联列表第一行「（我）AI 自身」），把人物连到地图中心。
+- MCP：`manage_identity_relation`、`get_roster(name)`。
+
+**人际关系地图**（辅助功能）：
+- 中心为 AI 自身，人物节点环绕；有关系的人物靠内圈、无关系的外围；激活次数影响节点大小。
+- 连线颜色按关系类型区分，底部图例说明；点击任意节点打开编辑。
+
 ### 每日日志系统
 
 独立于记忆桶系统的每日日记存储区域，采用主 AI 产出、系统协助结构化的模式：
@@ -726,6 +780,11 @@ import_brain(zip_path="/path/to/brain.zip", overwrite=True)  # 覆盖已存在�
 | `record_cycle` | 记录例假周期数据，自动预测下次日期 |
 | `complete_journal` | 主AI为指定日期日记补充情绪点评和心情标签 |
 | `query_journal` | 按日期或关键词查询每日日志 |
+| `tag_normalize` | 标签归一化任务，`action=run`（立即执行）/ `status`（查看状态） |
+| `manage_identity_relation` | 管理人物间或人物与 AI 自身的关系（建立/改类型/解除） |
+| `get_roster` | 查询名册（人物档案），`name` 指定时返回单个人物详情 |
+| `query_memory` | 通用记忆查询（搜索/过滤/按天/按域/按情绪坐标） |
+| `pulse` | 系统状态概览（桶数量、衰减/归一化引擎状态、存储大小等） |
 
 ---
 
@@ -758,6 +817,9 @@ OMBRE_TRANSPORT=streamable-http python server.py
 | `embedding.enabled` | 启用向量语义检索 | `true` |
 | `embedding.model` | Embedding 模型 | `gemini-embedding-001` |
 | `decay.lambda` | 衰减速率，越大越快忘 | `0.05` |
+| `tag_normalization.enabled` | 标签归一化开关 | `true` |
+| `tag_normalization.batch_threshold` | 新增多少条记录触发归一化 | `50` |
+| `tag_normalization.interval_hours` | 时间触发间隔（小时，先到先触发） | `168` |
 
 敏感配置用环境变量：
 - `OMBRE_API_KEY` — LLM API 密钥

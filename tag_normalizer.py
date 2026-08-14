@@ -24,6 +24,8 @@ from datetime import datetime, timedelta
 
 from openai import AsyncOpenAI
 
+from dehydrator import PRIMARY_TAG_VOCAB
+
 logger = logging.getLogger("ombre_brain.tag_normalizer")
 
 
@@ -33,6 +35,11 @@ CANONICAL_TAGS = [
     "兴趣爱好", "财务", "内心世界", "数字技术",
     "事务管理", "休闲娱乐", "家庭", "情感", "成长", "创造",
 ]
+
+# --- Protected primary tags (closed vocabulary from dehydrator) ---
+# --- 受保护的主标签词表（来自脱水器的封闭词表），永不参与归一化 ---
+# --- 这些词是每条记忆的主标签，映射到其他词会破坏主标签体系 ---
+PROTECTED_TAGS = set(PRIMARY_TAG_VOCAB)
 
 # --- Normalization prompt / 归一化提示词 ---
 NORMALIZE_PROMPT = """你是一个标签归一化专家。请将输入的非标准标签映射到预设的泛化标签树中。
@@ -192,6 +199,10 @@ class TagNormalizer:
                     continue
                 tag = tag.strip()
                 if not tag:
+                    continue
+                # --- 主标签封闭词表受保护：它们是规范标签，不需要（也不允许）被归一化 ---
+                # --- protected primary tags are canonical by design; never normalize them ---
+                if tag in PROTECTED_TAGS:
                     continue
                 tag_counter[tag] += 1
                 tag_to_buckets.setdefault(tag, []).append(bucket["id"])

@@ -30,6 +30,12 @@ except ImportError:
 # 日记管理器 — 每日日记条目的主存储
 from journal_manager import JournalManager
 
+# Primary tag closed vocabulary (from dehydrator) / 主标签封闭词表
+try:
+    from dehydrator import PRIMARY_TAG_VOCAB
+except ImportError:
+    PRIMARY_TAG_VOCAB = ("生活", "健康", "学习", "工作", "关系", "情绪", "约定", "兴趣")
+
 # Safe conversion helpers / 安全类型转换工具
 try:
     from utils import safe_int, safe_float, as_list
@@ -387,6 +393,13 @@ class Housekeeper:
         self.conflict_confidence_threshold = max(0.0, min(1.0, float(
             safe_float(hk_conf.get("conflict_confidence_threshold"), 0.85) or 0.85
         )))
+        # optimize_llm_limit: max LLM re-analysis calls per optimization scan.
+        #   Keeps the daily incremental + monthly full scans affordable.
+        # optimize_llm_limit：每次优化扫描最多对多少条记忆做 LLM 重分析（控制成本）。
+        self.optimize_llm_limit = max(0, int(safe_int(hk_conf.get("optimize_llm_limit"), 5) or 5))
+        # optimize_max_proposals: hard cap for optimization proposals per scan.
+        # optimize_max_proposals：单次扫描产出的优化提案上限（防刷屏）。
+        self.optimize_max_proposals = max(1, int(safe_int(hk_conf.get("optimize_max_proposals"), 20) or 20))
 
         self._task: asyncio.Task | None = None
         self._running = False
@@ -394,6 +407,8 @@ class Housekeeper:
         self._last_daily_run = None
         self._last_weekly_run = None
         self._last_full_cleanup = None  # 周期大扫除上次执行时间
+        self._last_scan_run = None  # 每日增量优化扫描上次执行时间
+        self._last_full_scan_run = None  # 月度全量优化扫描上次执行时间
         
         self._load_state()
         
@@ -435,6 +450,22 @@ class Housekeeper:
                     except (ValueError, TypeError):
                         self._last_full_cleanup = None
 
+                if state.get("last_scan_run"):
+                    try:
+                        self._last_scan_run = datetime.fromisoformat(state["last_scan_run"])
+                        if self._last_scan_run.tzinfo is None:
+                            self._last_scan_run = self._last_scan_run.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        self._last_scan_run = None
+
+                if state.get("last_full_scan_run"):
+                    try:
+                        self._last_full_scan_run = datetime.fromisoformat(state["last_full_scan_run"])
+                        if self._last_full_scan_run.tzinfo is None:
+                            self._last_full_scan_run = self._last_full_scan_run.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        self._last_full_scan_run = None
+
                 logger.info(
                     f"Loaded housekeeper state: daily={self._last_daily_run}, "
                     f"weekly={self._last_weekly_run}, full_cleanup={self._last_full_cleanup}"
@@ -449,6 +480,8 @@ class Housekeeper:
                 "last_daily_run": self._last_daily_run.isoformat() if self._last_daily_run else None,
                 "last_weekly_run": self._last_weekly_run.isoformat() if self._last_weekly_run else None,
                 "last_full_cleanup": self._last_full_cleanup.isoformat() if self._last_full_cleanup else None,
+                "last_scan_run": self._last_scan_run.isoformat() if self._last_scan_run else None,
+                "last_full_scan_run": self._last_full_scan_run.isoformat() if self._last_full_scan_run else None,
                 "saved_at": datetime.now(timezone.utc).isoformat()
             }
             with open(self._state_file, "w", encoding="utf-8") as f:
@@ -501,14 +534,47 @@ class Housekeeper:
                 break
     
     async def _check_schedule(self):
-        """Check if daily/weekly jobs should run."""
+        """Check if daily/weekly jobs should run.
+        检查每日/每周任务及记忆整理扫描的调度。
+        """
+        now = datetime.now(timezone.utc)
+
+        # ---------------------------------------------------------
+        # Memory-organization scans — always auto-scheduled.
+        # 记忆整理扫描 —— 始终自动调度（独立于 auto_schedule）：
+        #   - Daily incremental: scan memories stored in the last 48h, propose
+        #     tag / importance / type adjustments for the main AI to approve.
+        #     每日增量：扫描最近 48h 入库的记忆，对标签/权重/类型提出调整提案。
+        #   - Monthly full scan: sweep the whole library, propose optimizations.
+        #     月度全量：完整扫描整个记忆库，提出优化提案。
+        # Only optimization PROPOSALS are created here — nothing is changed
+        # until the main AI approves via approve_action().
+        # 这里只生成优化提案，任何改动都需主 AI 审批后才执行。
+        # ---------------------------------------------------------
+        if self._last_scan_run is None or (now - self._last_scan_run).total_seconds() >= 86400:
+            try:
+                scan = await self._scan_recent_for_optimization()
+                logger.info(f"Daily optimization scan: {scan}")
+            except Exception as e:
+                logger.error(f"Daily optimization scan failed / 每日优化扫描失败: {e}")
+            self._last_scan_run = now
+            self._save_state()
+
+        if self._last_full_scan_run is None or (now - self._last_full_scan_run).days >= 30:
+            try:
+                full = await self._scan_full_for_optimization()
+                logger.info(f"Full optimization scan: {full}")
+            except Exception as e:
+                logger.error(f"Full optimization scan failed / 全量优化扫描失败: {e}")
+            self._last_full_scan_run = now
+            self._save_state()
+
         # --- Auto-scheduling is OFF by default: the main AI triggers the daily
         # --- review explicitly (product positioning). Users opting in can set
         # --- housekeeper.auto_schedule: true.
         # --- 默认关闭自动调度：日终整理由主 AI 主动调用；如需旧行为可开启配置。
         if not self.auto_schedule:
             return
-        now = datetime.now(timezone.utc)
         
         should_daily = False
         should_weekly = False
@@ -539,6 +605,214 @@ class Housekeeper:
             self._last_weekly_run = now
             self._save_state()
     
+    # =========================================================
+    # Memory-organization scans — proposals only, no writes.
+    # 记忆整理扫描 —— 只生成优化提案，任何改动需主 AI 审批后执行。
+    #   Daily incremental: recently stored memories (last 48h).
+    #     每日增量：最近 48h 入库的记忆。
+    #   Monthly full scan: whole library.
+    #     月度全量：完整记忆库。
+    # =========================================================
+
+    async def _scan_recent_for_optimization(self, hours: int = 48) -> dict:
+        """Daily incremental scan: propose tag / importance / type adjustments
+        for memories stored within the last `hours`.
+        每日增量扫描：对最近 hours 小时内入库的记忆提出标签/权重/类型调整建议。"""
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            logger.error(f"Optimization scan: list failed / 列表失败: {e}")
+            return {"error": str(e)}
+
+        recent = []
+        for b in all_buckets:
+            meta = b.get("metadata", {}) or {}
+            if meta.get("pinned") or meta.get("protected"):
+                continue
+            created_str = meta.get("created", "")
+            if not created_str:
+                continue
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created < since:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            recent.append(b)
+
+        if not recent:
+            return {"window_hours": hours, "scanned": 0, "proposals": 0}
+        return await self._run_optimization_scan(recent, llm_limit=self.optimize_llm_limit)
+
+    async def _scan_full_for_optimization(self) -> dict:
+        """Monthly full scan: sweep the whole library for optimization proposals.
+        月度全量扫描：完整扫描记忆库，提出优化提案。"""
+        try:
+            all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            logger.error(f"Full optimization scan: list failed / 列表失败: {e}")
+            return {"error": str(e)}
+        if not all_buckets:
+            return {"scanned": 0, "proposals": 0}
+        # Full scan: rule checks cover everything; LLM re-analysis only sampled.
+        # 全量扫描：规则检查覆盖全部，LLM 重分析仅抽检（控制成本）。
+        return await self._run_optimization_scan(all_buckets, llm_limit=max(1, self.optimize_llm_limit))
+
+    async def _run_optimization_scan(self, buckets: list, llm_limit: int = 5) -> dict:
+        """Shared scan pipeline: rule checks (+ optional LLM re-analysis) → proposals.
+        共享扫描管线：规则检查（+ 可选 LLM 重分析）→ 生成优化提案。"""
+        proposals = 0
+        scanned = 0
+        llm_used = 0
+        # Skip buckets that already have a pending optimize proposal / 跳过已有待审优化提案的桶
+        try:
+            pending = await self.echo_chamber.get_pending_actions("optimize")
+            pending_buckets = {p.get("data", {}).get("bucket_id", "") for p in pending}
+        except Exception:
+            pending_buckets = set()
+
+        for b in buckets:
+            if proposals >= self.optimize_max_proposals:
+                break
+            bucket_id = b.get("id", "")
+            if not bucket_id or bucket_id in pending_buckets:
+                continue
+            scanned += 1
+            suggestions = self._optimization_suggestions(b)
+            # Optional LLM re-analysis to confirm/refine the tag suggestion (capped).
+            # 可选 LLM 重分析，确认/修正标签建议（限量）。
+            if (
+                self.dehydrator is not None
+                and llm_used < llm_limit
+                and (b.get("content") or "").strip()
+            ):
+                try:
+                    analysis = await self.dehydrator.analyze((b.get("content") or "")[:2000])
+                    llm_used += 1
+                    suggestions = self._merge_llm_suggestions(suggestions, b, analysis)
+                except Exception as e:
+                    logger.debug(f"Optimization LLM analyze skipped / 重分析跳过: {e}")
+            if suggestions:
+                await self._create_optimize_proposal(
+                    bucket_id, (b.get("metadata", {}) or {}).get("name", ""), suggestions
+                )
+                proposals += 1
+                pending_buckets.add(bucket_id)
+
+        return {"scanned": scanned, "proposals": proposals, "llm_analyzed": llm_used}
+
+    @staticmethod
+    def _optimization_suggestions(bucket: dict) -> list:
+        """Rule-based checks: missing / non-standard tags, importance, type.
+        规则检查：标签缺失/非标准、权重缺失/越界、类型缺失。"""
+        meta = bucket.get("metadata", {}) or {}
+        suggestions = []
+        primary_tags = meta.get("primary_tags") or []
+        sub_tags = meta.get("sub_tags") or []
+        tags = meta.get("tags") or []
+        importance = meta.get("importance", 5)
+        btype = meta.get("type", "")
+
+        # --- 主标签：缺失或不在封闭词表 ---
+        if not primary_tags:
+            suggestions.append({
+                "field": "primary_tags",
+                "current": primary_tags,
+                "suggested": ["生活"],
+                "reason": "缺少主标签，建议补充默认主标签「生活」",
+            })
+        else:
+            valid = [x for x in primary_tags if x in PRIMARY_TAG_VOCAB]
+            invalid = [x for x in primary_tags if x not in PRIMARY_TAG_VOCAB]
+            if invalid:
+                suggestions.append({
+                    "field": "primary_tags",
+                    "current": primary_tags,
+                    "suggested": valid[:1] if valid else ["生活"],
+                    "reason": f"主标签 {invalid} 不在封闭词表内，建议映射到标准主标签",
+                })
+
+        # --- 全标签为空 ---
+        if not tags and not primary_tags and not sub_tags and not any(
+            s["field"] == "primary_tags" for s in suggestions
+        ):
+            suggestions.append({
+                "field": "tags",
+                "current": [],
+                "suggested": ["生活"],
+                "reason": "记忆没有任何标签，建议补充标签便于检索",
+            })
+
+        # --- 权重：缺失或越界 ---
+        try:
+            imp_num = int(importance)
+        except (TypeError, ValueError):
+            imp_num = 5
+        if not (1 <= imp_num <= 10):
+            suggestions.append({
+                "field": "importance",
+                "current": importance,
+                "suggested": 5,
+                "reason": f"权重值 {importance} 超出 1~10 范围，建议重置为默认值 5",
+            })
+
+        # --- 类型：缺失 ---
+        if not btype:
+            suggestions.append({
+                "field": "type",
+                "current": "",
+                "suggested": "event",
+                "reason": "缺少类型字段，建议按默认事件类型归类",
+            })
+
+        return suggestions
+
+    @staticmethod
+    def _merge_llm_suggestions(suggestions: list, bucket: dict, analysis: dict) -> list:
+        """Merge LLM re-analysis into rule suggestions (tag dimension only).
+        将 LLM 重分析结果合并进规则建议（仅标签维度）。"""
+        meta = bucket.get("metadata", {}) or {}
+        current_primary = meta.get("primary_tags") or []
+        llm_primary = [t for t in (analysis.get("primary_tags") or []) if t in PRIMARY_TAG_VOCAB]
+        if llm_primary and set(llm_primary) != set(current_primary):
+            for i, s in enumerate(suggestions):
+                if s["field"] == "primary_tags":
+                    suggestions[i] = {
+                        "field": "primary_tags",
+                        "current": current_primary,
+                        "suggested": llm_primary,
+                        "reason": f"重分析后建议主标签调整为 {llm_primary}",
+                    }
+                    return suggestions
+            suggestions.insert(0, {
+                "field": "primary_tags",
+                "current": current_primary,
+                "suggested": llm_primary,
+                "reason": f"重分析后建议主标签调整为 {llm_primary}",
+            })
+        return suggestions
+
+    async def _create_optimize_proposal(self, bucket_id: str, bucket_name: str, suggestions: list) -> str:
+        """Write an optimize proposal to the echo chamber — proposal only.
+        将优化提案写入回音壁（仅提案，不执行任何更改）。"""
+        summary = "；".join(
+            f"{s['field']}: {s['current']} → {s['suggested']}（{s['reason']}）" for s in suggestions
+        )
+        await self.echo_chamber.add_pending_action(
+            action_type="optimize",
+            data={
+                "bucket_id": bucket_id,
+                "bucket_name": bucket_name,
+                "suggestions": suggestions,
+                "summary": summary,
+            },
+        )
+        logger.info(f"Created optimize proposal for bucket {bucket_id}: {summary}")
+        return bucket_id
+
     async def run_daily_job(self) -> dict:
         """
         Daily job: lightweight summary of today's conversations.
@@ -2856,6 +3130,38 @@ class Housekeeper:
                             bucket_type="permanent",
                         )
                         logger.info(f"Executed identity_proposal (fallback): created identity for {person_name}")
+
+            elif action_type == "optimize":
+                # --- Apply approved tag / importance / type adjustments ---
+                # --- 应用已批准的标签 / 权重 / 类型调整 ---
+                bucket_id = action_data.get("bucket_id", "")
+                suggestions = action_data.get("suggestions", []) or []
+                if bucket_id:
+                    update_kwargs = {}
+                    for s in suggestions:
+                        field = s.get("field", "")
+                        suggested = s.get("suggested")
+                        if field == "primary_tags":
+                            if isinstance(suggested, list):
+                                update_kwargs["primary_tags"] = [str(x) for x in suggested]
+                        elif field == "sub_tags":
+                            if isinstance(suggested, list):
+                                update_kwargs["sub_tags"] = [str(x) for x in suggested]
+                        elif field == "tags":
+                            if isinstance(suggested, list):
+                                update_kwargs["tags"] = [str(x) for x in suggested]
+                        elif field == "importance":
+                            try:
+                                update_kwargs["importance"] = max(1, min(10, int(suggested)))
+                            except (TypeError, ValueError):
+                                continue
+                        elif field == "type":
+                            update_kwargs["type"] = str(suggested)
+                    if update_kwargs:
+                        ok = await self.bucket_mgr.update(bucket_id, **update_kwargs)
+                        if not ok:
+                            raise RuntimeError(f"bucket {bucket_id} 优化更新失败")
+                    logger.info(f"Executed optimize: updated bucket {bucket_id} -> {update_kwargs}")
 
             else:
                 logger.warning(f"Unknown action type / 未知提案类型: {action_type} — marked approved without execution")

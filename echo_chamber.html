@@ -1283,7 +1283,8 @@ function renderEchoChamber() {
           merge: '合并提案',
           chain_merge: '事件链合并',
           chain_update: '链更新',
-          identity_proposal: '人物收录'
+          identity_proposal: '人物收录',
+          optimize: '优化调整'
         };
 
         var statusLabels = {
@@ -1335,6 +1336,20 @@ function renderEchoChamber() {
           contentHtml = '<div class="cleanup-details" style="border-color:var(--border);background:var(--surface);">' +
             '<div class="conflict-reason" style="color:var(--accent);">' + (data.reason || '链更新') + '</div>' +
             (data.target_id ? '<div class="cleanup-meta">目标: ' + data.target_id + '</div>' : '') +
+          '</div>';
+        } else if (action.action_type === 'optimize') {
+          var sugHtml = '';
+          (data.suggestions || []).forEach(function(s) {
+            sugHtml += '<div class="cleanup-meta">' +
+              s.field + ': ' + (s.current === null || s.current === undefined || s.current === '' ? '空' : JSON.stringify(s.current)) +
+              ' → ' + JSON.stringify(s.suggested) +
+              ' <span style="color:var(--text-dim);">(' + (s.reason || '') + ')</span></div>';
+          });
+          contentHtml = '<div class="cleanup-details" style="border-color:rgba(154,123,79,0.2);background:rgba(154,123,79,0.05);">' +
+            '<div class="conflict-reason" style="color:var(--warning);">' + (data.summary || '记忆优化提案') + '</div>' +
+            (data.bucket_name ? '<div class="cleanup-meta">记忆: ' + data.bucket_name + '</div>' : '') +
+            '<div class="cleanup-meta">Bucket: ' + (data.bucket_id || '') + '</div>' +
+            sugHtml +
           '</div>';
         }
 

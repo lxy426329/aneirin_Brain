@@ -1107,6 +1107,16 @@ class BucketManager:
             if is_pinned:
                 kwargs.pop("importance", None)
 
+            # --- Full metadata replacement support (read-modify-write flows) ---
+            # --- 全量元数据替换支持（读-改-写流程）---
+            # Callers pass the whole metadata dict (e.g. manage_record / PUT /api/experiences);
+            # every key is written back so nothing is silently dropped.
+            if "metadata" in kwargs and isinstance(kwargs["metadata"], dict):
+                for mk, mv in kwargs["metadata"].items():
+                    if mk in ("id", "content", "metadata"):
+                        continue
+                    post[mk] = mv
+
             if "content" in kwargs:
                 post.content = kwargs["content"]
             if "tags" in kwargs:
@@ -1168,7 +1178,7 @@ class BucketManager:
             if "model_valence" in kwargs:
                 post["model_valence"] = max(0.0, min(1.0, safe_float(kwargs["model_valence"], 0.5)))
             
-            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags"):
+            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags", "type"):
                 if key in kwargs:
                     post[key] = kwargs[key]
 

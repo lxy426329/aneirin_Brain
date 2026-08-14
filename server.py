@@ -45,6 +45,7 @@ import json  # 日终工具(daily_review/run_housekeeper)等使用裸 json.*；_
 import json as _json_lib
 import httpx
 import datetime
+from datetime import timezone, timedelta
 
 
 # --- Ensure same-directory modules can be imported ---
@@ -383,6 +384,23 @@ async def breath_hook(request):
     from starlette.responses import PlainTextResponse
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
+
+        # --- Build identity name → identity map for related-person injection ---
+        # --- 构建名册姓名映射，用于识别动态记忆中关联的人物 ---
+        identity_names = {}
+        try:
+            all_identities = await identity_mgr.list_all()
+            for ident in all_identities:
+                ident_meta = ident.get("metadata", {})
+                ident_name = ident_meta.get("name", "")
+                if ident_name:
+                    identity_names[ident_name] = ident
+                for alias in ident_meta.get("aliases", []):
+                    if alias:
+                        identity_names[alias] = ident
+        except Exception as e:
+            logger.warning(f"Failed to load identities in breath hook / 名册加载失败: {e}")
+            identity_names = {}
 
         parts = []
         token_budget = 20000
@@ -3403,7 +3421,7 @@ async def dream() -> str:
     # --- 步骤0：自动合并过去一周内的相似记忆 ---
     merge_summary = ""
     try:
-        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        one_week_ago = datetime.datetime.now(timezone.utc) - timedelta(days=7)
         recent_week_buckets = []
         
         for b in all_buckets:
@@ -3418,7 +3436,7 @@ async def dream() -> str:
             
             created_str = meta.get("created", "")
             try:
-                created = datetime.fromisoformat(str(created_str))
+                created = datetime.datetime.fromisoformat(str(created_str))
                 if created.tzinfo is None:
                     created = created.replace(tzinfo=timezone.utc)
                 if created >= one_week_ago:
@@ -4056,8 +4074,8 @@ async def get_anchors(active_only: bool = False) -> str:
                 expires_at = anchor.get("expires_at", "")
                 if expires_at:
                     try:
-                        expiry = datetime.fromisoformat(expires_at)
-                        remaining = expiry - datetime.now()
+                        expiry = datetime.datetime.fromisoformat(expires_at)
+                        remaining = expiry - datetime.datetime.now()
                         hours_left = remaining.total_seconds() / 3600
                         if hours_left > 0:
                             ttl_info = f" [剩余{hours_left:.1f}h]"
@@ -5463,7 +5481,7 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     meta["relationships"] = relationships
                 if triggers:
                     meta["triggers"] = triggers
-                success = await bucket_mgr.update(record_id, new_content, meta)
+                success = await bucket_mgr.update(record_id, content=new_content, metadata=meta)
                 return f"已更新 → {record_id}" if success else "更新失败"
             return f"不支持更新 {record_type} 类型"
         
@@ -5498,8 +5516,8 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     return f"未找到经验: {record_id}"
                 meta = exp.get("metadata", {})
                 meta["apply_count"] = meta.get("apply_count", 0) + 1
-                meta["last_applied"] = datetime.now().isoformat()
-                success = await bucket_mgr.update(record_id, exp.get("content", ""), meta)
+                meta["last_applied"] = datetime.datetime.now().isoformat()
+                success = await bucket_mgr.update(record_id, content=exp.get("content", ""), metadata=meta)
                 return f"经验已应用 → {record_id} | 次数: {meta['apply_count']}" if success else "应用失败"
             elif record_type == "annual_ring":
                 ring = await bucket_mgr.get(record_id)
@@ -5507,8 +5525,8 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     return f"未找到年轮: {record_id}"
                 meta = ring.get("metadata", {})
                 meta["apply_count"] = meta.get("apply_count", 0) + 1
-                meta["last_applied"] = datetime.now().isoformat()
-                success = await bucket_mgr.update(record_id, ring.get("content", ""), meta)
+                meta["last_applied"] = datetime.datetime.now().isoformat()
+                success = await bucket_mgr.update(record_id, content=ring.get("content", ""), metadata=meta)
                 return f"年轮已应用 → {record_id} | 次数: {meta['apply_count']}" if success else "应用失败"
             return f"不支持应用 {record_type} 类型"
         
@@ -5979,7 +5997,7 @@ async def ai_classify_memory(bucket_id: str) -> str:
             if new_importance:
                 meta_update["importance"] = new_importance
             
-            await bucket_mgr.update(bucket_id, content, {**meta, **meta_update})
+            await bucket_mgr.update(bucket_id, content=content, metadata={**meta, **meta_update})
         
         return f"分类结果已更新:\n\n📁 类型: {new_type}\n\n🏷️ 主题域: {', '.join(new_domain)}\n\n🔖 标签: {', '.join(new_tags)}\n\n⭐ 重要度: {new_importance}/10"
     except Exception as e:
@@ -7051,6 +7069,30 @@ async def api_buckets(request):
     if err: return err
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=True)
+
+        # --- Time-range filter: ?days=N keeps only buckets created in last N days ---
+        # --- 时间范围过滤：?days=N 仅保留最近 N 天内创建的桶 ---
+        days = request.query_params.get("days")
+        if days and days != "0":
+            try:
+                days_num = int(days)
+            except ValueError:
+                days_num = 0
+            if days_num > 0:
+                cutoff = datetime.datetime.now(timezone.utc) - timedelta(days=days_num)
+                filtered = []
+                for b in all_buckets:
+                    created_str = b.get("metadata", {}).get("created", "")
+                    try:
+                        created = datetime.datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=timezone.utc)
+                        if created >= cutoff:
+                            filtered.append(b)
+                    except (ValueError, TypeError):
+                        filtered.append(b)  # 无法解析日期的桶默认保留
+                all_buckets = filtered
+
         result = []
         for b in all_buckets:
             meta = b.get("metadata", {})
@@ -7786,6 +7828,31 @@ async def api_bucket_update_importance_details(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/tag-normalizer/status", methods=["GET"])
+async def api_tag_normalizer_status(request):
+    """Tag normalizer status for frontend / 标签归一化状态查询。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    return JSONResponse({
+        "running": tag_normalizer.is_running,
+        "enabled": tag_normalizer.enabled,
+        "records_since_last_run": tag_normalizer._records_since_last_run,
+        "batch_threshold": tag_normalizer.batch_threshold,
+        "interval_hours": tag_normalizer.interval_hours,
+        "needs_run": tag_normalizer.needs_run,
+        "last_run_at": tag_normalizer._last_run_at.isoformat() if tag_normalizer._last_run_at else None,
+    })
+
+@mcp.custom_route("/api/tag-normalizer/run", methods=["POST"])
+async def api_tag_normalizer_run(request):
+    """Manually trigger one tag normalization cycle / 手动触发一次标签归一化。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    result = await tag_normalizer.run_normalization()
+    return JSONResponse(result)
+
 @mcp.custom_route("/api/directory", methods=["GET"])
 async def api_directory(request):
     """Generate memory directory for frontend with AI-generated summaries."""
@@ -7950,7 +8017,7 @@ async def api_search(request):
     if err: return err
     query = request.query_params.get("q", "")
     if not query:
-        return JSONResponse({"error": "missing q parameter"}, status_code=400)
+        return JSONResponse({"results": [], "total": 0, "query": ""})
     
     try:
         limit = int(request.query_params.get("limit", 10))
@@ -8123,7 +8190,7 @@ async def api_update_experience(request):
             updates["source"] = body["source"]
         if "tags" in body:
             updates["tags"] = body["tags"]
-        updates["updated"] = datetime.now().isoformat()
+        updates["updated"] = datetime.datetime.now().isoformat()
         
         if "source_bucket_ids" in body:
             current_ids = meta.get("source_bucket_ids", [])
@@ -8135,7 +8202,7 @@ async def api_update_experience(request):
                 updates["source_bucket_ids"] = current_ids
         
         meta.update(updates)
-        success = await bucket_mgr.update(exp_id, body.get("content", exp.get("content", "")), meta)
+        success = await bucket_mgr.update(exp_id, content=body.get("content", exp.get("content", "")), metadata=meta)
         
         if success:
             return JSONResponse({"success": True})
@@ -9487,50 +9554,6 @@ async def api_ai_test(request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-# =============================================================
-# /api/search — Search memories by keyword
-# /api/health — System health check
-# =============================================================
-@mcp.custom_route("/api/search", methods=["GET"])
-async def api_search(request):
-    """Search memories by keyword. Returns matching buckets."""
-    from starlette.responses import JSONResponse
-    err = _require_auth(request)
-    if err: return err
-    try:
-        from urllib.parse import parse_qs
-        qs = parse_qs(request.url.query)
-        q = qs.get("q", [""])[0].strip()
-        if not q:
-            return JSONResponse({"ok": True, "results": []})
-        
-        all_buckets = await bucket_mgr.list_all(include_archive=False)
-        q_lower = q.lower()
-        results = []
-        for b in all_buckets:
-            content_lower = b["content"].lower()
-            name = b["metadata"].get("name", "").lower()
-            tags = " ".join(b["metadata"].get("tags", [])).lower()
-            if q_lower in content_lower or q_lower in name or q_lower in tags:
-                results.append({
-                    "id": b["id"],
-                    "content": b["content"][:300],
-                    "created": b["metadata"].get("created", ""),
-                    "name": b["metadata"].get("name", ""),
-                    "tags": b["metadata"].get("tags", []),
-                    "type": b["metadata"].get("type", ""),
-                    "importance": b["metadata"].get("importance", 5),
-                })
-                if len(results) >= 50:
-                    break
-        
-        results.sort(key=lambda x: x.get("importance", 5), reverse=True)
-        return JSONResponse({"ok": True, "results": results, "total": len(results)})
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
 @mcp.custom_route("/api/health", methods=["GET"])
 async def api_health(request):
     """System health check endpoint for Render."""
@@ -10559,6 +10582,13 @@ if __name__ == "__main__":
                 logger.info("Housekeeper started via startup hook / 管家已通过启动钩子启动")
             except Exception as e:
                 logger.error(f"Housekeeper startup failed / 管家启动失败: {e}")
+            # --- 同时启动标签归一化后台任务：不再依赖 hold 惰性启动 ---
+            # --- also start tag normalizer here so it can auto-run on threshold ---
+            try:
+                await tag_normalizer.start()
+                logger.info("Tag normalizer started via startup hook / 标签归一化已通过启动钩子启动")
+            except Exception as e:
+                logger.error(f"Tag normalizer startup failed / 标签归一化启动失败: {e}")
         
         def _start_housekeeper():
             loop = asyncio.new_event_loop()
