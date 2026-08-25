@@ -8,7 +8,7 @@
 
 import os
 import logging
-from typing import List, Dict, Optional
+from typing import List, Optional
 from pathlib import Path
 import frontmatter
 

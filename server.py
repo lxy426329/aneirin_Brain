@@ -122,15 +122,15 @@ async def _fire_webhook(event: str, payload: dict) -> None:
 embedding_engine = EmbeddingEngine(config)            # Embedding engine first (BucketManager depends on it)
 bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket manager / 记忆桶管理器
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
-decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
+cycle_tracker = CycleTracker(config["buckets_dir"])  # Cycle tracker / 例假周期追踪器（decay 相位调节依赖）
+decay_engine = DecayEngine(config, bucket_mgr, cycle_tracker=cycle_tracker)  # Decay engine / 衰减引擎
 identity_mgr = IdentityManager(config)               # Identity manager / 身份管理器
 housekeeper = Housekeeper(config, bucket_mgr, dehydrator, identity_mgr=identity_mgr, embedding_engine=embedding_engine)         # Housekeeper / 记忆管家
 emotion_mgr = EmotionManager(config)                 # Emotion manager / 情绪管理器
 pattern_mgr = PatternManager(config)                 # Pattern manager / 模式管理器
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 tag_normalizer = TagNormalizer(config, bucket_mgr, dehydrator)  # Tag normalizer / 标签归一化引擎
-cycle_tracker = CycleTracker(config["buckets_dir"])  # Cycle tracker / 例假周期追踪器
-journal_mgr = JournalManager(base_dir=os.path.dirname(config["buckets_dir"]))  # Journal manager / 日记管理器（journals 与 buckets/ 同级，完全隔离）
+journal_mgr = JournalManager(base_dir=os.path.dirname(config["buckets_dir"]), emotion_mgr=emotion_mgr)  # Journal manager / 日记管理器（journals 与 buckets/ 同级，完全隔离；情绪标签经 emotion_manager 归并）
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -1146,19 +1146,30 @@ async def _breath_surfacing(
     parts = []
 
     # --- Cycle reminder injection / 例假提醒注入 ---
-    # If next cycle is within 0-5 days, inject reminder at the top
-    # 如果距离下次例假还有0-5天，在最前面注入提醒
+    # Phase-aware: inject during period or within 0-5 days before predicted start,
+    # with an emotion-interpretation hint (physiological factor for mood swings).
+    # 相位感知注入：经期或距预测例假 0-5 天时注入，并附情绪解读建议（生理因素）。
     try:
+        summary = cycle_tracker.get_cycle_summary()
         days_until = cycle_tracker.days_until_next_cycle()
-        if days_until is not None and 0 <= days_until <= 5:
-            summary = cycle_tracker.get_cycle_summary()
+        phase = cycle_tracker.get_cycle_phase()
+        if summary.get("total_records", 0) > 0 and (
+            phase in ("period", "pre_period") or (days_until is not None and 0 <= days_until <= 5)
+        ):
             reminder_parts = ["=== 例假提醒 ==="]
-            if days_until == 0:
-                reminder_parts.append("预测今天会来例假")
-            elif days_until == 1:
-                reminder_parts.append("预测明天会来例假")
-            else:
-                reminder_parts.append(f"距离预测例假还有 {days_until} 天")
+            if phase == "period":
+                reminder_parts.append("当前处于经期")
+            elif phase == "pre_period" or (days_until is not None and 0 <= days_until <= 5):
+                if days_until == 0:
+                    reminder_parts.append("预测今天会来例假")
+                elif days_until == 1:
+                    reminder_parts.append("预测明天会来例假")
+                elif days_until is not None:
+                    reminder_parts.append(f"距离预测例假还有 {days_until} 天")
+            if phase == "period":
+                reminder_parts.append("经期情绪易敏感，解读近期情绪记忆时请考虑生理因素")
+            elif phase == "pre_period":
+                reminder_parts.append("经前情绪易波动，解读近期情绪记忆时请考虑生理因素")
             if summary["predicted_next_date"]:
                 reminder_parts.append(f"预测日期: {summary['predicted_next_date']}")
             if summary["average_cycle_days"]:
@@ -1297,10 +1308,27 @@ async def _breath_surfacing(
         n_cold = len(cold_start)
         non_cold = candidates[n_cold:]
         if len(non_cold) > 1:
+            # --- Coherent surfacing: keep top-1 fixed, then order the rest by
+            #     decay score with only a light jitter among near-equal scores.
+            #     This avoids the previous full random.shuffle that made the
+            #     surfaced memories feel disjointed / "跳脱".
+            # --- 连贯浮现：top1 固定，其余按活跃度排序，仅对分数相近的做轻微扰动，
+            #     避免原先完全随机打乱导致的浮现内容跳脱、不连贯。
             top1 = [non_cold[0]]
-            pool = non_cold[1:min(20, len(non_cold))]
-            random.shuffle(pool)
-            non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
+            rest = non_cold[1:min(20, len(non_cold))]
+            # Group by rounded score so near-equal items get a light shuffle,
+            # while clearly-different scores keep their order.
+            # 按四舍五入分数分组，分数相近的轻微打乱，分数差异明显的保持顺序。
+            from collections import defaultdict
+            buckets_by_score = defaultdict(list)
+            for b in rest:
+                buckets_by_score[round(decay_engine.calculate_score(b["metadata"]), 1)].append(b)
+            jittered = []
+            for _score, group in sorted(buckets_by_score.items(), key=lambda kv: kv[0], reverse=True):
+                if len(group) > 1:
+                    random.shuffle(group)
+                jittered.extend(group)
+            non_cold = top1 + jittered + non_cold[min(20, len(non_cold)):]
         candidates = cold_start + non_cold
     candidates = candidates[:max_results * 2]
 
@@ -2920,6 +2948,16 @@ async def _hold_impl(
             "emotional_valence": v * 2 - 1,
         }
 
+    # --- Normalize emotion labels via EmotionManager (synonym merge) ---
+    # --- 通过情绪管理器归并情绪标签（规范词表优先，词表外才调 LLM）---
+    if explicit_v is None and explicit_a is None and final_emotions:
+        try:
+            final_emotions = await emotion_mgr.normalize_emotions(final_emotions)
+            if final_emotions:
+                final_dominant = max(final_emotions, key=lambda e: float(e.get("intensity", 0)))["label"]
+        except Exception as e:
+            logger.debug(f"Emotion normalization skipped / 情绪归并跳过: {e}")
+
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
     primary_tags, sub_tags = _split_primary_sub_tags(analysis, extra_tags)
 
@@ -2991,6 +3029,25 @@ async def _hold_impl(
             await bucket_mgr.update(result_id, source=source)
         except Exception as e:
             logger.warning(f"Failed to set source on bucket: {e}")
+
+    # --- Link mentioned identities to this bucket (people field + reverse ref) ---
+    # --- 关联本记忆涉及的已收录人物（桶写 people 字段 + 档案反向挂桶）---
+    try:
+        mentioned = await identity_mgr.find_mentioned_identities(content)
+        if mentioned:
+            people = []
+            for ident in mentioned:
+                ident_meta = ident.get("metadata", {}) or {}
+                ident_name = ident_meta.get("name", "")
+                ident_id = ident_meta.get("id", "")
+                if ident_name and ident_name not in people:
+                    people.append(ident_name)
+                if ident_id:
+                    await identity_mgr.add_related_memory(ident_id, result_id)
+            if people:
+                await bucket_mgr.update(result_id, people=people)
+    except Exception as e:
+        logger.warning(f"Identity linking failed / 身份关联失败: {e}")
 
     action = "merge" if is_merged else "new"
     tag_normalizer.notify_new_record(1)
@@ -4805,6 +4862,11 @@ async def run_housekeeper() -> str:
             parts.append(f"⚠ {w}")
         for e in result.get("health", {}).get("errors", []):
             parts.append(f"❌ {e}")
+        cycle = result.get("cycle_status", {})
+        if cycle and cycle.get("total_records", 0) > 0:
+            days_left = cycle.get("days_until_next")
+            parts.append(f"📅 生理周期: 已记录 {cycle['total_records']} 次，距下次预测 "
+                         + (f"{days_left} 天（{cycle.get('predicted_next_date')}）" if days_left is not None else "暂无预测"))
 
         pipeline = result.get("pipeline", {})
         for k, v in pipeline.items():
@@ -6440,11 +6502,9 @@ async def ai_manage(request: str) -> str:
             return "AI管家没有返回任何内容"
         
         # Try to parse as JSON first (backward compatibility)
-        try:
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = _json_lib.loads(raw)
-        except _json_lib.JSONDecodeError:
+        # 优先尝试解析为 JSON（兼容旧格式）；解析失败按纯文本返回
+        result = safe_json_loads(raw, default=None)
+        if not isinstance(result, dict):
             return raw  # Plain text response
         
         action = result.get("action")
@@ -8372,10 +8432,29 @@ async def api_relations(request):
         for e in edges:
             e["from_name"] = name_map.get(e["from_id"], e["from_id"])
             e["to_name"] = name_map.get(e["to_id"], e["to_id"])
+
+        # --- Event chains as graph nodes (entity graph) ---
+        # --- 事件链作为图谱节点（实体图谱） ---
+        chains = []
+        try:
+            chain_list = await housekeeper.get_event_chains()
+        except Exception:
+            chain_list = []
+        for c in chain_list[:15]:
+            chains.append({
+                "id": c.chain_id,
+                "topic": c.topic,
+                "entity_count": len(c.entities),
+                "timeline_count": len(c.timeline),
+                "related_chain_ids": c.related_chain_ids or [],
+                "status": c.status,
+            })
+
         return JSONResponse({
             "identities": node_list,
             "self_profile": self_node,
             "edges": edges,
+            "chains": chains,
         })
     except Exception as e:
         logger.error(f"api_relations failed: {e}")
@@ -8887,6 +8966,63 @@ async def api_delete_candlestick(request):
 # /api/cycle — menstrual cycle operations
 # /api/cycle — 例假周期操作
 # =============================================================
+@mcp.custom_route("/api/journal", methods=["GET"])
+async def api_get_journal(request):
+    """Get a journal entry by date (default: today). 按日期获取日记条目（默认今天）。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        date = request.query_params.get("date", "") or ""
+        if not date:
+            from datetime import datetime as _dt, timezone as _tz
+            date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+        entry = journal_mgr.get_entry(date)
+        return JSONResponse({"date": date, "entry": entry})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/journal/list", methods=["GET"])
+async def api_list_journals(request):
+    """List recent journal entries, date descending. 列出最近的日记条目（日期倒序）。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        try:
+            limit = int(request.query_params.get("limit", "30"))
+        except (TypeError, ValueError):
+            limit = 30
+        limit = max(1, min(200, limit))
+        entries = journal_mgr.list_entries(limit=limit)
+        return JSONResponse({"entries": entries})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/journal", methods=["POST"])
+async def api_create_journal(request):
+    """Create or update a journal entry (merge mode). 创建或更新日记条目（合并模式）。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    try:
+        entry = await journal_mgr.create_entry(
+            date=body.get("date", ""),
+            event_summary=body.get("event_summary", ""),
+            mood_comment=body.get("mood_comment", ""),
+            emotion_tags=body.get("emotion_tags", ""),
+        )
+        return JSONResponse({"success": True, "entry": entry})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/cycle", methods=["GET"])
 async def api_get_cycle(request):
     """Get cycle records and summary."""
@@ -8895,6 +9031,7 @@ async def api_get_cycle(request):
     if err: return err
     try:
         summary = cycle_tracker.get_cycle_summary()
+        summary["phase"] = cycle_tracker.get_cycle_phase()
         records = cycle_tracker.get_all_records()
         return JSONResponse({
             "summary": summary,
@@ -9356,6 +9493,7 @@ async def api_config_get(request):
         },
         "embedding": {
             "enabled": emb.get("enabled", False),
+            "use_api": emb.get("use_api", True),
             "model": emb.get("model", ""),
             "base_url": emb.get("base_url", ""),
             "api_key_masked": emb_masked_key,
@@ -9410,9 +9548,13 @@ async def api_config_update(request):
             emb["enabled"] = bool(e["enabled"])
             embedding_engine.enabled = emb["enabled"]
             updated.append("embedding.enabled")
+        if "use_api" in e:
+            emb["use_api"] = bool(e["use_api"])
+            embedding_engine.use_api = emb["use_api"]
+            updated.append("embedding.use_api")
         if "model" in e:
             emb["model"] = e["model"]
-            embedding_engine.model = emb["model"]
+            embedding_engine.model = e["model"]
             updated.append("embedding.model")
         if "base_url" in e:
             emb["base_url"] = e["base_url"]
@@ -9422,12 +9564,21 @@ async def api_config_update(request):
             emb["api_key"] = e["api_key"]
             embedding_engine.api_key = e["api_key"]
             updated.append("embedding.api_key")
-        if hasattr(embedding_engine, "client") and embedding_engine.api_key:
-            from openai import AsyncOpenAI
-            embedding_engine.client = AsyncOpenAI(
-                api_key=embedding_engine.api_key,
-                base_url=embedding_engine.base_url,
-            )
+        # --- (Re)initialize API client if use_api + key present; else disable ---
+        # --- 若 use_api 且有 key 则（重新）初始化客户端；否则禁用 embedding ---
+        if hasattr(embedding_engine, "client"):
+            use_api = emb.get("use_api", True)
+            api_key = embedding_engine.api_key or emb.get("api_key", "")
+            if use_api and api_key:
+                from openai import AsyncOpenAI
+                embedding_engine.client = AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=embedding_engine.base_url,
+                )
+                embedding_engine.enabled = True
+            else:
+                embedding_engine.client = None
+                embedding_engine.enabled = False
 
     # --- Merge threshold ---
     if "merge_threshold" in body:
@@ -9550,6 +9701,32 @@ async def api_ai_test(request):
             })
         return JSONResponse({"ok": False, "error": "API返回空内容"}, status_code=500)
     
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# /api/embedding-test — Test embedding API connection
+# =============================================================
+@mcp.custom_route("/api/embedding-test", methods=["POST"])
+async def api_embedding_test(request):
+    """Test embedding API connection by generating a vector for a sample text."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        if not embedding_engine or not embedding_engine.enabled:
+            return JSONResponse({"ok": False, "error": "向量服务未启用（请先在设置页填写 API Key）"}, status_code=400)
+        if not embedding_engine.client:
+            return JSONResponse({"ok": False, "error": "向量客户端未初始化（请检查 API Key / Base URL）"}, status_code=400)
+        vec = await embedding_engine._generate_embedding("测试向量连接")
+        if not vec:
+            return JSONResponse({"ok": False, "error": "向量 API 调用失败，请检查 Key / Base URL / Model"}, status_code=500)
+        return JSONResponse({
+            "ok": True,
+            "model": embedding_engine.model,
+            "base_url": embedding_engine.base_url,
+            "dim": len(vec),
+        })
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 

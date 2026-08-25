@@ -1284,7 +1284,8 @@ function renderEchoChamber() {
           chain_merge: '事件链合并',
           chain_update: '链更新',
           identity_proposal: '人物收录',
-          optimize: '优化调整'
+          optimize: '优化调整',
+          pattern_proposal: '经验沉淀'
         };
 
         var statusLabels = {
@@ -1314,8 +1315,12 @@ function renderEchoChamber() {
           '</div>';
         } else if (action.action_type === 'merge') {
           contentHtml = '<div class="cleanup-details" style="border-color:rgba(74,124,89,0.15);background:rgba(74,124,89,0.04);">' +
-            '<div class="conflict-reason" style="color:var(--positive);">' + (data.reason || '合并提案') + '</div>' +
-            (data.target_id ? '<div class="cleanup-meta">目标 Bucket: ' + data.target_id + '</div>' : '') +
+            '<div class="conflict-reason" style="color:var(--positive);">' + (data.reason || '重复记忆合并提案') + '</div>' +
+            (data.name ? '<div class="cleanup-meta">记忆: ' + data.name + '</div>' : '') +
+            '<div class="conflict-record old"><span class="record-label">保留</span>' + (data.primary_bucket_id || '') + '</div>' +
+            '<div class="conflict-record new"><span class="record-label">并入</span>' + (data.secondary_bucket_id || '') + '</div>' +
+            (data.similarity ? '<div class="cleanup-meta">相似度: ' + data.similarity + '%</div>' : '') +
+            (data.content_preview ? '<div class="cleanup-meta" style="color:var(--text-dim);">内容预览: ' + data.content_preview + '</div>' : '') +
           '</div>';
         } else if (action.action_type === 'chain_merge') {
           contentHtml = '<div class="cleanup-details" style="border-color:rgba(74,124,89,0.15);background:rgba(74,124,89,0.04);">' +
@@ -1350,6 +1355,18 @@ function renderEchoChamber() {
             (data.bucket_name ? '<div class="cleanup-meta">记忆: ' + data.bucket_name + '</div>' : '') +
             '<div class="cleanup-meta">Bucket: ' + (data.bucket_id || '') + '</div>' +
             sugHtml +
+          '</div>';
+        } else if (action.action_type === 'pattern_proposal') {
+          var ruleHtml = '';
+          (data.rules || []).forEach(function(r) {
+            if (typeof r === 'string') { r = {rule: r, domain: ''}; }
+            ruleHtml += '<div class="cleanup-meta">· ' + (r.rule || '') +
+              (r.domain ? ' <span style="color:var(--text-dim);">[' + r.domain + ']</span>' : '') + '</div>';
+          });
+          contentHtml = '<div class="cleanup-details" style="border-color:rgba(74,124,89,0.2);background:rgba(74,124,89,0.05);">' +
+            '<div class="conflict-reason" style="color:var(--positive);">' + (data.reason || '经验沉淀提案') + '</div>' +
+            (data.chain_topic ? '<div class="cleanup-meta">事件链: ' + data.chain_topic + '</div>' : '') +
+            '<div class="cleanup-meta">经验规则:</div>' + ruleHtml +
           '</div>';
         }
 

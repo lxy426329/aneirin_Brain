@@ -1290,6 +1290,7 @@
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="candlestick">烛台</div>
   <div class="tab" data-tab="cycle">例假</div>
+  <div class="tab" data-tab="journal">日记</div>
   <div class="tab" data-tab="config">设置</div>
 </div>
 
@@ -1456,6 +1457,56 @@
   <div id="cycle-empty" class="loading" style="display:none;">暂无例假记录，请点击上方按钮添加第一次记录</div>
 </div>
 
+<div class="content" id="journal-view" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:600;">每日日记</h2>
+      <p style="color:var(--text-dim);font-size:13px;margin-top:4px;">管家每日自动生成事件摘要，主 AI 补充情绪点评与标签</p>
+    </div>
+    <button class="btn-primary" onclick="showJournalEditor()">+ 新建日记</button>
+  </div>
+  <div style="display:grid;grid-template-columns:260px 1fr;gap:20px;">
+    <div id="journal-list" style="background:var(--surface);border-radius:var(--radius-lg);border:1px solid var(--border);padding:10px;max-height:70vh;overflow-y:auto;"></div>
+    <div id="journal-detail" style="background:var(--surface);border-radius:var(--radius-lg);border:1px solid var(--border);padding:24px;min-height:300px;"></div>
+  </div>
+</div>
+
+<div id="journal-editor-modal" class="modal-overlay" style="display:none;">
+  <div style="background:var(--surface-solid);border-radius:var(--radius-xl);padding:28px;max-width:560px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);margin-top:40px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 id="journal-editor-title">新建日记</h3>
+      <button onclick="closeJournalEditor()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-dim);">&times;</button>
+    </div>
+
+    <div class="config-row" style="margin-bottom:12px;">
+      <label>日期 *</label>
+      <input type="date" id="journal-date" />
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">事件摘要</label>
+      <textarea id="journal-summary" rows="5" placeholder="这一天发生了什么" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin-bottom:6px;">情绪点评</label>
+      <textarea id="journal-mood" rows="3" placeholder="对今天情绪的点评与判断" style="width:100%;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;"></textarea>
+    </div>
+
+    <div class="config-row" style="margin-bottom:16px;">
+      <label>情绪标签</label>
+      <input type="text" id="journal-tags" placeholder="如：充实,疲惫,期待（逗号分隔）" />
+    </div>
+
+    <div style="display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn-secondary" onclick="closeJournalEditor()">取消</button>
+      <button class="btn-primary" onclick="saveJournal()">保存</button>
+    </div>
+
+    <div id="journal-editor-msg" style="margin-top:12px;font-size:13px;"></div>
+  </div>
+</div>
+
 <div id="cycle-editor-modal" class="modal-overlay" style="display:none;">
   <div style="background:var(--surface-solid);border-radius:var(--radius-xl);padding:28px;max-width:520px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);margin-top:40px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
@@ -1514,12 +1565,14 @@
     <div class="legend-item"><span class="legend-dot" style="background:#8B6A6A"></span> feel</div>
     <div class="legend-item"><span class="legend-dot" style="background:#4A7C59"></span> identity</div>
     <div class="legend-item"><span class="legend-dot" style="background:#6A6A8B"></span> pattern</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#3A6EA5"></span> chain</div>
     <div style="border-left:1px solid var(--border);margin:0 14px;height:20px;"></div>
     <div class="legend-item"><span class="legend-line" style="background:#2196F3;"></span> 同一事件</div>
     <div class="legend-item"><span class="legend-line" style="background:#4CAF50;"></span> 相关内容</div>
     <div class="legend-item"><span class="legend-line" style="background:#FF9800;"></span> 父子关系</div>
     <div class="legend-item"><span class="legend-line" style="background:#9C27B0;"></span> 语义相似</div>
     <div class="legend-item"><span class="legend-line" style="background:#E91E63;"></span> 共享标签</div>
+    <div class="legend-item"><span class="legend-line" style="background:#795548;"></span> 链间关联</div>
     <div style="margin-left:auto;font-size:11px;color:var(--text-dim);">
       滚轮缩放 | 拖拽节点移动 | 点击查看详情
     </div>
@@ -1802,6 +1855,35 @@
       <button class="btn-secondary" onclick="saveConfig(true)">应用并写入 config.yaml</button>
     </div>
     <div id="config-status" style="margin-top:16px;font-size:13px;"></div>
+
+    <div class="config-section" style="margin-top:24px;">
+      <h3>语义搜索（Embedding）</h3>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">启用后搜索会按语句意思匹配，类似词语也能搜到。默认使用 Gemini embedding，填写 API Key 后生效。</div>
+      <div class="config-row">
+        <label>启用</label>
+        <select id="cfg-emb-enabled" style="flex:1;padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);">
+          <option value="true">启用</option>
+          <option value="false">停用</option>
+        </select>
+      </div>
+      <div class="config-row">
+        <label>API Key</label>
+        <input type="password" id="cfg-emb-key" placeholder="输入 Gemini API Key" />
+      </div>
+      <div style="margin-top:-2px;margin-bottom:10px;padding-left:112px;font-size:11px;color:var(--text-light);">已设置时显示掩码，留空表示不修改</div>
+      <div class="config-row">
+        <label>Base URL</label>
+        <input type="text" id="cfg-emb-url" placeholder="https://generativelanguage.googleapis.com/v1beta/openai/" />
+      </div>
+      <div class="config-row">
+        <label>Model</label>
+        <input type="text" id="cfg-emb-model" placeholder="gemini-embedding-001" />
+      </div>
+      <div style="margin-top:12px;padding-left:112px;">
+        <button onclick="testEmbeddingConnection()" id="btn-emb-test" class="btn-secondary" style="padding:8px 18px;font-size:12px;">测试向量连接</button>
+        <span id="emb-status" style="margin-left:12px;font-size:12px;color:var(--text-light);"></span>
+      </div>
+    </div>
 
     <div class="config-section" style="margin-top:24px;">
       <h3>修改密码</h3>

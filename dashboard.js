@@ -320,6 +320,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('timeline-view').style.display = target === 'timeline' ? '' : 'none';
     document.getElementById('candlestick-view').style.display = target === 'candlestick' ? '' : 'none';
     document.getElementById('cycle-view').style.display = target === 'cycle' ? '' : 'none';
+    document.getElementById('journal-view').style.display = target === 'journal' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     if (target === 'network') loadNetwork();
@@ -332,6 +333,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'timeline') loadTimelines();
     if (target === 'candlestick') loadCandlesticks();
     if (target === 'cycle') loadCycle();
+    if (target === 'journal') loadJournal();
   });
 });
 
@@ -1181,7 +1183,51 @@ async function loadNetwork() {
 
   try {
     var res = await fetch(BASE + '/api/network', { credentials: 'include' });
-    networkData = await res.json();
+    var data = await res.json();
+    // --- Assemble nodes & edges from identities / self-profile / event chains ---
+    // --- 组装节点与边（身份 / 自我认知 / 事件链实体图谱） ---
+    var nodes = [];
+    if (data.self_profile) {
+      nodes.push({
+        id: data.self_profile.id,
+        name: data.self_profile.name,
+        type: 'identity',
+        is_self: true,
+        score: 1.0,
+        pinned: true
+      });
+    }
+    (data.identities || []).forEach(function(i) {
+      nodes.push({
+        id: i.id,
+        name: i.name,
+        type: 'identity',
+        is_self: false,
+        score: 0.6 + Math.min(0.4, (i.activation_count || 0) / 20)
+      });
+    });
+    (data.chains || []).forEach(function(c) {
+      nodes.push({
+        id: c.id,
+        name: c.topic,
+        type: 'chain',
+        score: 0.7
+      });
+    });
+    var edges = (data.edges || []).map(function(e) {
+      return {
+        source: e.from_id,
+        target: e.to_id,
+        type: 'related',
+        weight: Math.max(0.3, (e.effective_weight || e.base_weight || 5) / 5)
+      };
+    });
+    (data.chains || []).forEach(function(c) {
+      (c.related_chain_ids || []).forEach(function(rid) {
+        edges.push({ source: c.id, target: rid, type: 'chain_related', weight: 0.8 });
+      });
+    });
+    networkData = { nodes: nodes, edges: edges };
     initNetworkView(canvas, ctx, W, H, networkData);
   } catch(e) {
     ctx.fillText('加载失败: ' + e.message, W/2, H/2 + 24);
@@ -1458,6 +1504,7 @@ var NETWORK_CONFIG = {
     candlestick: '#DAA520',
     dynamic: '#20B2AA',
     archived: '#B0A590',
+    chain: '#3A6EA5',
   },
   typeLabels: {
     identity: '身份',
@@ -1469,6 +1516,7 @@ var NETWORK_CONFIG = {
     candlestick: '烛台',
     dynamic: '动态',
     archived: '归档',
+    chain: '事件链',
   },
   edgeColors: {
     same_event: '#2196F3',
@@ -1476,6 +1524,7 @@ var NETWORK_CONFIG = {
     hierarchy: '#FF9800',
     similarity: '#9C27B0',
     cooccurrence: '#E91E63',
+    chain_related: '#795548',
   },
   edgeLabels: {
     same_event: '同一事件',
@@ -1483,6 +1532,7 @@ var NETWORK_CONFIG = {
     hierarchy: '层级',
     similarity: '相似',
     cooccurrence: '共享标签',
+    chain_related: '链间关联',
   },
   edgeDashed: {
     same_event: false,
@@ -1490,8 +1540,9 @@ var NETWORK_CONFIG = {
     hierarchy: true,
     similarity: false,
     cooccurrence: true,
+    chain_related: true,
   },
-  typeOrder: ['identity', 'pattern', 'permanent', 'event', 'feel', 'experience', 'candlestick', 'dynamic'],
+  typeOrder: ['identity', 'chain', 'pattern', 'permanent', 'event', 'feel', 'experience', 'candlestick', 'dynamic'],
 };
 
 function drawNetwork(canvas, ctx, W, H, nodes, edges) {
@@ -1800,6 +1851,14 @@ async function loadConfig() {
     var dehyKeyMasked = cfg.dehydration.api_key_masked || '';
     document.getElementById('cfg-dehy-key').placeholder = '当前: ' + (dehyKeyMasked || '未设置');
     document.getElementById('cfg-dehy-key').value = dehyKeyMasked ? '******' : '';
+    // --- Embedding config ---
+    var emb = cfg.embedding || {};
+    document.getElementById('cfg-emb-enabled').value = emb.enabled ? 'true' : 'false';
+    document.getElementById('cfg-emb-url').value = emb.base_url || '';
+    document.getElementById('cfg-emb-model').value = emb.model || '';
+    var embKeyMasked = emb.api_key_masked || '';
+    document.getElementById('cfg-emb-key').placeholder = '当前: ' + (embKeyMasked || '未设置');
+    document.getElementById('cfg-emb-key').value = embKeyMasked ? '******' : '';
   } catch (e) {
     document.getElementById('config-status').innerHTML =
       '<span style="color:var(--negative)">加载失败: ' + e.message + '</span>';
@@ -1812,10 +1871,17 @@ async function saveConfig(persist) {
       model: document.getElementById('cfg-dehy-model').value,
       base_url: document.getElementById('cfg-dehy-url').value,
     },
+    embedding: {
+      enabled: document.getElementById('cfg-emb-enabled').value === 'true',
+      model: document.getElementById('cfg-emb-model').value,
+      base_url: document.getElementById('cfg-emb-url').value,
+    },
     persist: persist,
   };
   var dehyKeyVal = document.getElementById('cfg-dehy-key').value;
   if (dehyKeyVal && dehyKeyVal !== '******') body.dehydration.api_key = dehyKeyVal;
+  var embKeyVal = document.getElementById('cfg-emb-key').value;
+  if (embKeyVal && embKeyVal !== '******') body.embedding.api_key = embKeyVal;
 
   var status = document.getElementById('config-status');
   try {
@@ -1833,6 +1899,32 @@ async function saveConfig(persist) {
     }
   } catch (e) {
     status.innerHTML = '<span style="color:var(--negative)">✗ 请求失败: ' + e.message + '</span>';
+  }
+}
+
+async function testEmbeddingConnection() {
+  var btn = document.getElementById('btn-emb-test');
+  var status = document.getElementById('emb-status');
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  status.innerHTML = '<span style="color:var(--warning)">测试中...</span>';
+  try {
+    var res = await fetch(BASE + '/api/embedding-test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      credentials: 'include'
+    });
+    var result = await res.json();
+    if (result.ok) {
+      status.innerHTML = '<span style="color:var(--positive)">✓ 向量连接正常</span>';
+    } else {
+      status.innerHTML = '<span style="color:var(--negative)">✗ ' + (result.error || '连接失败') + '</span>';
+    }
+  } catch (e) {
+    status.innerHTML = '<span style="color:var(--negative)">✗ 请求失败: ' + e.message + '</span>';
+  } finally {
+    btn.disabled = false;
+    btn.style.opacity = '1';
   }
 }
 
@@ -2803,7 +2895,22 @@ function renderCycleSummary(summary) {
     }
   }
 
+  // --- Current phase card / 当前相位卡片 ---
+  const phaseMap = {
+    period: { text: '经期', color: 'var(--negative)' },
+    pre_period: { text: '经前', color: 'var(--warning)' },
+    follicular: { text: '安全期', color: 'var(--positive)' },
+    unknown: { text: '---', color: 'var(--text-dim)' }
+  };
+  const ph = phaseMap[summary.phase] || phaseMap.unknown;
+
   container.innerHTML = `
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">当前相位</div>
+      <div style="font-size:28px;font-weight:600;color:${ph.color};">${ph.text}</div>
+      ${summary.phase === 'pre_period' ? '<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">情绪易波动，注意休息</div>' : ''}
+      ${summary.phase === 'period' ? '<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">情绪易敏感，注意保暖</div>' : ''}
+    </div>
     <div style="background:var(--surface);border-radius:var(--radius-lg);padding:18px;border:1px solid var(--border);">
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">距离下次</div>
       <div style="font-size:28px;font-weight:600;color:${statusColor};display:flex;align-items:center;">${statusBadge}${statusText}</div>
@@ -2884,6 +2991,154 @@ async function deleteCycleRecord(startDate) {
     }
   } catch (e) {
     alert('删除失败: ' + e.message);
+  }
+}
+
+// ============ Journal / 日记 ============
+async function loadJournal() {
+  const listEl = document.getElementById('journal-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:13px;">加载中...</div>';
+  try {
+    const res = await authFetch('/api/journal/list?limit=50');
+    if (!res) return;
+    const data = await res.json();
+    const entries = data.entries || [];
+    renderJournalList(entries);
+    // --- Default: show today's entry (or empty state) ---
+    // --- 默认显示今天（或空状态） ---
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = entries.find(function(e) { return e.date === today; });
+    showJournalDetail(today, entry || null);
+  } catch (e) {
+    listEl.innerHTML = '<div style="padding:12px;color:var(--negative);font-size:13px;">加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderJournalList(entries) {
+  const listEl = document.getElementById('journal-list');
+  if (!listEl) return;
+  if (!entries.length) {
+    listEl.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:13px;">暂无日记，点击右上角新建</div>';
+    return;
+  }
+  let html = '';
+  entries.forEach(function(e) {
+    const date = e.date || '';
+    const tags = e.emotion_tags || '';
+    html += '<div class="journal-item" data-date="' + date + '" onclick="selectJournal(\'' + date + '\')" ' +
+      'style="padding:10px;border-radius:var(--radius-sm);cursor:pointer;margin-bottom:4px;transition:background 0.2s;border:1px solid transparent;">' +
+      '<div style="font-weight:600;font-size:13px;color:var(--text);">' + date + '</div>' +
+      (tags ? '<div style="font-size:12px;color:var(--text-dim);margin-top:2px;">' + escapeHtml(tags) + '</div>' : '') +
+    '</div>';
+  });
+  listEl.innerHTML = html;
+}
+
+function selectJournal(date) {
+  document.querySelectorAll('.journal-item').forEach(function(el) {
+    el.style.background = el.dataset.date === date ? 'var(--accent-glow)' : '';
+    el.style.borderColor = el.dataset.date === date ? 'var(--border-strong)' : 'transparent';
+  });
+  authFetch('/api/journal?date=' + encodeURIComponent(date)).then(function(res) {
+    if (!res) return null;
+    return res.json();
+  }).then(function(data) {
+    if (data) showJournalDetail(date, data.entry || null);
+  }).catch(function() {
+    showJournalDetail(date, null);
+  });
+}
+
+function showJournalDetail(date, entry) {
+  const detailEl = document.getElementById('journal-detail');
+  if (!detailEl) return;
+  if (!entry) {
+    detailEl.innerHTML = '<div style="color:var(--text-dim);text-align:center;padding:60px 0;">' +
+      '<div style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:8px;">' + date + '</div>' +
+      '这一天还没有日记' +
+      '<div style="margin-top:16px;"><button class="btn-secondary" onclick="showJournalEditor(\'' + date + '\')">新建日记</button></div>' +
+    '</div>';
+    return;
+  }
+  const tags = entry.emotion_tags || '';
+  const mood = entry.mood_comment || '';
+  const summary = entry.event_summary || '';
+  detailEl.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">' +
+    '<h3 style="font-size:18px;font-weight:600;">' + (entry.date || date) + '</h3>' +
+    '<button class="btn-secondary" onclick="showJournalEditor(\'' + (entry.date || date) + '\')">编辑</button>' +
+  '</div>' +
+  '<div class="field"><label>事件摘要</label><div style="white-space:pre-wrap;line-height:1.7;">' + escapeHtml(summary) + '</div></div>' +
+  (mood ? '<div class="field"><label>情绪点评</label><div style="white-space:pre-wrap;line-height:1.7;color:var(--accent);">' + escapeHtml(mood) + '</div></div>' : '') +
+  (tags ? '<div class="field"><label>情绪标签</label><div>' + tags.split(',').map(function(t) {
+    t = t.trim();
+    if (!t) return '';
+    return '<span style="display:inline-block;padding:2px 10px;border-radius:12px;background:var(--accent-glow);color:var(--accent);font-size:12px;margin-right:6px;margin-bottom:4px;">' + escapeHtml(t) + '</span>';
+  }).join('') + '</div></div>' : '');
+}
+
+function showJournalEditor(date) {
+  document.getElementById('journal-editor-title').textContent = date ? '编辑日记' : '新建日记';
+  const today = new Date().toISOString().slice(0, 10);
+  const d = date || today;
+  document.getElementById('journal-date').value = d;
+  document.getElementById('journal-summary').value = '';
+  document.getElementById('journal-mood').value = '';
+  document.getElementById('journal-tags').value = '';
+  document.getElementById('journal-editor-msg').textContent = '';
+  authFetch('/api/journal?date=' + encodeURIComponent(d)).then(function(res) {
+    if (!res) return null;
+    return res.json();
+  }).then(function(data) {
+    if (data && data.entry) {
+      document.getElementById('journal-summary').value = data.entry.event_summary || '';
+      document.getElementById('journal-mood').value = data.entry.mood_comment || '';
+      document.getElementById('journal-tags').value = data.entry.emotion_tags || '';
+    }
+    document.getElementById('journal-editor-modal').style.display = 'flex';
+  }).catch(function() {
+    document.getElementById('journal-editor-modal').style.display = 'flex';
+  });
+}
+
+function closeJournalEditor() {
+  document.getElementById('journal-editor-modal').style.display = 'none';
+}
+
+async function saveJournal() {
+  const date = document.getElementById('journal-date').value;
+  const summary = document.getElementById('journal-summary').value;
+  const mood = document.getElementById('journal-mood').value;
+  const tags = document.getElementById('journal-tags').value;
+  const msgEl = document.getElementById('journal-editor-msg');
+  if (!date) {
+    msgEl.textContent = '请选择日期';
+    msgEl.style.color = 'var(--negative)';
+    return;
+  }
+  if (!summary && !mood) {
+    msgEl.textContent = '摘要和情绪点评至少填一项';
+    msgEl.style.color = 'var(--negative)';
+    return;
+  }
+  try {
+    const resp = await authFetch('/api/journal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: date, event_summary: summary, mood_comment: mood, emotion_tags: tags })
+    });
+    if (!resp) return;
+    const data = await resp.json();
+    if (data.success) {
+      closeJournalEditor();
+      loadJournal();
+    } else {
+      msgEl.textContent = '保存失败: ' + (data.error || '未知错误');
+      msgEl.style.color = 'var(--negative)';
+    }
+  } catch (e) {
+    msgEl.textContent = '保存失败: ' + e.message;
+    msgEl.style.color = 'var(--negative)';
   }
 }
 

@@ -16,6 +16,7 @@
 # ============================================================
 
 import os
+import re
 import json
 import asyncio
 import logging
@@ -23,6 +24,8 @@ from collections import Counter
 from datetime import datetime, timedelta
 
 from openai import AsyncOpenAI
+
+from utils import safe_json_loads
 
 from dehydrator import PRIMARY_TAG_VOCAB
 
@@ -158,6 +161,89 @@ class TagNormalizer:
             logger.warning(f"Failed to save tag normalizer state: {e}")
 
     # ---------------------------------------------------------
+    # Query-side synonym normalization / 查询端同义归一化
+    #
+    # The batch job persists its LLM mapping (非标准标签 → 泛化标签) to
+    # tag_synonyms.json. At query time we expand the query with synonyms so
+    # searching "跑步" also matches memories tagged "慢跑"/"健走" (synonyms
+    # that map to the same canonical tag).
+    # 批量任务把 LLM 生成的映射（非标准标签 → 泛化标签）持久化到
+    # tag_synonyms.json；查询时用该映射扩展查询词，使搜"跑步"也能命中
+    # 映射到同一泛化标签的"慢跑"/"健走"等记忆。
+    # ---------------------------------------------------------
+    @property
+    def synonym_map_file(self) -> str:
+        """Path of the persisted synonym map. 持久化同义词映射文件路径。"""
+        return os.path.join(os.path.dirname(self.state_file), "tag_synonyms.json")
+
+    def _save_synonym_map(self, mapping: dict) -> None:
+        """Persist the LLM mapping for query-side normalization.
+        持久化 LLM 映射，供查询端使用。"""
+        if not mapping:
+            return
+        try:
+            # Merge with existing map (never drop previously learned synonyms)
+            # 与已有映射合并（不丢弃此前学习到的同义词）
+            existing = self.get_synonym_map()
+            existing.update(mapping)
+            with open(self.synonym_map_file, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+            self._synonym_map_cache = existing
+        except Exception as e:
+            logger.warning(f"Failed to save tag synonym map / 保存同义词映射失败: {e}")
+
+    def get_synonym_map(self) -> dict:
+        """Load the persisted synonym map (cached).
+        读取持久化同义词映射（带缓存）。"""
+        if getattr(self, "_synonym_map_cache", None) is not None:
+            return self._synonym_map_cache
+        try:
+            if os.path.exists(self.synonym_map_file):
+                with open(self.synonym_map_file, "r", encoding="utf-8") as f:
+                    self._synonym_map_cache = json.load(f)
+            else:
+                self._synonym_map_cache = {}
+        except Exception as e:
+            logger.warning(f"Failed to load tag synonym map / 读取同义词映射失败: {e}")
+            self._synonym_map_cache = {}
+        return self._synonym_map_cache
+
+    def expand_query(self, query: str) -> str:
+        """
+        Expand a search query with tag synonyms (query-side normalization).
+        For each tag-like token in the query, append its canonical tag and all
+        synonyms that share that canonical tag. Non-matching tokens are kept.
+        用同义词扩展搜索查询：对查询中的标签词，追加其泛化标签及所有共享
+        该泛化标签的同义词；无映射的词原样保留。
+        """
+        if not query or not query.strip():
+            return query
+        syn_map = self.get_synonym_map()
+        if not syn_map:
+            return query
+
+        tokens = [t for t in re.split(r"[\s,，、]+", query.strip()) if t]
+        if not tokens:
+            return query
+
+        expanded = list(tokens)
+        for tok in tokens:
+            canonical = syn_map.get(tok)
+            if not canonical or canonical == tok:
+                continue
+            if canonical not in expanded:
+                expanded.append(canonical)
+            # All tags mapping to the same canonical are treated as synonyms
+            # 与泛化标签映射到同一规范词的所有标签都视为同义词
+            for k, v in syn_map.items():
+                if v == canonical and k not in expanded:
+                    expanded.append(k)
+
+        if len(expanded) == len(tokens):
+            return query
+        return " ".join(expanded)
+
+    # ---------------------------------------------------------
     # Core: collect and normalize tags
     # ---------------------------------------------------------
     async def run_normalization(self) -> dict:
@@ -270,8 +356,10 @@ class TagNormalizer:
                     if old_tag not in current_tags:
                         continue
 
-                    # Replace old tag with new tag, avoid duplicates
-                    new_tags = [t for t in current_tags if t != old_tag]
+                    # Keep the original tag (precise search still matches) AND
+                    # append the canonical tag (generalized retrieval works too).
+                    # 保留原标签（精确检索仍可命中），同时追加泛化标签（泛化召回可用）。
+                    new_tags = list(current_tags)
                     if new_tag not in new_tags:
                         new_tags.append(new_tag)
 
@@ -286,6 +374,10 @@ class TagNormalizer:
         self._records_since_last_run = 0
         self._last_run_at = datetime.now()
         self._save_state()
+
+        # --- Persist the synonym map for query-side normalization ---
+        # --- 持久化同义词映射，供查询端同义归一化使用 ---
+        self._save_synonym_map(mapping)
 
         result = {
             "total_tags": len(tag_counter),
@@ -340,7 +432,7 @@ class TagNormalizer:
             raw = "\n".join(json_lines)
 
         try:
-            mapping = json.loads(raw)
+            mapping = safe_json_loads(raw, default=None)
             if not isinstance(mapping, dict):
                 return {}
             return mapping

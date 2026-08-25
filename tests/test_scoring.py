@@ -313,6 +313,61 @@ class TestSearchScoring:
 
 
 # ============================================================
+# Cycle-phase decay modulation
+# 周期相位衰减调节
+# ============================================================
+class TestCyclePhaseBoost:
+    """Verify cycle-phase decay modulation (period/pre_period slow decay)."""
+
+    class _FakeCycleTracker:
+        def __init__(self, phase):
+            self._phase = phase
+
+        def get_cycle_phase(self):
+            return self._phase
+
+    def _make_engine(self, phase, boost_cfg=None):
+        from decay_engine import DecayEngine
+        cfg = {"decay": {"cycle_phase_boost": boost_cfg or {}}}
+        return DecayEngine(cfg, None, cycle_tracker=self._FakeCycleTracker(phase))
+
+    def _base_meta(self):
+        return {
+            "activation_count": 3,
+            "created": (datetime.now() - timedelta(days=2)).isoformat(),
+            "last_active": (datetime.now() - timedelta(days=2)).isoformat(),
+            "arousal": 0.5,
+            "valence": 0.5,
+            "type": "dynamic",
+        }
+
+    def test_period_boost_higher_score(self):
+        normal = self._make_engine("follicular").calculate_score(self._base_meta())
+        period = self._make_engine("period").calculate_score(self._base_meta())
+        assert period > normal
+        assert period == pytest.approx(normal * 1.3, rel=0.01)
+
+    def test_pre_period_boost(self):
+        normal = self._make_engine("follicular").calculate_score(self._base_meta())
+        pre = self._make_engine("pre_period").calculate_score(self._base_meta())
+        assert pre == pytest.approx(normal * 1.2, rel=0.01)
+
+    def test_unknown_no_boost(self):
+        normal = self._make_engine("follicular").calculate_score(self._base_meta())
+        unknown = self._make_engine("unknown").calculate_score(self._base_meta())
+        assert unknown == pytest.approx(normal, rel=0.01)
+
+    def test_no_cycle_tracker_no_boost(self):
+        from decay_engine import DecayEngine
+        eng = DecayEngine({"decay": {}}, None)
+        assert eng._get_cycle_phase_boost() == 1.0
+
+    def test_custom_boost_config(self):
+        eng = self._make_engine("period", {"period": 1.5})
+        assert eng._get_cycle_phase_boost() == 1.5
+
+
+# ============================================================
 # Dataset integrity checks
 # ============================================================
 class TestDatasetIntegrity:

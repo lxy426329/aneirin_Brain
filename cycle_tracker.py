@@ -228,3 +228,30 @@ class CycleTracker:
             "predicted_next_date": next_date,
             "days_until_next": days_until,
         }
+
+    def get_cycle_phase(self) -> str:
+        """Return current cycle phase: period / pre_period / follicular / unknown
+        返回当前周期相位：经期 / 经前期 / 卵泡期 / 未知（无数据）"""
+        records = sorted(self.data["records"], key=lambda r: r["date_timestamp"])
+        if not records:
+            return "unknown"
+
+        today = datetime.now().date()
+        last_date = self._parse_date(records[-1]["start_date"])
+        if last_date is None:
+            return "unknown"
+
+        # Period: within (last start + duration) days / 经期：距上次开始在持续天数内
+        duration = int(records[-1].get("duration", 5))
+        days_since = (today - last_date).days
+        if 0 <= days_since <= max(1, duration):
+            return "period"
+
+        # Pre-period: next predicted start within 0-5 days / 经前：距下次预测 0-5 天
+        days_until = self.days_until_next_cycle()
+        if days_until is not None and 0 <= days_until <= 5:
+            return "pre_period"
+
+        # Otherwise follicular (data exists, not in special windows)
+        # 其余为卵泡期（有数据且不在特殊窗口）
+        return "follicular"

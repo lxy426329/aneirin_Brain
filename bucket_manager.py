@@ -177,6 +177,11 @@ class BucketManager:
         self._cache_timestamp = 0
         self._cache_validity = 5  # 5 seconds cache validity
 
+        # --- Query-side tag synonym map (persisted by tag_normalizer) ---
+        # --- 查询端标签同义词映射（由 tag_normalizer 持久化），懒加载 ---
+        self._tag_synonyms = None
+        self._tag_synonyms_file = os.path.join(self.base_dir, "tag_synonyms.json")
+
         # --- Cooldown state for pattern/experience injection ---
         # --- 年轮经验注入冷却状态（内存级，不持久化）---
         # Records {bucket_id: last_injected_timestamp} for cooldown tracking
@@ -1178,7 +1183,7 @@ class BucketManager:
             if "model_valence" in kwargs:
                 post["model_valence"] = max(0.0, min(1.0, safe_float(kwargs["model_valence"], 0.5)))
             
-            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags", "type"):
+            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags", "type", "people"):
                 if key in kwargs:
                     post[key] = kwargs[key]
 
@@ -1992,6 +1997,62 @@ class BucketManager:
     #   Topic_Relevance     = 主题相关性 (0.0~1.0 continuous)
     #   Time_Proximity      = 时间亲近度 (0.0~1.0 continuous)
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # Query-side tag synonym normalization / 查询端标签同义归一化
+    # Uses the synonym map persisted by tag_normalizer (tag_synonyms.json)
+    # to expand the query so synonyms match (e.g. 跑步 ↔ 慢跑 ↔ 健走).
+    # 复用 tag_normalizer 持久化的同义词映射（tag_synonyms.json）扩展查询，
+    # 使同义词可互相命中（如 跑步 ↔ 慢跑 ↔ 健走）。
+    # ---------------------------------------------------------
+    def _load_tag_synonyms(self) -> dict:
+        """Lazily load the persisted tag synonym map (cached per process).
+        懒加载持久化的标签同义词映射（进程内缓存）。"""
+        if self._tag_synonyms is not None:
+            return self._tag_synonyms
+        try:
+            if os.path.exists(self._tag_synonyms_file):
+                with open(self._tag_synonyms_file, "r", encoding="utf-8") as f:
+                    self._tag_synonyms = json.load(f)
+            else:
+                self._tag_synonyms = {}
+        except Exception as e:
+            logger.warning(f"Failed to load tag synonyms / 读取标签同义词失败: {e}")
+            self._tag_synonyms = {}
+        return self._tag_synonyms
+
+    def _expand_query_synonyms(self, query: str) -> str:
+        """
+        Expand the query with tag synonyms. For each tag-like token found in the
+        synonym map, append its canonical tag and all synonyms sharing that
+        canonical tag. Non-matching tokens are kept as-is.
+        用同义词扩展查询词：对命中映射的标签词，追加其泛化标签及所有共享
+        该泛化标签的同义词；无映射的词原样保留。
+        """
+        if not query or not query.strip():
+            return query
+        syn_map = self._load_tag_synonyms()
+        if not syn_map:
+            return query
+
+        tokens = [t for t in re.split(r"[\s,，、]+", query.strip()) if t]
+        if not tokens:
+            return query
+
+        expanded = list(tokens)
+        for tok in tokens:
+            canonical = syn_map.get(tok)
+            if not canonical or canonical == tok:
+                continue
+            if canonical not in expanded:
+                expanded.append(canonical)
+            for k, v in syn_map.items():
+                if v == canonical and k not in expanded:
+                    expanded.append(k)
+
+        if len(expanded) == len(tokens):
+            return query
+        return " ".join(expanded)
+
     async def search(
         self,
         query: str,
@@ -2015,6 +2076,12 @@ class BucketManager:
         """
         if not query or not query.strip():
             return []
+
+        # --- Query-side tag synonym normalization / 查询端标签同义归一化 ---
+        # Searching "跑步" also matches memories tagged "慢跑"/"健走" (synonyms
+        # persisted by tag_normalizer that share the same canonical tag).
+        # 搜"跑步"也能命中"慢跑"/"健走"等映射到同一泛化标签的同义词记忆。
+        query = self._expand_query_synonyms(query)
 
         limit = limit or self.max_results
         all_buckets = await self.list_all(include_archive=False)

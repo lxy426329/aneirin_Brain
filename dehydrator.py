@@ -32,7 +32,7 @@ import logging
 
 from openai import AsyncOpenAI
 
-from utils import count_tokens_approx
+from utils import count_tokens_approx, safe_json_loads
 
 logger = logging.getLogger("ombre_brain.dehydrator")
 
@@ -629,11 +629,7 @@ class Dehydrator:
             summary 字符串，如果解析失败则返回 None
         """
         try:
-            cleaned = content.strip()
-            # Handle potential markdown code block wrapping
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-            result = json.loads(cleaned)
+            result = safe_json_loads(content, default=None)
             if isinstance(result, dict) and "summary" in result:
                 return result["summary"]
         except (json.JSONDecodeError, IndexError, ValueError):
@@ -684,7 +680,7 @@ class Dehydrator:
                 {"role": "system", "content": ANALYZE_PROMPT},
                 {"role": "user", "content": content[:2000]},
             ],
-            max_tokens=256,
+            max_tokens=self.max_tokens,
             temperature=0.1,
         )
         if not response.choices:
@@ -705,10 +701,9 @@ class Dehydrator:
         解析并校验 API 返回的打标结果。
         """
         try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-            result = json.loads(cleaned)
+            result = safe_json_loads(raw, default=None)
+            if result is None:
+                raise ValueError("empty")
         except (json.JSONDecodeError, IndexError, ValueError):
             logger.warning(f"API tagging JSON parse failed / JSON 解析失败: {raw[:200]}")
             return self._default_analysis()
@@ -909,10 +904,9 @@ class Dehydrator:
         解析并校验 API 返回的时间链结果。
         """
         try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-            result = json.loads(cleaned)
+            result = safe_json_loads(raw, default=None)
+            if result is None:
+                raise ValueError("empty")
         except (json.JSONDecodeError, IndexError, ValueError):
             logger.warning(f"Timeline JSON parse failed / JSON 解析失败: {raw[:200]}")
             return {"title": "解析失败", "phases": [], "summary": "无法解析 API 返回结果"}
@@ -1002,10 +996,9 @@ class Dehydrator:
         解析并校验 API 返回的日记整理结果。
         """
         try:
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-            items = json.loads(cleaned)
+            items = safe_json_loads(raw, default=None)
+            if items is None:
+                raise ValueError("empty")
         except (json.JSONDecodeError, IndexError, ValueError):
             logger.warning(f"Diary digest JSON parse failed / JSON 解析失败: {raw[:200]}")
             return []

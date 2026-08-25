@@ -18,7 +18,6 @@ import uuid
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 try:
     from rapidfuzz import fuzz, process
@@ -38,7 +37,7 @@ except ImportError:
 
 # Safe conversion helpers / 安全类型转换工具
 try:
-    from utils import safe_int, safe_float, as_list
+    from utils import safe_int, safe_float, as_list, safe_json_loads
 except ImportError:
     def safe_int(value, default=0):
         try:
@@ -335,6 +334,7 @@ class Housekeeper:
     """
     
     def __init__(self, config: dict, bucket_mgr, dehydrator=None, identity_mgr=None, embedding_engine=None):
+        self.config = config or {}
         self.bucket_mgr = bucket_mgr
         self.dehydrator = dehydrator
         self.identity_mgr = identity_mgr
@@ -358,6 +358,15 @@ class Housekeeper:
         self.journals_dir = os.path.join(parent_dir, "journals")
         os.makedirs(self.journals_dir, exist_ok=True)
         self.journal_mgr = JournalManager(base_dir=parent_dir)
+
+        # --- Cycle tracker — physiology context for daily review ---
+        # --- 例假周期追踪 —— 为日终整理提供健康上下文 ---
+        try:
+            from cycle_tracker import CycleTracker
+            self.cycle_tracker = CycleTracker(data_dir)
+        except Exception as e:
+            logger.warning(f"CycleTracker init failed / 周期追踪初始化失败: {e}")
+            self.cycle_tracker = None
 
         # --- Housekeeper behaviour flags / 管家行为开关 ---
         # auto_schedule: run daily/weekly jobs automatically in the background.
@@ -907,6 +916,39 @@ class Housekeeper:
                 logger.error(f"Daily review scan {scan_name} failed / 扫描失败: {e}")
                 warnings.append(f"扫描「{scan_name}」失败: {e}")
 
+        # --- Submit duplicate candidates as merge proposals to echo chamber ---
+        # --- 将重复记忆候选提交为「合并」提案到回音壁，供主 AI 审批 ---
+        # 管家只提案不执行；主 AI 批准后由 approve_action 的 merge 分支真正合并。
+        try:
+            merge_submitted = 0
+            for c in candidates:
+                if c.get("category") != "duplicate":
+                    continue
+                detail = c.get("detail", {})
+                older_id = detail.get("duplicate_of", "")
+                newer_id = c.get("bucket_id", "")
+                if not older_id or not newer_id or older_id == newer_id:
+                    continue
+                await self.echo_chamber.add_pending_action(
+                    action_type="merge",
+                    data={
+                        "primary_bucket_id": older_id,
+                        "secondary_bucket_id": newer_id,
+                        "name": c.get("name", ""),
+                        "reason": c.get("reason", ""),
+                        "similarity": detail.get("similarity", 0),
+                        "newer_created": detail.get("newer_created", ""),
+                        "older_created": detail.get("older_created", ""),
+                        "content_preview": detail.get("content_preview", ""),
+                    },
+                )
+                merge_submitted += 1
+            if merge_submitted:
+                logger.info(f"Daily review: submitted {merge_submitted} merge proposals / 提交 {merge_submitted} 条合并提案")
+        except Exception as e:
+            logger.warning(f"Failed to submit merge proposals / 提交合并提案失败: {e}")
+            warnings.append(f"提交合并提案失败: {e}")
+
         # --- Journal status for summary guidance / 日记状态（引导用） ---
         journal_status = {"exists": False, "has_event_summary": False, "has_mood_comment": False}
         try:
@@ -938,6 +980,16 @@ class Housekeeper:
                     logger.error(f"Daily review pipeline {task_name} failed: {e}")
                     pipeline[task_name] = {"error": str(e)}
 
+        # --- Cycle status for health context / 生理周期状态（健康上下文）---
+        cycle_status = {}
+        if getattr(self, "cycle_tracker", None) is not None:
+            try:
+                summary = self.cycle_tracker.get_cycle_summary()
+                if summary and summary.get("total_records", 0) > 0:
+                    cycle_status = summary
+            except Exception as e:
+                warnings.append(f"读取周期状态失败: {e}")
+
         # --- Build the review package / 组装一包结果 ---
         candidates_by_category = {}
         for c in candidates:
@@ -951,6 +1003,7 @@ class Housekeeper:
             "candidates": candidates,
             "execution_instructions": self._build_execution_instructions(),
             "health": {"errors": errors, "warnings": warnings},
+            "cycle_status": cycle_status,
             "scan_summary": {
                 "scanned_buckets": len(all_buckets),
                 "candidates_total": len(candidates),
@@ -1302,6 +1355,12 @@ class Housekeeper:
         except Exception as e:
             logger.error(f"Weekly cleanup scan failed: {e}")
             results["cleanup_scan"] = {"error": str(e)}
+
+        try:
+            results["pattern_proposals"] = await self._extract_pattern_proposals()
+        except Exception as e:
+            logger.error(f"Weekly pattern extraction failed: {e}")
+            results["pattern_proposals"] = {"error": str(e)}
         
         try:
             await self._write_weekly_digest(results)
@@ -1780,8 +1839,9 @@ class Housekeeper:
         用于语义主旨比对，替代旧的“要/不要”字面正则粗暴匹配。
         """
         import re
+        # 否定词：'别' 用负向回顾排除 特别/区别/分别/告别/离别/个别 等非否定语境
         _NEG = re.compile(
-            r'(不|没|无|别|勿|未|从不|从未|不再|从没|尚未|禁止|拒绝|不要|不想|不愿意|没法|无法|不能|不会|还没)'
+            r'(不|没|无|(?<![特区分告离个])别|勿|未|从不|从未|不再|从没|尚未|禁止|拒绝|不要|不想|不愿意|没法|无法|不能|不会|还没)'
         )
         _SENT = re.compile(r'[。！？!?；;\n]+')
         # 主语候选：人称代词与常用称呼（voice/identity 常用实体）
@@ -1825,6 +1885,15 @@ class Housekeeper:
         语义主旨比对：同一主语+动作的核心命题若极性相反且相似度足够，
         计算 confidence_score；仅高于门槛才判为冲突。
         """
+        # 动词同义组：同一组内的动词视为同一动作（如 喜欢/想吃/想要 都是偏好动词）
+        # Verb synonym groups: verbs in the same group are treated as the same action.
+        _VERB_GROUPS = {
+            "preference": {"喜欢", "爱", "爱吃", "想吃", "想要", "想", "要", "希望", "愿意", "讨厌", "不爱", "不喜欢", "不想"},
+            "consumption": {"吃", "喝", "用", "买", "玩"},
+            "movement": {"去", "来", "走", "回", "到"},
+            "communication": {"说", "写", "看", "听", "学", "读"},
+        }
+
         def _ratio(a: str, b: str) -> float:
             if not a or not b:
                 return 0.0
@@ -1832,15 +1901,31 @@ class Housekeeper:
                 return float(fuzz.ratio(a, b))
             return 100.0 if a == b else 0.0
 
+        def _verb_match(v1: str, v2: str) -> bool:
+            """Verbs match when identical, similar, or in the same synonym group.
+            动词匹配：相同 / 相似 / 属于同一同义组 均视为匹配。"""
+            if not v1 or not v2:
+                return False
+            if _ratio(v1, v2) >= 60:
+                return True
+            for group in _VERB_GROUPS.values():
+                if v1 in group and v2 in group:
+                    return True
+            return False
+
         for pn in props_new:
             for po in props_old:
                 # 同极性不构成矛盾 / Same polarity cannot contradict
                 if pn["negated"] == po["negated"]:
                     continue
-                vratio = _ratio(pn["verb"], po["verb"])
                 # 动作不一致 → 非同一命题 / Different action → different proposition
-                if pn["verb"] and po["verb"] and vratio < 60:
+                if pn["verb"] and po["verb"] and not _verb_match(pn["verb"], po["verb"]):
                     continue
+                vratio = _ratio(pn["verb"], po["verb"])
+                # 同义组匹配但字面不相似时，按高相似度计分（如 想吃↔喜欢）
+                # Synonym-group match with low literal similarity counts as high.
+                if vratio < 60 and pn["verb"] and po["verb"] and _verb_match(pn["verb"], po["verb"]):
+                    vratio = 100.0
                 sratio = _ratio(pn["subject"], po["subject"])
                 oratio = _ratio(pn["object"], po["object"])
                 # confidence = 极性对立基础分 + 动词/主语/对象相似度加权
@@ -2436,6 +2521,94 @@ class Housekeeper:
         graph = await self._rebuild_chain_graph()
 
         return {"merge_proposals_created": proposals_created, **graph}
+
+    async def _extract_pattern_proposals(self, max_chains: int = 3) -> dict:
+        """Distill reusable experience rules from event chains -> pattern_proposal to echo chamber.
+        从事件链提炼可复用经验 → 生成 pattern_proposal 提案到回音壁（主 AI 审批后写入 ring 年轮）。"""
+        try:
+            chains = await self.get_event_chains()
+        except Exception as e:
+            return {"error": str(e)}
+
+        # Eligible: chain has summary + >=3 timeline nodes, newest first
+        # 候选：有摘要且时间线 ≥3 条的链，按更新时间取最新
+        candidates = [
+            c for c in chains
+            if (c.summary or "").strip() and len(c.timeline) >= 3
+        ][:max_chains]
+        if not candidates:
+            return {"message": "No chains eligible for pattern extraction", "proposals_created": 0}
+
+        dehy_cfg = (self.config or {}).get("dehydration", {}) or {}
+        api_key = dehy_cfg.get("api_key", "") or os.environ.get("OMBRE_API_KEY", "")
+        if not api_key:
+            return {"skipped": True, "reason": "no_api_key", "proposals_created": 0}
+
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=dehy_cfg.get("base_url", "https://api.deepseek.com/v1"),
+            timeout=60.0,
+        )
+
+        proposals_created = 0
+        for chain in candidates:
+            try:
+                rules = await self._llm_extract_rules(client, chain, dehy_cfg)
+                if not rules:
+                    continue
+                await self.echo_chamber.add_pending_action(
+                    action_type="pattern_proposal",
+                    data={
+                        "chain_id": chain.chain_id,
+                        "chain_topic": chain.topic,
+                        "rules": rules,
+                        "reason": f"从事件链「{chain.topic}」提炼的可复用经验（{len(chain.timeline)} 条事件）",
+                    },
+                )
+                proposals_created += 1
+            except Exception as e:
+                logger.error(f"Pattern extraction failed for chain {chain.chain_id}: {e}")
+
+        return {"proposals_created": proposals_created, "chains_analyzed": len(candidates)}
+
+    async def _llm_extract_rules(self, client, chain, dehy_cfg: dict) -> list:
+        """Call LLM to distill reusable rules from an event chain.
+        调用 LLM 从事件链提炼可复用经验规则。"""
+        prompt = (
+            "你是一个经验提炼专家。根据以下事件链（主题、摘要、涉及实体、时间线），"
+            "提炼 1-3 条可复用的人生经验/行为准则/规律。\n"
+            "要求：\n"
+            "1. 每条经验一句话，具体可操作，不空泛\n"
+            "2. 输出纯 JSON 数组，每项含 rule（经验内容）和 domain（所属领域："
+            "工作/学习/生活/人际关系/健康/情绪/兴趣/成长）\n"
+            f"主题：{chain.topic}\n"
+            f"摘要：{chain.summary}\n"
+            f"涉及实体：{json.dumps(chain.entities, ensure_ascii=False)}\n"
+            f"近期事件：{json.dumps([t.get('content_preview', '') for t in chain.timeline][-5:], ensure_ascii=False)}"
+        )
+        try:
+            resp = await client.chat.completions.create(
+                model=dehy_cfg.get("model", "deepseek-chat"),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.3,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            rules = safe_json_loads(raw, default=None)
+            if rules is None:
+                return []
+            if isinstance(rules, dict):
+                rules = [rules]
+            if not isinstance(rules, list):
+                return []
+            return [
+                r for r in rules
+                if isinstance(r, dict) and (r.get("rule") or "").strip()
+            ][:3]
+        except Exception as e:
+            logger.error(f"LLM rule extraction failed: {e}")
+            return []
     
     async def _weekly_cleanup_scan(self) -> dict:
         """Scan for stale low-weight memories and generate cleanup proposals."""
@@ -3103,6 +3276,62 @@ class Housekeeper:
                             os.remove(chain_file)
                         logger.info(f"Executed chain_merge: merged {secondary_id} into {primary_id}")
 
+            elif action_type == "merge":
+                # --- Merge duplicate memory buckets: fold secondary into primary, then delete secondary ---
+                # --- 合并重复记忆桶：将次桶内容并入主桶，然后删除次桶 ---
+                primary_id = action_data.get("primary_bucket_id", "")
+                secondary_id = action_data.get("secondary_bucket_id", "")
+                if primary_id and secondary_id and primary_id != secondary_id:
+                    primary = await self.bucket_mgr.get(primary_id)
+                    secondary = await self.bucket_mgr.get(secondary_id)
+                    if primary and secondary:
+                        # --- Merge content: append secondary content if not already present ---
+                        # --- 合并正文：若主桶未包含次桶内容则追加 ---
+                        p_content = primary.get("content", "") or ""
+                        s_content = secondary.get("content", "") or ""
+                        if s_content and s_content not in p_content:
+                            merged_content = (p_content + "\n\n" + s_content).strip()
+                        else:
+                            merged_content = p_content
+                        # --- Merge tags (dedup) / 合并标签（去重） ---
+                        p_tags = list(primary.get("metadata", {}).get("tags", []) or [])
+                        s_tags = list(secondary.get("metadata", {}).get("tags", []) or [])
+                        merged_tags = list(dict.fromkeys(p_tags + s_tags))
+                        # --- Merge domain (dedup) / 合并主题域（去重） ---
+                        p_domain = list(primary.get("metadata", {}).get("domain", []) or [])
+                        s_domain = list(secondary.get("metadata", {}).get("domain", []) or [])
+                        merged_domain = list(dict.fromkeys(p_domain + s_domain))
+                        # --- Keep higher importance / 保留更高重要度 ---
+                        p_imp = safe_int(primary.get("metadata", {}).get("importance", 5), 5)
+                        s_imp = safe_int(secondary.get("metadata", {}).get("importance", 5), 5)
+                        merged_imp = max(p_imp, s_imp)
+
+                        update_kwargs = {
+                            "content": merged_content,
+                            "tags": merged_tags,
+                            "domain": merged_domain,
+                            "importance": merged_imp,
+                        }
+                        ok = await self.bucket_mgr.update(primary_id, **update_kwargs)
+                        if not ok:
+                            raise RuntimeError(f"bucket {primary_id} 合并更新失败")
+                        # --- Re-embed merged content / 重新向量化合并后的正文 ---
+                        if self.embedding_engine is not None:
+                            try:
+                                await self.embedding_engine.generate_and_store(primary_id, merged_content)
+                            except Exception as e:
+                                logger.warning(f"Failed to re-embed merged bucket {primary_id}: {e}")
+                        # --- Delete secondary bucket + its embedding ---
+                        del_ok = await self.bucket_mgr.delete(secondary_id)
+                        if not del_ok:
+                            raise RuntimeError(f"bucket {secondary_id} 删除失败")
+                        if self.embedding_engine is not None:
+                            try:
+                                self.embedding_engine.delete_embedding(secondary_id)
+                            except Exception as e:
+                                logger.warning(f"Failed to delete embedding for {secondary_id}: {e}")
+                        logger.info(f"Executed merge: merged {secondary_id} into {primary_id}")
+
             elif action_type == "identity_proposal":
                 # --- Create an identity profile in identity/ layer / 在身份层创建人物档案 ---
                 person_name = action_data.get("person_name", "")
@@ -3162,6 +3391,31 @@ class Housekeeper:
                         if not ok:
                             raise RuntimeError(f"bucket {bucket_id} 优化更新失败")
                     logger.info(f"Executed optimize: updated bucket {bucket_id} -> {update_kwargs}")
+
+            elif action_type == "pattern_proposal":
+                # --- Create ring experience buckets from distilled rules ---
+                # --- 按提炼的规则创建 ring 年轮经验桶 ---
+                rules = action_data.get("rules", []) or []
+                if isinstance(rules, str):
+                    rules = [{"rule": rules, "domain": "生活"}]
+                chain_topic = action_data.get("chain_topic", "")
+                created = 0
+                for r in rules:
+                    if isinstance(r, dict):
+                        rule_text = (r.get("rule") or "").strip()
+                    else:
+                        rule_text = str(r).strip()
+                    if not rule_text:
+                        continue
+                    await self.bucket_mgr.save_pattern(
+                        name=rule_text[:30],
+                        description=rule_text,
+                        triggers=f"事件链沉淀：{chain_topic}",
+                    )
+                    created += 1
+                if created == 0:
+                    raise RuntimeError("pattern_proposal 无可执行的规则")
+                logger.info(f"Executed pattern_proposal: created {created} ring patterns from chain '{chain_topic}'")
 
             else:
                 logger.warning(f"Unknown action type / 未知提案类型: {action_type} — marked approved without execution")

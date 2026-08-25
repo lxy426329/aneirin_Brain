@@ -190,16 +190,17 @@ async def test_approve_identity_proposal_creates_identity(housekeeper, identity_
 
 
 # ---------------------------------------------------------
-# 6. reject_action 状态同步
+# 6. reject_action 状态同步（拒绝即物理删除提案文件）
 # ---------------------------------------------------------
 @pytest.mark.asyncio
 async def test_reject_action(housekeeper):
     aid = _write_action(housekeeper, "cleanup", {"bucket_id": "zz", "reason": "测试"})
     assert await housekeeper.reject_action(aid) is True
+    # 拒绝后提案文件被物理清除（未通过的提案不保留）
     path = os.path.join(housekeeper.echo_chamber.pending_actions_dir, f"{aid}.json")
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    assert data["status"] == "rejected"
+    assert not os.path.exists(path)
+    # 再次拒绝同一提案返回 False（文件已不存在）
+    assert await housekeeper.reject_action(aid) is False
 
 
 # ---------------------------------------------------------

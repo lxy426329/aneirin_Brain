@@ -45,7 +45,7 @@ class JournalManager:
       - 仅通过显式日期查询或关键字搜索访问
     """
 
-    def __init__(self, base_dir: str = None):
+    def __init__(self, base_dir: str = None, emotion_mgr=None):
         # --- Resolve base_dir: explicit param > parent of buckets_dir (from config) ---
         # --- 解析 base_dir：显式参数 > 从配置读取的 buckets_dir 父目录 ---
         # Consistent with bucket_manager.py: buckets_dir is read from config
@@ -75,6 +75,10 @@ class JournalManager:
         # --- 日记目录：{base_dir}/journals/ ---
         self.journals_dir = os.path.join(self.base_dir, "journals")
         os.makedirs(self.journals_dir, exist_ok=True)
+
+        # --- Emotion manager for emotion_tags synonym merging (optional) ---
+        # --- 情绪管理器：日记情绪标签同义词归并（可选）---
+        self.emotion_mgr = emotion_mgr
 
         # --- Thread lock for idempotent read-modify-write (merge mode) ---
         # --- 线程锁：保证合并模式的读-改-写原子性，防止并发丢失更新 ---
@@ -123,6 +127,25 @@ class JournalManager:
         parts = [p.strip() for p in raw.replace("，", ",").replace("、", ",").split(",")]
         return ",".join(dict.fromkeys(p for p in parts if p))
 
+    async def _merge_emotion_tags(self, emotion_tags: str) -> str:
+        """
+        Merge emotion tags via emotion_manager synonym normalization.
+        Non-matching tags are kept as-is (non-destructive).
+        通过 emotion_manager 对情绪标签做同义词归并；无匹配的标签原样保留（非破坏性）。
+        """
+        tags = [t.strip() for t in emotion_tags.split(",") if t.strip()]
+        if not tags:
+            return emotion_tags
+        try:
+            merged = await self.emotion_mgr.merge_tags(tags)
+        except Exception as e:
+            logger.warning(
+                f"Emotion tag merge failed, keeping original / "
+                f"情绪标签归并失败，保留原值: {e}"
+            )
+            return emotion_tags
+        return ",".join(merged)
+
     def _validate_date(self, date: str) -> bool:
         """Returns True if date matches YYYY-MM-DD format. 校验日期是否为 YYYY-MM-DD。"""
         if not date or not isinstance(date, str):
@@ -166,6 +189,11 @@ class JournalManager:
         # --- 输入归一化（优雅降级，非法输入不抛异常）---
         date = self._normalize_date(date)
         emotion_tags = self._normalize_emotion_tags(emotion_tags)
+
+        # --- Merge emotion tags via emotion_manager (synonym normalization) ---
+        # --- 通过 emotion_manager 对情绪标签做同义词归并 ---
+        if emotion_tags and self.emotion_mgr is not None:
+            emotion_tags = await self._merge_emotion_tags(emotion_tags)
 
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         file_path = self._entry_path(date)

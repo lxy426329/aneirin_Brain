@@ -108,7 +108,8 @@ class TestLLMQuality:
         """Check that domain has at least some semantic relevance."""
         result = await dehydrator.analyze("我家的橘猫小橘今天又偷吃了桌上的鱼")
         domains = set(result["domain"])
-        life_related = {"生活", "宠物", "家庭", "日常", "动物"}
+        # 居家/饮食 也是 ANALYZE_PROMPT 日常类下的合法主题域，一并纳入
+        life_related = {"生活", "宠物", "家庭", "日常", "动物", "居家", "饮食"}
         assert domains & life_related, f"Expected life-related domain, got {domains}"
 
     @pytest.mark.asyncio

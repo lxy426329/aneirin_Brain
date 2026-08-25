@@ -43,14 +43,22 @@ class EmbeddingEngine:
         dehy_cfg = config.get("dehydration", {})
         embed_cfg = config.get("embedding", {})
 
-        self.api_key = (embed_cfg.get("api_key") or dehy_cfg.get("api_key") or os.environ.get("OMBRE_API_KEY", "") or "").strip()
+        # --- Embedding uses its OWN API key (Gemini/OpenAI), NOT the DeepSeek
+        #     dehydration key. Falling back to OMBRE_API_KEY (DeepSeek) would
+        #     silently initialize a client that always fails against Gemini.
+        # --- 向量服务使用独立的 API Key（Gemini/OpenAI），不复用 DeepSeek 脱水 key，
+        #     否则会用 DeepSeek key 去调 Gemini 必然失败。
+        self.api_key = (
+            (embed_cfg.get("api_key") or "").strip()
+            or os.environ.get("OMBRE_EMBEDDING_API_KEY", "").strip()
+        )
         self.base_url = (
             (embed_cfg.get("base_url") or "").strip()
-            or (dehy_cfg.get("base_url") or "").strip()
             or "https://generativelanguage.googleapis.com/v1beta/openai/"
         )
         self.model = embed_cfg.get("model", "gemini-embedding-001")
         self.enabled = embed_cfg.get("enabled", True)
+        self.use_api = embed_cfg.get("use_api", True)
 
         # --- SQLite path: buckets_dir/embeddings.db ---
         db_path = os.path.join(config["buckets_dir"], "embeddings.db")
@@ -59,7 +67,7 @@ class EmbeddingEngine:
         # --- Initialize API client only (no local model) ---
         self.client = None
         
-        use_api = embed_cfg.get("use_api", True)
+        use_api = self.use_api
         
         if OPENAI_AVAILABLE and use_api and self.api_key:
             try:
@@ -74,7 +82,7 @@ class EmbeddingEngine:
         
         if not self.client:
             logger.warning("Embedding: No API client available, embedding disabled")
-            logger.warning("Set OMBRE_API_KEY or configure embedding.api_key / embedding.base_url in config.yaml")
+            logger.warning("Set OMBRE_EMBEDDING_API_KEY or configure embedding.api_key / embedding.base_url in config.yaml")
             self.enabled = False
 
         # --- Initialize SQLite ---

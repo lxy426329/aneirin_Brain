@@ -213,6 +213,30 @@ class EmotionManager:
                 merged[label] = intensity
         
         return [{"label": k, "intensity": v} for k, v in merged.items()]
+
+    async def merge_tags(self, tags: List[str]) -> List[str]:
+        """
+        Merge a list of emotion tags via synonym normalization (dedup + canonical).
+        对情绪标签列表做同义词归并（去重 + 规范化）。
+        Used by journal_manager to normalize journal emotion_tags.
+        供 journal_manager 归并日记情绪标签使用。
+        """
+        merged = []
+        seen = set()
+        for tag in tags:
+            tag = (tag or "").strip()
+            if not tag:
+                continue
+            try:
+                canonical = await self._find_synonym(tag)
+            except Exception as e:
+                logger.warning(f"Emotion tag merge failed / 情绪标签归并失败: {tag}: {e}")
+                canonical = tag
+            canonical = (canonical or tag).strip()
+            if canonical and canonical not in seen:
+                seen.add(canonical)
+                merged.append(canonical)
+        return merged
     
     def add_base_emotion(self, emotion: str) -> None:
         """

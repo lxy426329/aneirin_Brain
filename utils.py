@@ -360,6 +360,21 @@ def safe_json_loads(text, default=None):
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError, ValueError):
+        # Fallback: extract the outermost JSON object/array via brace matching.
+        # Handles truncated responses where the closing ``` fence (or the
+        # closing brace) is cut off by max_tokens.
+        # 兜底：按最外层花括号/方括号截取 JSON，兼容被 max_tokens 截断的响应。
+        start = raw.find("{")
+        if start == -1:
+            start = raw.find("[")
+        end = raw.rfind("}")
+        if end == -1:
+            end = raw.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(raw[start:end + 1])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return default
         return default
 
 

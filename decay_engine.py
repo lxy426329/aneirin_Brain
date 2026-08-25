@@ -28,6 +28,7 @@
 import math
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 
 from utils import safe_int, safe_float
@@ -44,7 +45,7 @@ class DecayEngine:
     计算衰减得分，将低活跃桶自动归档，模拟自然遗忘。
     """
 
-    def __init__(self, config: dict, bucket_mgr):
+    def __init__(self, config: dict, bucket_mgr, cycle_tracker=None):
         # --- Load decay parameters / 加载衰减参数 ---
         decay_cfg = config.get("decay", {})
         self.decay_lambda = decay_cfg.get("lambda", 0.05)
@@ -57,12 +58,50 @@ class DecayEngine:
         self.emotion_base = emotion_cfg.get("base", 1.0)
         self.arousal_boost = emotion_cfg.get("arousal_boost", 0.8)
 
+        # --- Cycle-phase decay modulation / 周期相位衰减调节 ---
+        # During period / pre_period the user is emotionally sensitive, so
+        # memories decay slower (higher score → more likely to surface).
+        # 经期/经前期情绪敏感，记忆衰减放缓（得分更高 → 更易被想起）。
+        self.cycle_tracker = cycle_tracker
+        cycle_cfg = decay_cfg.get("cycle_phase_boost", {})
+        self.cycle_phase_boost = {
+            "period": float(cycle_cfg.get("period", 1.3)),
+            "pre_period": float(cycle_cfg.get("pre_period", 1.2)),
+            "follicular": float(cycle_cfg.get("follicular", 1.0)),
+            "unknown": float(cycle_cfg.get("unknown", 1.0)),
+        }
+        self._phase_boost_cache: float | None = None
+        self._phase_boost_cache_time: float = 0.0
+        self._phase_boost_ttl = 3600  # 1h cache / 缓存 1 小时
+
         self.bucket_mgr = bucket_mgr
 
         # --- Background task control / 后台任务控制 ---
         self._task: asyncio.Task | None = None
         self._running = False
         self._start_lock = asyncio.Lock()  # Prevent concurrent start races / 防并发启动竞态
+
+    def _get_cycle_phase_boost(self) -> float:
+        """
+        Return the current cycle-phase decay boost (cached, 1h TTL).
+        Returns 1.0 when no cycle tracker / no data / unknown phase.
+        返回当前周期相位的衰减加成（缓存 1 小时）；无数据或未知相位时返回 1.0。
+        """
+        if self.cycle_tracker is None:
+            return 1.0
+        now = time.time()
+        if (self._phase_boost_cache is not None
+                and now - self._phase_boost_cache_time < self._phase_boost_ttl):
+            return self._phase_boost_cache
+        try:
+            phase = self.cycle_tracker.get_cycle_phase()
+            boost = float(self.cycle_phase_boost.get(phase, 1.0))
+        except Exception as e:
+            logger.warning(f"Cycle phase boost failed / 周期相位加成失败: {e}")
+            boost = 1.0
+        self._phase_boost_cache = boost
+        self._phase_boost_cache_time = now
+        return boost
 
     @property
     def is_running(self) -> bool:
@@ -268,7 +307,9 @@ class DecayEngine:
             resolved_factor = 1.0
         urgency_boost = 1.5 if (arousal > 0.7 and not resolved) else 1.0
 
-        return round(base_score * resolved_factor * urgency_boost, 4)
+        # --- Cycle-phase modulation: slower decay during sensitive phases ---
+        # --- 周期相位调节：敏感期（经期/经前期）衰减放缓 ---
+        return round(base_score * resolved_factor * urgency_boost * self._get_cycle_phase_boost(), 4)
 
     # ---------------------------------------------------------
     # Execute one decay cycle

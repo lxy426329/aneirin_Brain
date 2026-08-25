@@ -264,3 +264,109 @@ async def test_journal_isolation_from_buckets(test_config, bucket_mgr, journal_m
     # 日记仍可独立查询
     entry = journal_mgr.get_entry("2026-08-05")
     assert entry and "秘密日记内容" in entry["event_summary"]
+
+
+# ---------------------------------------------------------
+# 11. 日记情绪标签经 emotion_manager 同义词归并
+# ---------------------------------------------------------
+class _FakeEmotionMgr:
+    """Minimal emotion_mgr stub with async merge_tags (no real API calls).
+    最小情绪管理器桩：async merge_tags，不发起真实 API 调用。"""
+
+    def __init__(self, merged=None, exc=None):
+        self.merged = merged
+        self.exc = exc
+        self.calls = []
+
+    async def merge_tags(self, tags):
+        self.calls.append(list(tags))
+        if self.exc:
+            raise self.exc
+        return list(self.merged) if self.merged is not None else list(tags)
+
+
+@pytest.mark.asyncio
+async def test_journal_emotion_tags_merged_via_emotion_manager(test_config):
+    from journal_manager import JournalManager
+    em = _FakeEmotionMgr(merged=["开心"])
+    jm = JournalManager(os.path.dirname(test_config["buckets_dir"]), emotion_mgr=em)
+
+    entry = await jm.create_entry(date="2026-08-06", event_summary="s", emotion_tags="开心,喜悦,快乐")
+
+    # 同义词归并：三个标签归一为"开心"
+    assert entry["emotion_tags"] == "开心"
+    # 确认 emotion_manager 收到的是归一化后的标签列表
+    assert em.calls == [["开心", "喜悦", "快乐"]]
+
+
+@pytest.mark.asyncio
+async def test_journal_emotion_merge_failure_keeps_original(test_config):
+    from journal_manager import JournalManager
+    em = _FakeEmotionMgr(exc=RuntimeError("api down"))
+    jm = JournalManager(os.path.dirname(test_config["buckets_dir"]), emotion_mgr=em)
+
+    # 归并失败时非破坏性保留原值（不因 emotion_manager 故障丢数据）
+    entry = await jm.create_entry(date="2026-08-07", event_summary="s", emotion_tags="开心,喜悦")
+    assert entry["emotion_tags"] == "开心,喜悦"
+
+
+@pytest.mark.asyncio
+async def test_journal_without_emotion_mgr_unchanged(journal_mgr):
+    # 无 emotion_mgr（旧式初始化）时行为不变：仅去重
+    entry = await journal_mgr.create_entry(date="2026-08-08", event_summary="s", emotion_tags="开心,开心,期待")
+    assert entry["emotion_tags"] == "开心,期待"
+
+
+# ---------------------------------------------------------
+# 12. 标签归一化查询端同义归一化
+# ---------------------------------------------------------
+def _write_tag_synonyms(config, mapping):
+    """Write the tag synonym map to the location both tag_normalizer and
+    bucket_manager expect (buckets_dir/tag_synonyms.json).
+    写入同义词映射到 tag_normalizer 与 bucket_manager 约定的位置。"""
+    path = os.path.join(config["buckets_dir"], "tag_synonyms.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(mapping, f, ensure_ascii=False)
+    return path
+
+
+def test_tag_normalizer_expand_query(test_config, bucket_mgr):
+    from tag_normalizer import TagNormalizer
+    tn = TagNormalizer(test_config, bucket_mgr)
+    _write_tag_synonyms(test_config, {"慢跑": "运动", "健走": "运动", "跑步": "运动"})
+
+    expanded = tn.expand_query("慢跑 今天")
+    assert "跑步" in expanded  # 同义词扩展
+    assert "健走" in expanded
+    assert "运动" in expanded  # 泛化标签扩展
+    assert "今天" in expanded  # 无映射词原样保留
+
+    # 无映射查询原样返回
+    assert tn.expand_query("随便聊聊") == "随便聊聊"
+    # 空查询不崩溃
+    assert tn.expand_query("") == ""
+    assert tn.expand_query(None) is None
+
+
+def test_bucket_manager_expand_query_synonyms(test_config, bucket_mgr):
+    _write_tag_synonyms(test_config, {"慢跑": "运动", "健走": "运动", "跑步": "运动"})
+
+    expanded = bucket_mgr._expand_query_synonyms("慢跑 今天")
+    assert "跑步" in expanded
+    assert "健走" in expanded
+    assert "运动" in expanded
+
+    # 未写入映射时原样返回（不崩溃）
+    bucket_mgr._tag_synonyms = {}  # 重置进程内缓存
+    assert bucket_mgr._expand_query_synonyms("普通查询") == "普通查询"
+
+
+@pytest.mark.asyncio
+async def test_bucket_search_hits_synonym(test_config, bucket_mgr):
+    # 记忆用"慢跑"标签，用户搜"跑步"也应命中
+    await bucket_mgr.create(content="今天慢跑五公里，出了一身汗", importance=5, tags=["慢跑"])
+    _write_tag_synonyms(test_config, {"慢跑": "运动", "跑步": "运动"})
+
+    results = await bucket_mgr.search("跑步")
+    assert results
+    assert any("慢跑" in r["content"] for r in results)
