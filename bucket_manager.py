@@ -53,6 +53,25 @@ from utils import (
 
 logger = logging.getLogger("ombre_brain.bucket")
 
+# ---------------------------------------------------------
+# Unified type vocabulary (P1-2)
+# 统一类型词表：新枚举 → 现有存储类型映射
+# 需求 3：事件/经验/人物/边界/计划/永久原则 职责明确。
+# 调用方可使用新枚举，存储层仍用现有类型（不破坏目录/衰减/检索）。
+# ---------------------------------------------------------
+TYPE_ALIASES = {
+    "event": "event",          # 事件（现有 dynamic/event）
+    "experience": "pattern",   # 经验（年轮经验）
+    "person": "identity",      # 人物（身份档案）
+    "boundary": "boundary",    # 边界（底线共识）
+    "plan": "dynamic",         # 计划（复用 dynamic 存储，配合 task_flag）
+    "principle": "permanent",  # 永久原则
+}
+
+# 场景词表：正常聊天 / RP / 亲密互动 / Home
+# 需求 4：记忆区分适用场景。非法场景值在写入时被过滤，空结果回退 ["chat"]。
+SCENE_VOCABULARY = ("chat", "rp", "intimate", "home")
+
 try:
     from hybrid_search import HybridSearchEngine
     HAS_HYBRID_SEARCH = True
@@ -622,10 +641,11 @@ class BucketManager:
         }
 
         # --- TTL for dynamic anchors ---
+        # --- 统一使用 UTC 时间（与 created/updated 的 now_iso() 一致），修复时区混用 ---
         if anchor_type == "dynamic":
             anchor["ttl_hours"] = ttl_hours if ttl_hours is not None else 48.0  # default 48h
             anchor["expires_at"] = (
-                datetime.now() + timedelta(hours=anchor["ttl_hours"])
+                datetime.now(timezone.utc) + timedelta(hours=anchor["ttl_hours"])
             ).isoformat(timespec="seconds")
         else:
             # Static anchors never expire
@@ -732,7 +752,12 @@ class BucketManager:
 
         try:
             expiry = datetime.fromisoformat(expires_at)
-            if datetime.now() < expiry:
+            if expiry.tzinfo is None:
+                # --- Legacy anchors stored naive local time — attach local tz ---
+                # --- 旧锚点存的是无时区的本地时间，按本地时区解析以兼容 ---
+                expiry = expiry.astimezone()
+            now = datetime.now(expiry.tzinfo)
+            if now < expiry:
                 return False  # Not expired yet
 
             # --- Expired: deactivate ---
@@ -765,10 +790,11 @@ class BucketManager:
         anchor["is_active"] = True
         anchor["deactivated_at"] = None
         # Reset expiry if dynamic
+        # --- 统一使用 UTC 时间（与 created/updated 的 now_iso() 一致），修复时区混用 ---
         if anchor.get("anchor_type") == "dynamic":
             ttl = anchor.get("ttl_hours", 48.0)
             anchor["expires_at"] = (
-                datetime.now() + timedelta(hours=ttl)
+                datetime.now(timezone.utc) + timedelta(hours=ttl)
             ).isoformat(timespec="seconds")
         anchor["updated"] = now_iso()
 
@@ -847,6 +873,8 @@ class BucketManager:
         status_key: str = None,
         is_private: bool = False,
         privacy_password: str = None,
+        provenance: str = "user",
+        scene: list[str] = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -868,7 +896,11 @@ class BucketManager:
         valence/arousal: legacy parameters for backward compatibility
         """
         bucket_id = generate_bucket_id()
-        
+
+        # --- Map unified type vocabulary to storage type (P1-2) ---
+        # --- 统一类型词表 → 存储类型映射 ---
+        bucket_type = TYPE_ALIASES.get(bucket_type, bucket_type)
+
         if name:
             bucket_name = sanitize_name(name)
         elif dehydrator:
@@ -945,6 +977,16 @@ class BucketManager:
             "status_key": status_key,
             "is_private": bool(is_private),
             "privacy_password": privacy_password or "",
+            # --- Provenance: user / ai_inferred / ai_observed ---
+            # --- 来源：用户明确说 / AI 推测 / AI 观察 ---
+            "provenance": provenance if provenance in ("user", "ai_inferred", "ai_observed") else "user",
+            # --- Scene: chat / rp / intimate / home ---
+            # --- 适用场景：正常聊天 / RP / 亲密互动 / Home ---
+            # 非法场景值过滤，空结果回退默认 ["chat"]
+            "scene": [
+                s for s in (scene or ["chat"])
+                if isinstance(s, str) and s.strip().lower() in SCENE_VOCABULARY
+            ] or ["chat"],
         }
         if pinned:
             metadata["pinned"] = True
@@ -3180,7 +3222,15 @@ class BucketManager:
             metadata["type"] = "event"
         elif metadata["type"] == "dynamic":
             metadata["type"] = "event"
-        
+
+        # --- Provenance default (legacy buckets) / 来源默认值（旧记忆兼容） ---
+        if "provenance" not in metadata:
+            metadata["provenance"] = "user"
+
+        # --- Scene default (legacy buckets) / 场景默认值（旧记忆兼容） ---
+        if "scene" not in metadata:
+            metadata["scene"] = ["chat"]
+
         return metadata
 
     def _valence_arousal_to_emotions(self, valence: float, arousal: float) -> list[dict]:

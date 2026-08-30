@@ -257,10 +257,11 @@ class EchoChamber:
         
         return True
     
-    async def add_pending_action(self, action_type: str, data: dict):
+    async def add_pending_action(self, action_type: str, data: dict) -> str:
         """
         Add a pending action to echo chamber.
-        action_type: cleanup/merge/chain_update
+        action_type: cleanup/merge/chain_update/change/organize
+        返回 action_id，供调用方引用提案。
         """
         action_id = str(uuid.uuid4())[:8]
         file_path = os.path.join(self.pending_actions_dir, f"{action_id}.json")
@@ -277,6 +278,7 @@ class EchoChamber:
             json.dump(action, f, ensure_ascii=False, indent=2)
         
         logger.info(f"Added pending action: {action_type} - {action_id}")
+        return action_id
     
     async def get_pending_actions(self, action_type: str = "all") -> list:
         """Get pending actions."""
@@ -3175,7 +3177,82 @@ class Housekeeper:
     async def approve_proposal(self, proposal_id: str) -> bool:
         """Approve a cleanup proposal."""
         return await self.echo_chamber.update_action_status(proposal_id, "approved")
-    
+
+    async def execute_change_proposal(self, proposal_id: str) -> tuple:
+        """
+        Execute an approved change/organize proposal (P0-2).
+        AI 管家修改候选的执行入口：只执行已确认（pending→executed）的提案。
+        Returns (success, message).
+        执行已确认的修改/整理提案。返回 (是否成功, 消息)。
+        """
+        file_path = os.path.join(self.echo_chamber.pending_actions_dir, f"{proposal_id}.json")
+        if not os.path.exists(file_path):
+            return False, f"未找到提案: {proposal_id}"
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            return False, f"读取提案失败: {e}"
+
+        if data.get("action_type") not in ("change", "organize"):
+            return False, f"提案 {proposal_id} 不是修改提案（类型: {data.get('action_type')}）。"
+        if data.get("status") != "pending":
+            return False, f"提案 {proposal_id} 状态为 {data.get('status')}，无法执行。"
+
+        action_data = data.get("data", {}) or {}
+
+        try:
+            # --- Organize proposal: batch importance drop / 整理提案：批量降权 ---
+            if data.get("action_type") == "organize":
+                candidates = action_data.get("candidates", []) or []
+                importance_drop = action_data.get("importance_drop", 2)
+                executed = 0
+                for c in candidates:
+                    bid = c.get("bucket_id", "")
+                    current = c.get("current_importance", 5)
+                    new_importance = max(1, current - importance_drop)
+                    try:
+                        ok = await self.bucket_mgr.update(bid, importance=new_importance)
+                        if ok:
+                            executed += 1
+                    except Exception as e:
+                        logger.warning(f"execute_change_proposal organize failed for {bid}: {e}")
+                await self.echo_chamber.update_action_status(proposal_id, "executed")
+                return True, f"已执行整理提案 {proposal_id}: {executed}/{len(candidates)} 条已降权"
+
+            # --- Change proposal: single bucket update/delete / 修改提案：单桶更新/删除 ---
+            bucket_id = action_data.get("bucket_id", "")
+            updates = action_data.get("updates", {}) or {}
+            delete = action_data.get("delete", False)
+
+            if delete:
+                success = await self.bucket_mgr.delete(bucket_id)
+                if not success:
+                    return False, f"执行失败: 未找到记忆桶 {bucket_id}"
+                if self.embedding_engine is not None:
+                    try:
+                        self.embedding_engine.delete_embedding(bucket_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete embedding after apply_change: {e}")
+            else:
+                if not updates:
+                    return False, "提案没有需要执行的修改。"
+                success = await self.bucket_mgr.update(bucket_id, **updates)
+                if not success:
+                    return False, f"执行失败: {bucket_id}"
+                if "content" in updates and self.embedding_engine is not None:
+                    try:
+                        await self.embedding_engine.generate_and_store(bucket_id, updates["content"])
+                    except Exception as e:
+                        logger.warning(f"Failed to store embedding after apply_change: {e}")
+
+            await self.echo_chamber.update_action_status(proposal_id, "executed")
+            return True, f"已执行修改提案 {proposal_id}: {bucket_id}"
+        except Exception as e:
+            logger.error(f"execute_change_proposal failed: {e}")
+            return False, f"执行失败: {e}"
+
     async def review_digest(self) -> dict:
         """Get digest for main AI review."""
         return await self.echo_chamber.get_review_summary()

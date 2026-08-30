@@ -5,6 +5,48 @@
 
 ---
 
+## 2026-08-30 结构调整 v2：时区修复 / 提案-审批闭环 / 背景隔离 / 来源与场景字段
+
+### 目标
+按改造方案（P0/P1/P2）落地 7 项结构调整需求，全部向后兼容：不删除旧功能、不重写现有记忆数据库、旧记忆读取时自动补默认字段。
+
+### 更改内容
+1. **P0-1 修复 get_anchors 时区错误**
+   - 文件：`bucket_manager.py`。`add_anchor`/`activate_anchor` 的 `expires_at` 由 `datetime.now()`（本地无时区）改为 `datetime.now(timezone.utc)`；`_check_and_deactivate_if_expired` 兼容旧的无时区锚点（按本地时区解释后比较）。
+   - 测试：`tests/test_anchor_timezone.py`（3 个用例：UTC 时区、旧无时区数据兼容）。
+2. **P0-2 AI 管家只提候选，不直接修改**
+   - 文件：`server.py`（`trace` 拆分 `propose_change`/`apply_change`；`smart_organize` 改为 `propose_organize`）、`housekeeper.py`（`EchoChamber.add_pending_action` 返回 `action_id`；新增 `execute_change_proposal` 执行 change/organize 提案，幂等保护）。
+   - 效果：AI 管家生成修改候选 → 用户确认 → `apply_change` 才落地；未确认不触碰记忆。
+   - 测试：`tests/test_propose_change.py`（5 个用例：提案 ID、change 执行、删除执行、幂等保护、organize 批量降权）。
+3. **P0-3 背景隔离：历史记忆不得作为当前行动指令**
+   - 文件：`server.py`。breath 返回末尾追加 `[Memory Layer]` 隔离宣告；`inject_context` 新增第 4 条硬性指令（历史记忆仅作背景参考，不得定义用户当前状态）。
+4. **P1-1 provenance 来源字段**
+   - 文件：`bucket_manager.py`（`create` 新增 `provenance` 参数，非法值回退 `user`；`_normalize_bucket_metadata` 补默认）、`server.py`（`hold`/`_hold_impl`/`_merge_or_create` 透传；feel/dream 自动合并标记 `ai_inferred`）。
+   - 效果：区分"用户明确说过"（user）与"AI 推测"（ai_inferred/ai_observed）；旧记忆读取补默认 `user`。
+   - 测试：`tests/test_provenance.py`（4 个用例）。
+5. **P1-2 类型枚举统一 + 映射表**
+   - 文件：`bucket_manager.py`（`TYPE_ALIASES`：event/experience/person/boundary/plan/principle → 现有存储类型）、`config.yaml`（`types` 映射配置）。
+   - 效果：调用方可使用新枚举，存储层仍用现有类型，不破坏目录/衰减/检索。
+   - 测试：`tests/test_type_aliases.py`（5 个用例）。
+6. **P2 scene 场景字段 + breath 场景过滤**
+   - 文件：`bucket_manager.py`（`create` 新增 `scene` 参数，非法值过滤、空回退 `["chat"]`；`_normalize_bucket_metadata` 补默认）、`server.py`（`hold`/`_hold_impl`/`_merge_or_create` 透传；`breath` 新增 `scene` 参数，`_breath_surfacing`/`_breath_lightweight`/importance_min/查询管线按场景过滤；MCP schema 与 `/api/breath` 同步）。
+   - 效果：记忆区分 chat/rp/intimate/home 场景；breath 可按场景召回；旧记忆按 `["chat"]` 处理。
+   - 测试：`tests/test_scene.py`（11 个用例）。
+
+### 迁移方案
+- 无数据库结构变化（记忆为 Markdown + frontmatter，无 SQL 表变更）。
+- 旧记忆无需迁移：读取时 `_normalize_bucket_metadata` 自动补 `provenance="user"`、`scene=["chat"]`；旧锚点无时区数据按本地时区解释。
+- 现有记忆数据库未删除、未重写。
+
+### 验证
+- 完整测试套件 190 passed（原 179 + 新增 11 个 scene 用例）。
+- `python -m py_compile` 全部通过。
+
+### 待后续
+- 无。
+
+---
+
 ## 2026-08-25 全局体检修复 + 周期相位影响衰减速率 + 日记/标签查询优化
 
 ### 目标
