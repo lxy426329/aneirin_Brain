@@ -5,6 +5,34 @@
 
 ---
 
+## 2026-08-31 Brain 运行时验收：P0 四项复核 + runtime snapshot tests + schema 冻结
+
+### 目标
+进入"Brain 运行时验收阶段"：复核此前要求的四项 P0 是否实际完成；验证 main AI 可主动调用 `add_memory_reply` 追加楼层（不设计"每次 recall 自动写楼层"机制）；新增 integration/runtime snapshot tests 捕获"最终实际准备注入模型的完整 breath context"并断言；本轮完成后冻结 schema。
+
+### P0 复核结果
+1. **P0-1 provenance 默认安全化：已完成**（`bucket_manager.py` `create` 默认 `provenance="legacy"`，未显式指定来源不误标 user_explicit）。
+2. **P0-2 breath context 三分组：已完成**（`server.py` breath 最终 context 显式分组 `[active_instruction] / [current_state] / [background_memory]`，background 不自动构成当前行动要求）。
+3. **P0-3 mutation 入口 proposal 化：已完成**（trace / manage_record / memory_batch_delete / smart_organize 等入口改走 proposal → approval，唯一执行入口 `execute_change_proposal`）。
+4. **P0-4 before_hash 版本防护：已完成**（`housekeeper.py` 提案生成时对目标 bucket/reply 计算 SHA-256 before_hash，执行时校验，目标已变化则标记 conflict 禁止执行）。
+
+### 本轮修复（runtime snapshot 暴露的真实 bug）
+1. **`_memory_role` 不检查状态过期**（`server.py`）：`is_current=True` 但 `expires_at` 已过期的状态仍被标为"当前状态"。修复：过期状态自动降级为背景角色，不表示为 current。
+2. **force_keyword 精确检索漏召回**（`server.py`）：仅命中正文（未命中名称/标签）的桶，归一化得分被情绪/时间权重稀释到 0.4 以下，被速览层丢弃。修复：force_keyword 模式下命中精确关键词的桶提升到速览层（0.4），保证精确查找始终可用。
+3. **fallback 保底路径绕过指令有效性**（`server.py`）：未激活/过期指令通过"保底记忆"随机选取泄漏进 context。修复：fallback 同样应用 `_is_instruction_active` 过滤。
+4. **速览条目无正文预览**（`server.py`）：无 one_line/dehydrated 摘要时只显示截断名称（10 字符），内容不可见。修复：回退到正文预览（前 60 字符）。
+
+### 新增测试
+- `tests/test_runtime_snapshot.py`（10 个用例）：构造 8 类测试记忆（main/chat 普通 background、inactive instruction、active instruction、expired current state、valid current state、RP world memory、intimate scene memory、含 reflection + correction + superseded reply 的 thread），以不同 world_id / scene 调用真实 breath 管线，捕获最终 context 并断言：background 不表示为当前 instruction；inactive/expired instruction 不成为行动依据；expired state 不表示为 current；world/scene 不泄漏；thread 只返回精简摘要；superseded correction 不作为当前 correction；显式 get_memory_thread 才返回完整 thread；main AI 可主动调用 add_memory_reply。
+
+### 验证
+- 完整测试套件 253 passed（原 243 + 新增 10 个 runtime snapshot 用例）。
+
+### Schema 冻结
+- 本轮完成后冻结 schema：除非 runtime snapshot 暴露结构性 bug，不再新增 metadata、目录或分类字段。
+
+---
+
 ## 2026-08-31 记忆楼层 / Memory Thread：主记忆稳定 + 理解变化以楼层追加
 
 ### 目标

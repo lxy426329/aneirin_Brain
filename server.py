@@ -266,8 +266,20 @@ def _memory_role(metadata: dict) -> str:
     # 当前有效指令（instruction=True 且 active=True 且未过期）优先
     if metadata.get("instruction") and metadata.get("active"):
         return "指令"
-    # 当前状态（is_current=True 且未过期）
+    # 当前状态（is_current=True 且未过期；过期状态自动降级为背景）
     if metadata.get("is_current"):
+        expiry = metadata.get("expires_at")
+        if expiry:
+            try:
+                expiry_dt = datetime.datetime.fromisoformat(str(expiry))
+                if expiry_dt.tzinfo is None:
+                    expiry_dt = expiry_dt.astimezone()
+                if datetime.datetime.now(expiry_dt.tzinfo) > expiry_dt:
+                    # 状态已过期 → 降级为历史背景，不表示为 current
+                    btype = metadata.get("type", "")
+                    return _MEMORY_ROLE_MAP.get(btype, "背景")
+            except (ValueError, TypeError):
+                pass
         return "当前状态"
     btype = metadata.get("type", "")
     return _MEMORY_ROLE_MAP.get(btype, "背景")
@@ -2535,6 +2547,21 @@ async def breath(
         b["_norm_score"] = (raw / 100.0) if raw > 1 else raw
         norm_matches.append(b)
 
+    # --- P0-2: force_keyword 精确检索时，命中关键词的桶至少进入速览层 ---
+    # 仅命中正文（未命中名称/标签）的桶，其归一化得分会被情绪/时间权重稀释到 0.4 以下，
+    # 导致精确查找漏召回。force_keyword 的语义是"精确查找始终可用"，因此将
+    # 含精确关键词匹配的桶提升到速览层（0.4），保证精确检索不丢命中。
+    # 同时更新 score，保证后续 summary 段（从 score 重算 final_score）不误跳过。
+    if force_keyword:
+        for b in norm_matches:
+            if b["_norm_score"] < 0.4:
+                try:
+                    if bucket_mgr._exact_keyword_match(query, b) > 0:
+                        b["_norm_score"] = 0.4
+                        b["score"] = 0.4
+                except Exception:
+                    pass
+
     # --- Salience Gate: deep retrieval only activates when relevance or emotional salience is high ---
     # --- 相关度门槛：只有向量/主题匹配度高于门槛或情绪唤醒度高时才激活深层检索 ---
     # Exact-keyword queries bypass the gate so precise lookups always work.
@@ -2741,6 +2768,23 @@ async def breath(
             if mask_tasks:
                 recent_unresolved = bucket_mgr._mask_task_buckets(recent_unresolved)
             
+            # --- P0-3: 保底机制同样遵守 world/scene 隔离，禁止跨世界/场景泄漏 ---
+            if scene_filter:
+                recent_unresolved = [
+                    b for b in recent_unresolved if _bucket_matches_scene(b, scene_filter)
+                ]
+            if world_filter:
+                recent_unresolved = [
+                    b for b in recent_unresolved if _bucket_matches_world(b, world_filter)
+                ]
+
+            # --- P0-2: 保底机制同样遵守指令有效性，未激活/过期指令不作为行动依据 ---
+            recent_unresolved = [
+                b for b in recent_unresolved
+                if not b["metadata"].get("instruction")
+                or bucket_mgr._is_instruction_active(b["metadata"])
+            ]
+            
             if type_filter:
                 recent_unresolved = [
                     b for b in recent_unresolved 
@@ -2817,12 +2861,22 @@ async def breath(
             elif final_score >= 0.7:
                 score_tag = f" [score:{final_score:.2f}]"
             
+            # --- P0-2: 速览条目同样标注角色，保证最终 context 分组一致 ---
+            # 速览中的记忆也带 [角色:xxx] 前缀，使 background/instruction/state 分组不遗漏。
+            role = _memory_role(b["metadata"])
             if one_line:
-                summary_lines.append(f"[摘要]{score_tag} {name}: {one_line}")
+                line = f"[角色:{role}][摘要]{score_tag} {name}: {one_line}"
             elif dehydrated:
-                summary_lines.append(f"[摘要]{score_tag} {name}: {dehydrated[:60]}")
+                line = f"[角色:{role}][摘要]{score_tag} {name}: {dehydrated[:60]}"
             else:
-                summary_lines.append(f"[摘要]{score_tag} {name}")
+                # 无脱水摘要时回退到正文预览，避免速览条目只有截断名称、内容不可见
+                content_preview = strip_wikilinks(b.get("content", ""))[:60]
+                line = f"[角色:{role}][摘要]{score_tag} {name}: {content_preview}"
+            # --- Memory thread: 速览条目同样只附带精简楼层摘要 ---
+            thread_note = await _thread_summary(thread_mgr, bucket_id)
+            if thread_note:
+                line += f"\n[楼层] {thread_note}"
+            summary_lines.append(line)
         
         if summary_lines:
             results.append(f"\n---\n📋 记忆速览（共{len(summary_lines)}条）:\n" + "\n".join(summary_lines))
@@ -2894,7 +2948,39 @@ async def breath(
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
         return _prefix + "未找到相关记忆。"
 
-    final_text = "\n".join(results)
+    # --- P0-2: 显式角色分组：background_memory / active_instruction / current_state ---
+    # 最终注入模型的 breath context 明确区分三类记忆：
+    #   active_instruction  → 当前有效指令（可作行动依据）
+    #   current_state       → 当前状态（仅参考，以用户明确表述为准）
+    #   background_memory   → 背景记忆（仅供情境参考，不自动构成当前行动要求）
+    def _classify_breath_result(text: str) -> str:
+        if "[角色:指令]" in text:
+            return "active_instruction"
+        if "[角色:当前状态]" in text:
+            return "current_state"
+        return "background_memory"
+
+    grouped = {"active_instruction": [], "current_state": [], "background_memory": []}
+    for r in results:
+        grouped[_classify_breath_result(r)].append(r)
+
+    final_parts = []
+    if grouped["active_instruction"]:
+        final_parts.append(
+            "[active_instruction] 当前有效指令（可作行动依据）:\n"
+            + "\n---\n".join(grouped["active_instruction"])
+        )
+    if grouped["current_state"]:
+        final_parts.append(
+            "[current_state] 当前状态（仅参考，以用户明确表述为准）:\n"
+            + "\n---\n".join(grouped["current_state"])
+        )
+    if grouped["background_memory"]:
+        final_parts.append(
+            "[background_memory] 背景记忆（仅供情境参考，不构成当前行动要求）:\n"
+            + "\n---\n".join(grouped["background_memory"])
+        )
+    final_text = "\n\n".join(final_parts)
 
     # --- Context isolation declaration (appended to memory-layer output) ---
     # --- 上下文隔离宣告：记忆层仅作后台背景事实与情境参考，严禁作为行动指令或当前状态依据 ---
@@ -3565,12 +3651,20 @@ async def trace(
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
 
-    # --- Delete mode / 删除模式 ---
+    # --- Delete mode / 删除模式（P0-3：禁止绕过 proposal 直接删除长期记忆）---
     if delete:
-        success = await bucket_mgr.delete(bucket_id)
-        if success:
-            embedding_engine.delete_embedding(bucket_id)
-        return f"已遗忘记忆桶: {bucket_id}" if success else f"未找到记忆桶: {bucket_id}"
+        await housekeeper.ensure_started()
+        proposal_id = await housekeeper.echo_chamber.add_pending_action(
+            "change",
+            {
+                "bucket_id": bucket_id,
+                "delete": True,
+                "reason": "trace 请求删除记忆桶",
+            },
+            proposed_by="main_ai",
+        )
+        return (f"已生成删除提案 {proposal_id}（记忆桶 {bucket_id}）。"
+                f"请调用 approve_action 批准后才会真正删除。")
 
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
@@ -3609,6 +3703,22 @@ async def trace(
 
     if not updates:
         return "没有任何字段需要修改。"
+
+    # --- P0-3：内容替换（content）必须走 proposal，禁止绕过审批改写记忆正文 ---
+    # 元数据状态调整（resolved/pinned/digested/task_flag/importance 等）保留直接操作。
+    if "content" in updates:
+        await housekeeper.ensure_started()
+        proposal_id = await housekeeper.echo_chamber.add_pending_action(
+            "change",
+            {
+                "bucket_id": bucket_id,
+                "updates": {"content": updates["content"]},
+                "reason": "trace 请求替换记忆正文",
+            },
+            proposed_by="main_ai",
+        )
+        return (f"已生成内容修改提案 {proposal_id}（记忆桶 {bucket_id}）。"
+                f"请调用 approve_action 批准后才会真正替换正文。")
 
     success = await bucket_mgr.update(bucket_id, **updates)
     if not success:
@@ -4543,7 +4653,8 @@ async def memory_export(export_type: str = "all") -> str:
 # =============================================================
 @mcp.tool()
 async def memory_batch_delete(bucket_ids: str) -> str:
-    """批量删除记忆桶。bucket_ids=多个记忆桶ID逗号分隔。"""
+    """批量删除记忆桶。bucket_ids=多个记忆桶ID逗号分隔。
+    P0-3：批量删除必须先生成提案，经审批后由 execute_change_proposal 执行，禁止绕过 proposal。"""
     if not bucket_ids or not bucket_ids.strip():
         return "请提供记忆桶ID。"
     
@@ -4551,17 +4662,18 @@ async def memory_batch_delete(bucket_ids: str) -> str:
     if not ids_list:
         return "没有有效的记忆桶ID。"
     
-    deleted = 0
-    for bucket_id in ids_list:
-        try:
-            success = await bucket_mgr.delete(bucket_id)
-            if success:
-                deleted += 1
-                embedding_engine.delete_embedding(bucket_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete bucket {bucket_id}: {e}")
-    
-    return f"批量删除完成: 成功删除 {deleted}/{len(ids_list)} 个记忆桶"
+    await housekeeper.ensure_started()
+    proposal_id = await housekeeper.echo_chamber.add_pending_action(
+        "change",
+        {
+            "bucket_ids": ids_list,
+            "delete": True,
+            "reason": f"memory_batch_delete 请求批量删除 {len(ids_list)} 个记忆桶",
+        },
+        proposed_by="main_ai",
+    )
+    return (f"已生成批量删除提案 {proposal_id}（{len(ids_list)} 个记忆桶）。"
+            f"请调用 approve_action 批准后才会真正删除。")
 
 
 # =============================================================
@@ -5156,7 +5268,7 @@ async def get_experiences() -> str:
 @mcp.tool()
 async def smart_organize(days: int = 30, importance_drop: int = 2) -> str:
     """
-    智能整理：自动识别过期记忆并批量调整权重。
+    智能整理：识别过期记忆并生成批量降权提案（P0-3：不直接修改，走 proposal → approval）。
     
     参数:
     - days: 超过多少天未激活视为过期（默认30天）
@@ -5194,44 +5306,29 @@ async def smart_organize(days: int = 30, importance_drop: int = 2) -> str:
             candidates.append(b)
         
         if not candidates:
-            return f"✅ 没有需要调整的记忆（超过{days}天未激活的非重要记忆）"
-        
-        adjusted = 0
-        skipped = 0
-        results = []
+            return f"没有需要调整的记忆（超过{days}天未激活的非重要记忆）"
         
         importance_drop = max(1, min(5, importance_drop))
         
-        for b in candidates:
-            meta = b.get("metadata", {})
-            current_importance = meta.get("importance", 5)
-            new_importance = max(1, current_importance - importance_drop)
-            
-            try:
-                success = await bucket_mgr.update(
-                    b["id"],
-                    importance=new_importance
-                )
-                if success:
-                    adjusted += 1
-                    name = meta.get("name", b["id"])[:25]
-                    results.append(f"  ↓ [{current_importance}→{new_importance}] {name}")
-                else:
-                    skipped += 1
-            except Exception:
-                skipped += 1
-        
-        result = f"📋 智能整理完成\n\n"
-        result += f"⏰ 时间阈值: 超过{days}天未激活\n"
-        result += f"📉 权重降低: {importance_drop}级\n"
-        result += f"\n✅ 已调整: {adjusted}条\n"
-        if results:
-            result += "\n".join(results)
-        if skipped > 0:
-            result += f"\n\n! 跳过: {skipped}条（更新失败）"
-        
-        return result
-    
+        # --- P0-3：生成批量降权提案，不直接修改 ---
+        await housekeeper.ensure_started()
+        proposal_id = await housekeeper.echo_chamber.add_pending_action(
+            "organize",
+            {
+                "candidates": [
+                    {
+                        "bucket_id": b["id"],
+                        "current_importance": b.get("metadata", {}).get("importance", 5),
+                    }
+                    for b in candidates
+                ],
+                "importance_drop": importance_drop,
+                "reason": f"smart_organize 请求批量降权 {len(candidates)} 条过期记忆",
+            },
+            proposed_by="main_ai",
+        )
+        return (f"已生成整理提案 {proposal_id}：{len(candidates)} 条过期记忆待降权 {importance_drop} 级。"
+                f"请调用 approve_action 批准后才会真正执行。")
     except Exception as e:
         logger.error(f"smart_organize failed: {e}")
         return f"智能整理失败: {e}"
@@ -6117,6 +6214,21 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                     meta["relationships"] = relationships
                 if triggers:
                     meta["triggers"] = triggers
+                # --- P0-3：正文修改必须走 proposal，禁止绕过审批改写记忆正文 ---
+                # 仅元数据调整（name/tags/importance 等）保留直接操作。
+                if new_content != record.get("content", ""):
+                    await housekeeper.ensure_started()
+                    proposal_id = await housekeeper.echo_chamber.add_pending_action(
+                        "change",
+                        {
+                            "bucket_id": record_id,
+                            "updates": {"content": new_content},
+                            "reason": f"manage_record 请求替换 {record_type} 正文",
+                        },
+                        proposed_by="main_ai",
+                    )
+                    return (f"已生成内容修改提案 {proposal_id}（{record_type} {record_id}）。"
+                            f"请调用 approve_action 批准后才会真正替换正文。")
                 success = await bucket_mgr.update(record_id, content=new_content, metadata=meta)
                 return f"已更新 → {record_id}" if success else "更新失败"
             return f"不支持更新 {record_type} 类型"
@@ -6128,8 +6240,19 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 success = await bucket_mgr.delete_candlestick(record_id)
                 return f"烛台已删除 → {record_id}" if success else "删除失败: 未找到烛台"
             if record_type in ["identity", "roster", "pattern", "experience", "annual_ring"]:
-                success = await bucket_mgr.delete(record_id)
-                return f"已删除 → {record_id}" if success else "删除失败"
+                # --- P0-3：禁止绕过 proposal 直接删除长期记忆（经验/年轮/身份/模式）---
+                await housekeeper.ensure_started()
+                proposal_id = await housekeeper.echo_chamber.add_pending_action(
+                    "change",
+                    {
+                        "bucket_id": record_id,
+                        "delete": True,
+                        "reason": f"manage_record 请求删除 {record_type}",
+                    },
+                    proposed_by="main_ai",
+                )
+                return (f"已生成删除提案 {proposal_id}（{record_type} {record_id}）。"
+                        f"请调用 approve_action 批准后才会真正删除。")
             if record_type in ["bucket", "memory"]:
                 # --- 修正6：禁止绕过 proposal 直接删除长期记忆 ---
                 # 删除任意记忆桶必须先生成提案，经审批后由 execute_change_proposal 执行

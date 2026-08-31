@@ -16,6 +16,7 @@ import os
 import json
 import uuid
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -216,10 +217,14 @@ class EchoChamber:
     - Event chain drafts
     """
     
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, snapshot_fn=None):
         self.base_dir = base_dir
         self.digests_dir = os.path.join(base_dir, "digests")
         self.pending_actions_dir = os.path.join(base_dir, "pending_actions")
+        # snapshot_fn: async (data: dict) -> dict | None
+        # 用于 P0-4 before_hash 防护：提案生成时对目标内容计算快照 hash，
+        # 执行时若目标已变化则标记 stale/conflict，禁止覆盖新内容。
+        self.snapshot_fn = snapshot_fn
         
         os.makedirs(self.digests_dir, exist_ok=True)
         os.makedirs(self.pending_actions_dir, exist_ok=True)
@@ -302,6 +307,16 @@ class EchoChamber:
                 datetime.now(timezone.utc) + timedelta(days=PROPOSAL_TTL_DAYS)
             ).isoformat(),
         }
+        
+        # --- P0-4 before_hash 防护：提案生成时对目标内容计算快照 hash ---
+        # 目标在审批前发生变化时，执行阶段将标记 stale/conflict，禁止覆盖新内容。
+        if self.snapshot_fn is not None:
+            try:
+                snapshot = await self.snapshot_fn(data)
+                if snapshot:
+                    action["before_snapshot"] = snapshot
+            except Exception as e:
+                logger.warning(f"Failed to compute before_snapshot for {action_type}: {e}")
         
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(action, f, ensure_ascii=False, indent=2)
@@ -404,7 +419,7 @@ class Housekeeper:
         os.makedirs(self.event_chains_dir, exist_ok=True)
         os.makedirs(self.echo_chamber_dir, exist_ok=True)
         
-        self.echo_chamber = EchoChamber(self.echo_chamber_dir)
+        self.echo_chamber = EchoChamber(self.echo_chamber_dir, snapshot_fn=self._proposal_snapshot)
 
         # Journal manager — primary storage for daily journal entries
         # 日记管理器 — 每日日记条目的主存储（主存储；echo chamber 仅用于审阅）
@@ -3233,6 +3248,57 @@ class Housekeeper:
         """Approve a cleanup proposal."""
         return await self.echo_chamber.update_action_status(proposal_id, "approved")
 
+    async def _proposal_snapshot(self, data: dict) -> dict | None:
+        """Compute a before_hash snapshot for a proposal target (P0-4).
+
+        提案生成时对目标内容（memory bucket / reply）计算快照 hash。
+        执行时若目标内容已变化（hash 不匹配），旧提案标记 stale/conflict，
+        禁止覆盖新内容。organize（批量降权）为低风险操作，跳过快照校验。
+        """
+        try:
+            bucket_id = data.get("bucket_id", "")
+            if bucket_id:
+                bucket = await self.bucket_mgr.get(bucket_id)
+                if bucket:
+                    payload = json.dumps(
+                        {
+                            "content": bucket.get("content", ""),
+                            "metadata": bucket.get("metadata", {}),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    return {
+                        "target_type": "bucket",
+                        "target_id": bucket_id,
+                        "before_hash": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                    }
+            reply_id = data.get("reply_id", "")
+            if reply_id and self.thread_mgr is not None:
+                reply = await self.thread_mgr.get_reply(reply_id)
+                if reply:
+                    payload = json.dumps(reply, ensure_ascii=False, sort_keys=True)
+                    return {
+                        "target_type": "reply",
+                        "target_id": reply_id,
+                        "before_hash": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                    }
+        except Exception as e:
+            logger.warning(f"proposal snapshot failed: {e}")
+        return None
+
+    async def _proposal_target_changed(self, data: dict, before_snapshot: dict) -> bool:
+        """True if the proposal target has changed since the proposal was created.
+
+        目标内容在审批前发生变化 → 返回 True（旧提案应标记 stale/conflict）。
+        """
+        if not before_snapshot or not before_snapshot.get("before_hash"):
+            return False  # 旧提案（无快照）按未变化兼容
+        current = await self._proposal_snapshot(data)
+        if not current:
+            return True  # 目标已不存在 → 视为已变化
+        return current.get("before_hash") != before_snapshot.get("before_hash")
+
     async def execute_change_proposal(self, proposal_id: str) -> tuple:
         """
         Execute an approved change/organize proposal (P0-2).
@@ -3259,6 +3325,17 @@ class Housekeeper:
             return False, f"提案 {proposal_id} 已过期（超过 {PROPOSAL_TTL_DAYS} 天未审批），禁止执行。请重新生成提案。"
 
         action_data = data.get("data", {}) or {}
+
+        # --- P0-4 before_hash 防护：目标内容在审批前已变化 → 标记 conflict，禁止覆盖新内容 ---
+        before_snapshot = data.get("before_snapshot") or {}
+        if before_snapshot.get("before_hash"):
+            if await self._proposal_target_changed(action_data, before_snapshot):
+                await self.echo_chamber.update_action_status(proposal_id, "conflict")
+                return (
+                    False,
+                    f"提案 {proposal_id} 的目标内容已在审批前发生变化（before_hash 不匹配），"
+                    f"已标记为 conflict，禁止执行。请重新生成提案。",
+                )
 
         try:
             # --- Organize proposal: batch importance drop / 整理提案：批量降权 ---
@@ -3303,6 +3380,24 @@ class Housekeeper:
             bucket_id = action_data.get("bucket_id", "")
             updates = action_data.get("updates", {}) or {}
             delete = action_data.get("delete", False)
+
+            # --- Batch delete (memory_batch_delete) / 批量删除 ---
+            batch_ids = action_data.get("bucket_ids", []) or []
+            if delete and batch_ids:
+                deleted = 0
+                for bid in batch_ids:
+                    try:
+                        if await self.bucket_mgr.delete(bid):
+                            deleted += 1
+                            if self.embedding_engine is not None:
+                                try:
+                                    self.embedding_engine.delete_embedding(bid)
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete embedding for {bid}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Batch delete failed for {bid}: {e}")
+                await self.echo_chamber.update_action_status(proposal_id, "executed")
+                return True, f"已执行批量删除提案 {proposal_id}: {deleted}/{len(batch_ids)} 个记忆桶已删除"
 
             if delete:
                 success = await self.bucket_mgr.delete(bucket_id)
