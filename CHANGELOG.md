@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-08-31 Brain 运行时验收补充 2：P0-3 全 mutation 入口审计收尾 + 批量 before_hash
+
+### 目标
+最终报告前对"所有可修改/删除 memory 与 reply 的 mutation entry points"做全量审计，发现 8 个仍绕过 proposal 的入口并修复；同时补齐 P0-4 批量删除的 before_hash 版本防护。
+
+### 修复（P0-3：禁止绕过 proposal → approval）
+1. **`api_batch_delete_buckets`**（`server.py`）：HTTP 批量删除直接 `bucket_mgr.delete` → 改走 `_route_user_mutation`（批量删除提案）。
+2. **`api_update_experience`**（`server.py`）：HTTP 经验正文修改直接更新 → 正文改走 proposal，元数据保留直接更新。
+3. **`api_delete_experience`**（`server.py`）：HTTP 经验删除直接 `bucket_mgr.delete` → 改走 proposal。
+4. **`api_regenerate_names`**（`server.py`）：HTTP 批量重命名直接更新 name → 每个桶改走 proposal。
+5. **`api_bucket_privacy`**（`server.py`）：HTTP 隐私锁定/解锁直接更新 is_private → 改走 proposal。
+6. **`lock_memory` / `unlock_memory`**（`server.py`）：MCP 隐私锁定/解锁直接更新 → 改走 proposal。
+7. **`ai_classify_memory`**（`server.py`）：AI 分类工具直接更新 type/domain/tags/importance → 改为生成提案（proposed_by=main_ai），等待用户 approve_action 批准。
+
+### 修复（P0-4：批量删除 before_hash 版本防护）
+- **`housekeeper.py` `_proposal_snapshot`**：支持 `bucket_ids` 批量目标，对每个目标桶分别计算 SHA-256 before_hash（`target_type=bucket_batch`）。
+- **`housekeeper.py` `_proposal_target_changed`**：批量快照任一目标桶 hash 不匹配即标记 conflict，禁止覆盖新内容。
+
+### 新增测试
+- `tests/test_runtime_snapshot.py` 新增 3 个用例：HTTP 批量删除走 proposal（含 bucket_batch before_hash）、HTTP 隐私锁定走 proposal、MCP lock_memory 走 proposal。
+
+### 验证
+- 完整测试套件 259 passed（原 256 + 新增 3 个）。
+
+---
+
 ## 2026-08-31 Brain 运行时验收补充：默认世界隔离修复（RP 禁止污染 main）
 
 ### 目标

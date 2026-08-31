@@ -6767,10 +6767,23 @@ async def ai_classify_memory(bucket_id: str) -> str:
                 meta_update["tags"] = new_tags
             if new_importance:
                 meta_update["importance"] = new_importance
-            
-            await bucket_mgr.update(bucket_id, content=content, metadata={**meta, **meta_update})
+
+            # --- P0-3：AI 分类修改必须走 proposal → approval，禁止 AI 直接修改长期记忆 ---
+            await housekeeper.ensure_started()
+            proposal_id = await housekeeper.echo_chamber.add_pending_action(
+                "change",
+                {
+                    "bucket_id": bucket_id,
+                    "updates": meta_update,
+                    "reason": "ai_classify_memory 请求更新记忆分类（类型/主题域/标签/重要度）",
+                },
+                proposed_by="main_ai",
+            )
+            return (f"已生成分类提案 {proposal_id}：\n\n📁 类型: {new_type}\n\n🏷️ 主题域: {', '.join(new_domain)}\n\n"
+                    f"🔖 标签: {', '.join(new_tags)}\n\n⭐ 重要度: {new_importance}/10\n\n"
+                    f"请调用 approve_action 批准后才会真正更新记忆。")
         
-        return f"分类结果已更新:\n\n📁 类型: {new_type}\n\n🏷️ 主题域: {', '.join(new_domain)}\n\n🔖 标签: {', '.join(new_tags)}\n\n⭐ 重要度: {new_importance}/10"
+        return "AI 未给出有效的分类建议，未生成提案。"
     except Exception as e:
         logger.error(f"ai_classify_memory failed: {e}")
         return f"AI分类失败: {e}"
@@ -7419,16 +7432,21 @@ async def lock_memory(bucket_id: str, password: str) -> str:
 
     # Hash password before storing
     hashed = hashlib.sha256(password.encode()).hexdigest()
-    success = await bucket_mgr.update(
-        bucket_id,
-        is_private=True,
-        privacy_password=hashed,
+    # --- P0-3：隐私锁定同样修改已有记忆，必须走 proposal → approval（用户级自动批准）---
+    ok, msg = await _route_user_mutation(
+        "change",
+        {
+            "bucket_id": bucket_id,
+            "updates": {"is_private": True, "privacy_password": hashed},
+            "reason": "MCP 用户请求锁定记忆隐私",
+        },
+        "MCP 用户请求锁定记忆隐私",
     )
-    if success:
+    if ok:
         name = bucket.get("metadata", {}).get("name", bucket_id)
         return f"已锁定记忆 [{name}]，前端需输入密码才能查看。"
     else:
-        return f"锁定失败: {bucket_id}"
+        return f"锁定失败: {msg}"
 
 
 # =============================================================
@@ -7448,16 +7466,21 @@ async def unlock_memory(bucket_id: str) -> str:
     if not bucket:
         return f"未找到记忆桶: {bucket_id}"
 
-    success = await bucket_mgr.update(
-        bucket_id,
-        is_private=False,
-        privacy_password="",
+    # --- P0-3：隐私解锁同样修改已有记忆，必须走 proposal → approval（用户级自动批准）---
+    ok, msg = await _route_user_mutation(
+        "change",
+        {
+            "bucket_id": bucket_id,
+            "updates": {"is_private": False, "privacy_password": ""},
+            "reason": "MCP 用户请求解除记忆隐私锁定",
+        },
+        "MCP 用户请求解除记忆隐私锁定",
     )
-    if success:
+    if ok:
         name = bucket.get("metadata", {}).get("name", bucket_id)
         return f"已解锁记忆 [{name}]，前端可正常查看。"
     else:
-        return f"解锁失败: {bucket_id}"
+        return f"解锁失败: {msg}"
 
 
 # =============================================================
@@ -8508,15 +8531,20 @@ async def api_bucket_privacy(request):
             return JSONResponse({"error": "password required to lock"}, status_code=400)
 
         hashed_pwd = hashlib.sha256(password.encode()).hexdigest() if is_private and password else ""
-        success = await bucket_mgr.update(
-            bucket_id,
-            is_private=is_private,
-            privacy_password=hashed_pwd,
+        # --- P0-3：隐私锁定/解锁同样修改已有记忆，必须走 proposal → approval（用户级自动批准）---
+        ok, msg = await _route_user_mutation(
+            "change",
+            {
+                "bucket_id": bucket_id,
+                "updates": {"is_private": is_private, "privacy_password": hashed_pwd},
+                "reason": "HTTP API 用户请求设置/解除记忆隐私锁定",
+            },
+            "HTTP API 用户请求设置/解除记忆隐私锁定",
         )
-        if success:
-            return JSONResponse({"success": True, "is_private": is_private})
+        if ok:
+            return JSONResponse({"success": True, "is_private": is_private, "proposal_id": msg})
         else:
-            return JSONResponse({"error": "bucket not found"}, status_code=404)
+            return JSONResponse({"error": msg}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -9052,11 +9080,27 @@ async def api_update_experience(request):
                 updates["source_bucket_ids"] = current_ids
         
         meta.update(updates)
-        success = await bucket_mgr.update(exp_id, content=body.get("content", exp.get("content", "")), metadata=meta)
-        
-        if success:
-            return JSONResponse({"success": True})
-        return JSONResponse({"error": "update failed"}, status_code=500)
+        # --- P0-3：正文修改必须走 proposal → approval（用户级自动批准），禁止绕过 ---
+        content_update = body.get("content")
+        if content_update is not None:
+            ok, msg = await _route_user_mutation(
+                "change",
+                {
+                    "bucket_id": exp_id,
+                    "updates": {"content": content_update},
+                    "reason": "HTTP API 用户请求修改经验正文",
+                },
+                "HTTP API 用户请求修改经验正文",
+            )
+            if not ok:
+                return JSONResponse({"error": msg}, status_code=500)
+            updates.pop("content", None)
+
+        if updates:
+            success = await bucket_mgr.update(exp_id, metadata=meta)
+            if not success:
+                return JSONResponse({"error": "update failed"}, status_code=500)
+        return JSONResponse({"success": True})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -9072,9 +9116,20 @@ async def api_delete_experience(request):
         exp = await bucket_mgr.get(exp_id)
         if not exp:
             return JSONResponse({"error": "not found"}, status_code=404)
-        
-        await bucket_mgr.delete(exp_id)
-        return JSONResponse({"success": True})
+
+        # --- P0-3：删除必须走 proposal → approval（用户级自动批准），禁止绕过 ---
+        ok, msg = await _route_user_mutation(
+            "change",
+            {
+                "bucket_id": exp_id,
+                "delete": True,
+                "reason": "HTTP API 用户请求删除经验",
+            },
+            "HTTP API 用户请求删除经验",
+        )
+        if ok:
+            return JSONResponse({"success": True, "proposal_id": msg})
+        return JSONResponse({"error": msg}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -10440,8 +10495,20 @@ async def api_regenerate_names(request):
 
             try:
                 new_name = await dehydrator.one_line_summary(content)
-                await bucket_mgr.update(bid, name=new_name)
-                results.append({"bucket_id": bid, "success": True, "old_name": bucket.get("name", ""), "new_name": new_name})
+                # --- P0-3：名称修改必须走 proposal → approval（用户级自动批准），禁止绕过 ---
+                ok, msg = await _route_user_mutation(
+                    "change",
+                    {
+                        "bucket_id": bid,
+                        "updates": {"name": new_name},
+                        "reason": "HTTP API 用户请求批量重命名记忆",
+                    },
+                    "HTTP API 用户请求批量重命名记忆",
+                )
+                if ok:
+                    results.append({"bucket_id": bid, "success": True, "old_name": bucket.get("name", ""), "new_name": new_name})
+                else:
+                    results.append({"bucket_id": bid, "success": False, "error": msg})
             except Exception as e:
                 results.append({"bucket_id": bid, "success": False, "error": str(e)})
 
@@ -11056,18 +11123,22 @@ async def api_batch_delete_buckets(request):
     try:
         body = await request.json()
         bucket_ids = body.get("ids", [])
-        
-        deleted = 0
-        for bucket_id in bucket_ids:
-            success = await bucket_mgr.delete(bucket_id)
-            if success:
-                deleted += 1
-        
-        return JSONResponse({
-            "success": True,
-            "deleted": deleted,
-            "total_requested": len(bucket_ids),
-        })
+        if not bucket_ids:
+            return JSONResponse({"success": False, "error": "ids 不能为空"}, status_code=400)
+
+        # --- P0-3：批量删除必须走 proposal → approval（用户级自动批准），禁止绕过 ---
+        ok, msg = await _route_user_mutation(
+            "change",
+            {
+                "bucket_ids": bucket_ids,
+                "delete": True,
+                "reason": f"HTTP API 用户请求批量删除 {len(bucket_ids)} 个记忆桶",
+            },
+            "HTTP API 用户请求批量删除记忆桶",
+        )
+        if ok:
+            return JSONResponse({"success": True, "proposal_id": msg, "deleted": len(bucket_ids)})
+        return JSONResponse({"success": False, "error": msg}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

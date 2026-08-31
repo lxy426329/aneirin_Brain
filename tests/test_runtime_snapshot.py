@@ -435,3 +435,105 @@ async def test_http_api_content_update_goes_through_proposal(server_env, monkeyp
         a.get("data", {}).get("updates", {}).get("content") == "替换后的正文"
         for a in executed
     )
+
+
+# ---------------------------------------------------------
+# 12. HTTP API 批量删除走 proposal → approval（P0-3）
+# ---------------------------------------------------------
+class _FakeBatchRequest:
+    def __init__(self, body=None):
+        self.path_params = {}
+        self._body = body or {}
+
+    async def json(self):
+        return self._body
+
+
+@pytest.mark.asyncio
+async def test_http_api_batch_delete_goes_through_proposal(server_env, monkeypatch):
+    bm = server_env["bucket_mgr"]
+    hk = server_env["housekeeper"]
+    b1 = await bm.create(content="批量删除记忆1", provenance="user_explicit")
+    b2 = await bm.create(content="批量删除记忆2", provenance="user_explicit")
+
+    monkeypatch.setattr(server, "_require_auth", lambda request: None)
+    resp = await server.api_batch_delete_buckets(_FakeBatchRequest({"ids": [b1, b2]}))
+    body = json.loads(resp.body)
+    assert body.get("success") is True
+    proposal_id = body.get("proposal_id")
+    assert proposal_id
+
+    # 两个记忆均被删除（经提案执行）
+    assert await bm.get(b1) is None
+    assert await bm.get(b2) is None
+    # 提案记录存在：批量删除 + before_hash 版本防护
+    proposal_path = os.path.join(hk.echo_chamber.pending_actions_dir, f"{proposal_id}.json")
+    with open(proposal_path, "r", encoding="utf-8") as f:
+        proposal = json.load(f)
+    assert proposal["status"] == "approved"
+    assert proposal["approved_by"] == "user"
+    assert proposal["data"]["delete"] is True
+    assert set(proposal["data"]["bucket_ids"]) == {b1, b2}
+    assert proposal["before_snapshot"]["target_type"] == "bucket_batch"
+    assert set(proposal["before_snapshot"]["before_hashes"].keys()) == {b1, b2}
+
+
+# ---------------------------------------------------------
+# 13. HTTP API 隐私锁定走 proposal → approval（P0-3）
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_http_api_privacy_goes_through_proposal(server_env, monkeypatch):
+    bm = server_env["bucket_mgr"]
+    hk = server_env["housekeeper"]
+    bid = await bm.create(content="需要锁定的记忆", provenance="user_explicit")
+
+    monkeypatch.setattr(server, "_require_auth", lambda request: None)
+    resp = await server.api_bucket_privacy(
+        _FakeRequest(bid, {"is_private": True, "password": "secret123"})
+    )
+    body = json.loads(resp.body)
+    assert body.get("success") is True
+    proposal_id = body.get("proposal_id")
+    assert proposal_id
+
+    # 隐私锁定已生效（经提案执行）
+    bucket = await bm.get(bid)
+    assert bucket["metadata"]["is_private"] is True
+    assert bucket["metadata"]["privacy_password"]
+    # 提案记录存在（approved_by=user）
+    proposal_path = os.path.join(hk.echo_chamber.pending_actions_dir, f"{proposal_id}.json")
+    with open(proposal_path, "r", encoding="utf-8") as f:
+        proposal = json.load(f)
+    assert proposal["status"] == "approved"
+    assert proposal["approved_by"] == "user"
+    assert proposal["data"]["updates"]["is_private"] is True
+
+
+# ---------------------------------------------------------
+# 14. MCP lock_memory 走 proposal → approval（P0-3）
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_lock_memory_goes_through_proposal(server_env):
+    bm = server_env["bucket_mgr"]
+    hk = server_env["housekeeper"]
+    bid = await bm.create(content="需要锁定的记忆", provenance="user_explicit")
+
+    result = await server.lock_memory(bid, "secret123")
+    assert "已锁定记忆" in result
+
+    # 隐私锁定已生效（经提案执行）
+    bucket = await bm.get(bid)
+    assert bucket["metadata"]["is_private"] is True
+    # 提案记录存在（approved_by=user）
+    import glob
+    files = glob.glob(os.path.join(hk.echo_chamber.pending_actions_dir, "*.json"))
+    locked = []
+    for fp in files:
+        with open(fp, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("status") == "approved" and data.get("approved_by") == "user":
+            locked.append(data)
+    assert any(
+        a.get("data", {}).get("updates", {}).get("is_private") is True
+        for a in locked
+    )

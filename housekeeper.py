@@ -3254,6 +3254,7 @@ class Housekeeper:
         提案生成时对目标内容（memory bucket / reply）计算快照 hash。
         执行时若目标内容已变化（hash 不匹配），旧提案标记 stale/conflict，
         禁止覆盖新内容。organize（批量降权）为低风险操作，跳过快照校验。
+        批量删除（bucket_ids）对每个目标桶分别计算 hash。
         """
         try:
             bucket_id = data.get("bucket_id", "")
@@ -3272,6 +3273,28 @@ class Housekeeper:
                         "target_type": "bucket",
                         "target_id": bucket_id,
                         "before_hash": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                    }
+            # --- 批量删除：对每个目标桶分别计算 before_hash ---
+            batch_ids = data.get("bucket_ids", []) or []
+            if batch_ids:
+                hashes = {}
+                for bid in batch_ids:
+                    bucket = await self.bucket_mgr.get(bid)
+                    if bucket:
+                        payload = json.dumps(
+                            {
+                                "content": bucket.get("content", ""),
+                                "metadata": bucket.get("metadata", {}),
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        hashes[bid] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                if hashes:
+                    return {
+                        "target_type": "bucket_batch",
+                        "target_ids": list(hashes.keys()),
+                        "before_hashes": hashes,
                     }
             reply_id = data.get("reply_id", "")
             if reply_id and self.thread_mgr is not None:
@@ -3292,11 +3315,21 @@ class Housekeeper:
 
         目标内容在审批前发生变化 → 返回 True（旧提案应标记 stale/conflict）。
         """
-        if not before_snapshot or not before_snapshot.get("before_hash"):
+        if not before_snapshot:
+            return False
+        if not before_snapshot.get("before_hash") and not before_snapshot.get("before_hashes"):
             return False  # 旧提案（无快照）按未变化兼容
         current = await self._proposal_snapshot(data)
         if not current:
             return True  # 目标已不存在 → 视为已变化
+        # --- 批量删除：任一目标桶 hash 不匹配即视为已变化 ---
+        if before_snapshot.get("target_type") == "bucket_batch":
+            before_hashes = before_snapshot.get("before_hashes", {}) or {}
+            current_hashes = current.get("before_hashes", {}) or {}
+            for bid, old_hash in before_hashes.items():
+                if current_hashes.get(bid) != old_hash:
+                    return True
+            return False
         return current.get("before_hash") != before_snapshot.get("before_hash")
 
     async def execute_change_proposal(self, proposal_id: str) -> tuple:
