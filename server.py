@@ -1966,6 +1966,10 @@ async def _breath_lightweight(
     """
     limit = max(1, min(limit, 20)) if limit and limit > 0 else 5
 
+    # --- P0-2: 未指定 world_filter 时默认 main 世界，禁止 RP 世界记忆污染 main ---
+    if world_filter is None:
+        world_filter = ["main"]
+
     domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
@@ -2169,7 +2173,7 @@ async def breath(
     scene: str = "",
     world_id: str = "",
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认2000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。scene逗号分隔场景过滤(chat/intimate/home/roleplay), 仅召回匹配场景的记忆, 空=不过滤。world_id逗号分隔世界过滤(main/rp_xxx), 仅召回匹配世界的记忆, 空=不过滤(RP世界隔离)。开局注入轻量化：只精准拉取与当前情境最相关的少量锚点/行为准则，不无差别注入全量内容。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认2000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。scene逗号分隔场景过滤(chat/intimate/home/roleplay), 仅召回匹配场景的记忆, 空=不过滤。world_id逗号分隔世界过滤(main/rp_xxx), 仅召回匹配世界的记忆, 空=默认main世界(RP世界隔离, 禁止rp_xxx污染main)。开局注入轻量化：只精准拉取与当前情境最相关的少量锚点/行为准则，不无差别注入全量内容。"""
     await decay_engine.ensure_started()
     await housekeeper.ensure_started()
 
@@ -2178,8 +2182,12 @@ async def breath(
     scene_filter = _parse_scene_filter(scene)
 
     # --- World filter (修正 4): parse comma-separated world list ---
-    # --- 世界过滤：解析逗号分隔的世界列表，空=不过滤 ---
+    # --- 世界过滤：解析逗号分隔的世界列表 ---
     world_filter = _parse_world_filter(world_id)
+    # --- P0-2: 未指定 world_id 时默认 main 世界，禁止 RP 世界记忆污染 main ---
+    # 主 AI 的默认 breath 调用不传 world_id，若不过滤则 rp_xxx 世界记忆会泄漏进 main。
+    if world_filter is None:
+        world_filter = ["main"]
 
     # --- Lightweight time / life-rhythm context tag / 轻量时空与生活节奏感知 ---
     # 供主 AI 调整接话节奏；极其轻量，单行 [Context] 标记
@@ -7791,6 +7799,7 @@ async def api_breath(request):
 
     GET  /api/breath?query=...&limit=5&min_score=0&recent_days=0&type=&domain=&valence=&arousal=&scene=&world_id=
     POST /api/breath  (JSON body with same fields)
+    world_id 空=默认 main 世界（RP 世界隔离，禁止 rp_xxx 污染 main）。
     """
     from starlette.responses import JSONResponse
     err = _require_auth(request)

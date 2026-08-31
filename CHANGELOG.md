@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-08-31 Brain 运行时验收补充：默认世界隔离修复（RP 禁止污染 main）
+
+### 目标
+capture 真实 breath context 时发现：`breath` 未指定 `world_id` 时 `world_filter=None`，主检索路径与 fallback 保底路径均不做世界过滤，`rp_xxx` 世界记忆会泄漏进 main 世界上下文。违反"RP 必须拥有独立 world_id，禁止污染 main"。
+
+### 修复
+- **`server.py` `breath()`**：`world_id` 为空时默认 `world_filter=["main"]`，主 AI 默认调用不再召回 RP 世界记忆。
+- **`server.py` `_breath_lightweight()`**：`world_filter=None` 时同样默认 `["main"]`（覆盖 MCP lightweight 与 HTTP `/api/breath`）。
+- 更新 `breath` / `api_breath` docstring：空 world_id = 默认 main 世界。
+
+### 新增测试
+- `tests/test_runtime_snapshot.py` 新增 `test_snapshot_default_world_isolation`：不传 world_id 时 RP 记忆不泄漏进 main，main 记忆正常召回。
+
+### 验证
+- 完整测试套件 256 passed（原 255 + 新增 1 个默认世界隔离用例）。
+
+---
+
 ## 2026-08-31 Brain 运行时验收：P0 四项复核 + runtime snapshot tests + schema 冻结
 
 ### 目标

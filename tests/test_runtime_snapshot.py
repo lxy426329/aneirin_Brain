@@ -192,6 +192,33 @@ async def test_snapshot_world_isolation(server_env):
 
 
 # ---------------------------------------------------------
+# 5b. 默认 world 隔离：不传 world_id 时默认 main，RP 记忆不泄漏
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_snapshot_default_world_isolation(server_env):
+    bm = server_env["bucket_mgr"]
+    await bm.create(
+        content="精灵女王艾拉在月光森林中等待旅人。",
+        provenance="user_explicit",
+        world_id="rp_elf",
+        scene=["roleplay"],
+        importance=8,
+    )
+    await bm.create(
+        content="顾尘喜欢在雨天喝热可可。",
+        provenance="user_explicit",
+        importance=8,
+    )
+
+    # 不传 world_id（主 AI 默认调用）：RP 记忆不泄漏进 main
+    ctx = await server.breath(query="精灵女王", max_results=10, force_keyword=True)
+    assert "精灵女王" not in ctx
+    # main 世界记忆正常召回
+    ctx_main = await server.breath(query="热可可", max_results=10, force_keyword=True)
+    assert "热可可" in ctx_main
+
+
+# ---------------------------------------------------------
 # 6. scene 隔离：intimate 场景记忆不泄漏到 chat
 # ---------------------------------------------------------
 @pytest.mark.asyncio
