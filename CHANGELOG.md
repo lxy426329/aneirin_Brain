@@ -21,12 +21,14 @@
 2. **force_keyword 精确检索漏召回**（`server.py`）：仅命中正文（未命中名称/标签）的桶，归一化得分被情绪/时间权重稀释到 0.4 以下，被速览层丢弃。修复：force_keyword 模式下命中精确关键词的桶提升到速览层（0.4），保证精确查找始终可用。
 3. **fallback 保底路径绕过指令有效性**（`server.py`）：未激活/过期指令通过"保底记忆"随机选取泄漏进 context。修复：fallback 同样应用 `_is_instruction_active` 过滤。
 4. **速览条目无正文预览**（`server.py`）：无 one_line/dehydrated 摘要时只显示截断名称（10 字符），内容不可见。修复：回退到正文预览（前 60 字符）。
+5. **HTTP API 删除/正文修改绕过 proposal**（`server.py`）：`api_bucket_delete` 直接 `bucket_mgr.delete`、`api_bucket_update` 直接替换 content，绕过 proposal → approval。修复：新增 `_route_user_mutation()`，用户级 mutation 统一生成提案（proposed_by=user）并由认证用户立即批准（approved_by=user）执行，保留 UI 即时生效体验同时保留审批记录与 before_hash 防护。
+6. **`delete_embedding` 缺 await**（`housekeeper.py`）：单桶/批量删除提案执行时 `delete_embedding` 未 await，embedding 实际未删除。修复：补上 `await`。
 
 ### 新增测试
-- `tests/test_runtime_snapshot.py`（10 个用例）：构造 8 类测试记忆（main/chat 普通 background、inactive instruction、active instruction、expired current state、valid current state、RP world memory、intimate scene memory、含 reflection + correction + superseded reply 的 thread），以不同 world_id / scene 调用真实 breath 管线，捕获最终 context 并断言：background 不表示为当前 instruction；inactive/expired instruction 不成为行动依据；expired state 不表示为 current；world/scene 不泄漏；thread 只返回精简摘要；superseded correction 不作为当前 correction；显式 get_memory_thread 才返回完整 thread；main AI 可主动调用 add_memory_reply。
+- `tests/test_runtime_snapshot.py`（12 个用例）：构造 8 类测试记忆（main/chat 普通 background、inactive instruction、active instruction、expired current state、valid current state、RP world memory、intimate scene memory、含 reflection + correction + superseded reply 的 thread），以不同 world_id / scene 调用真实 breath 管线，捕获最终 context 并断言：background 不表示为当前 instruction；inactive/expired instruction 不成为行动依据；expired state 不表示为 current；world/scene 不泄漏；thread 只返回精简摘要；superseded correction 不作为当前 correction；显式 get_memory_thread 才返回完整 thread；main AI 可主动调用 add_memory_reply；HTTP API 删除/正文修改走 proposal → approval（approved_by=user + before_hash）。
 
 ### 验证
-- 完整测试套件 253 passed（原 243 + 新增 10 个 runtime snapshot 用例）。
+- 完整测试套件 255 passed（原 243 + 新增 12 个 runtime snapshot 用例）。
 
 ### Schema 冻结
 - 本轮完成后冻结 schema：除非 runtime snapshot 暴露结构性 bug，不再新增 metadata、目录或分类字段。

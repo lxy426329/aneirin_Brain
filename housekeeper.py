@@ -3391,7 +3391,7 @@ class Housekeeper:
                             deleted += 1
                             if self.embedding_engine is not None:
                                 try:
-                                    self.embedding_engine.delete_embedding(bid)
+                                    await self.embedding_engine.delete_embedding(bid)
                                 except Exception as e:
                                     logger.warning(f"Failed to delete embedding for {bid}: {e}")
                     except Exception as e:
@@ -3405,7 +3405,7 @@ class Housekeeper:
                     return False, f"执行失败: 未找到记忆桶 {bucket_id}"
                 if self.embedding_engine is not None:
                     try:
-                        self.embedding_engine.delete_embedding(bucket_id)
+                        await self.embedding_engine.delete_embedding(bucket_id)
                     except Exception as e:
                         logger.warning(f"Failed to delete embedding after apply_change: {e}")
             else:

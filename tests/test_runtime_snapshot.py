@@ -16,6 +16,7 @@
 
 import os
 import sys
+import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -336,3 +337,74 @@ async def test_ai_can_add_memory_reply(server_env):
     assert replies[0]["provenance"] == "ai_inferred"
     parent = await server.bucket_mgr.get(bid)
     assert parent["content"] == "假期项目计划：我们的家。"
+
+
+# ---------------------------------------------------------
+# 11. HTTP API 删除/正文修改走 proposal → approval（P0-3）
+# ---------------------------------------------------------
+class _FakeRequest:
+    def __init__(self, bucket_id, body=None):
+        self.path_params = {"bucket_id": bucket_id}
+        self._body = body or {}
+
+    async def json(self):
+        return self._body
+
+
+@pytest.mark.asyncio
+async def test_http_api_delete_goes_through_proposal(server_env, monkeypatch):
+    bm = server_env["bucket_mgr"]
+    hk = server_env["housekeeper"]
+    bid = await bm.create(content="待删除的记忆", provenance="user_explicit")
+
+    monkeypatch.setattr(server, "_require_auth", lambda request: None)
+    resp = await server.api_bucket_delete(_FakeRequest(bid))
+    body = json.loads(resp.body)
+    assert body.get("success") is True
+    proposal_id = body.get("proposal_id")
+    assert proposal_id
+
+    # 记忆确实被删除（经提案执行）
+    assert await bm.get(bid) is None
+    # 提案记录存在：审批者 user、状态 approved、带 before_hash 版本防护
+    proposal_path = os.path.join(hk.echo_chamber.pending_actions_dir, f"{proposal_id}.json")
+    with open(proposal_path, "r", encoding="utf-8") as f:
+        proposal = json.load(f)
+    assert proposal["status"] == "approved"
+    assert proposal["approved_by"] == "user"
+    assert proposal["proposed_by"] == "user"
+    assert proposal["before_snapshot"]["target_type"] == "bucket"
+    assert proposal["before_snapshot"]["before_hash"]
+
+
+@pytest.mark.asyncio
+async def test_http_api_content_update_goes_through_proposal(server_env, monkeypatch):
+    bm = server_env["bucket_mgr"]
+    hk = server_env["housekeeper"]
+    bid = await bm.create(content="原始正文", provenance="user_explicit")
+
+    monkeypatch.setattr(server, "_require_auth", lambda request: None)
+    resp = await server.api_bucket_update(
+        _FakeRequest(bid, {"content": "替换后的正文", "importance": 7})
+    )
+    body = json.loads(resp.body)
+    assert body.get("success") is True
+
+    # 正文经提案替换，元数据直接更新
+    bucket = await bm.get(bid)
+    assert bucket["content"] == "替换后的正文"
+    assert bucket["metadata"]["importance"] == 7
+
+    # 提案记录存在（approved_by=user）
+    import glob
+    files = glob.glob(os.path.join(hk.echo_chamber.pending_actions_dir, "*.json"))
+    executed = []
+    for fp in files:
+        with open(fp, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("status") == "approved" and data.get("approved_by") == "user":
+            executed.append(data)
+    assert any(
+        a.get("data", {}).get("updates", {}).get("content") == "替换后的正文"
+        for a in executed
+    )

@@ -8333,6 +8333,26 @@ async def api_bucket_create(request):
     return JSONResponse({"id": bucket_id}, status_code=201)
 
 
+async def _route_user_mutation(action_type: str, data: dict, reason: str) -> tuple:
+    """P0-3：用户级 mutation 统一走 proposal → approval 管线。
+
+    HTTP API（用户界面）对已有 memory 的正文修改/删除同样不绕过 proposal：
+    生成提案（proposed_by=user）后由当前认证用户立即批准（approved_by=user）执行。
+    这样保留 UI 即时生效体验，同时保留审批记录与 before_hash 版本防护。
+    返回 (success, message)。
+    """
+    await housekeeper.ensure_started()
+    proposal_id = await housekeeper.echo_chamber.add_pending_action(
+        action_type,
+        data,
+        proposed_by="user",
+    )
+    ok = await housekeeper.approve_action(proposal_id, approved_by="user")
+    if ok:
+        return True, proposal_id
+    return False, f"提案 {proposal_id} 执行失败（目标可能已变化或已过期）"
+
+
 @mcp.custom_route("/api/bucket/{bucket_id}", methods=["PUT"])
 async def api_bucket_update(request):
     """Update an existing bucket."""
@@ -8438,11 +8458,28 @@ async def api_bucket_update(request):
 
     if not update_kwargs:
         return JSONResponse({"error": "no fields to update"}, status_code=400)
-    
-    success = await bucket_mgr.update(bucket_id, **update_kwargs)
-    if not success:
-        return JSONResponse({"error": "update failed"}, status_code=500)
-    
+
+    # --- P0-3：正文修改走 proposal → approval（用户级自动批准），元数据保留直接更新 ---
+    # 与 trace/manage_record 一致：正文替换必须经提案审批，禁止绕过。
+    content_update = update_kwargs.pop("content", None)
+    if content_update is not None:
+        ok, msg = await _route_user_mutation(
+            "change",
+            {
+                "bucket_id": bucket_id,
+                "updates": {"content": content_update},
+                "reason": "HTTP API 用户请求替换记忆正文",
+            },
+            "HTTP API 用户请求替换记忆正文",
+        )
+        if not ok:
+            return JSONResponse({"error": msg}, status_code=500)
+
+    if update_kwargs:
+        success = await bucket_mgr.update(bucket_id, **update_kwargs)
+        if not success:
+            return JSONResponse({"error": "update failed"}, status_code=500)
+
     return JSONResponse({"success": True})
 
 
@@ -8483,8 +8520,19 @@ async def api_bucket_delete(request):
     if err: return err
     bucket_id = request.path_params["bucket_id"]
 
-    await bucket_mgr.delete(bucket_id)
-    return JSONResponse({"success": True})
+    # --- P0-3：删除必须走 proposal → approval（用户级自动批准），禁止绕过 ---
+    ok, msg = await _route_user_mutation(
+        "change",
+        {
+            "bucket_id": bucket_id,
+            "delete": True,
+            "reason": "HTTP API 用户请求删除记忆桶",
+        },
+        "HTTP API 用户请求删除记忆桶",
+    )
+    if ok:
+        return JSONResponse({"success": True, "proposal_id": msg})
+    return JSONResponse({"error": msg}, status_code=500)
 
 
 @mcp.custom_route("/api/trash", methods=["GET"])
