@@ -60,6 +60,29 @@ except ImportError:
             return [v.strip() for v in value.split(",") if v.strip()]
         return [value]
 
+# --- Proposal TTL (stale proposal 防护) ---
+# 提案默认有效期：超过该时长未审批的提案视为过期，禁止执行。
+# 防止很久以前的旧提案在状态已变化后被批准执行（stale proposal）。
+PROPOSAL_TTL_DAYS = 7
+
+
+def _infer_memory_class(bucket_type: str) -> str | None:
+    """Infer a suggested memory_class from the existing type (映射层，修正 5).
+
+    从现有 type 推断建议的 memory_class（event/experience/person/boundary/plan/principle）。
+    无法可靠推断时返回 None（不强行推断，宁缺毋滥）。
+    仅用于生成 enrichment 提案的建议值，不直接修改记忆。
+    """
+    mapping = {
+        "boundary": "boundary",
+        "permanent": "principle",
+        "pattern": "experience",
+        "identity": "person",
+        "dynamic": "event",
+        "feel": "experience",
+    }
+    return mapping.get(bucket_type)
+
 logger = logging.getLogger("ombre_brain.housekeeper")
 
 
@@ -263,6 +286,7 @@ class EchoChamber:
         action_type: cleanup/merge/chain_update/change/organize
         proposed_by: 提案来源（ai_manage / main_ai / user），默认 ai_manage。
         返回 action_id，供调用方引用提案。
+        提案带默认有效期（PROPOSAL_TTL_DAYS 天），过期后禁止执行（stale proposal 防护）。
         """
         action_id = str(uuid.uuid4())[:8]
         file_path = os.path.join(self.pending_actions_dir, f"{action_id}.json")
@@ -274,6 +298,9 @@ class EchoChamber:
             "proposed_by": proposed_by,
             "data": data,
             "created": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(days=PROPOSAL_TTL_DAYS)
+            ).isoformat(),
         }
         
         with open(file_path, "w", encoding="utf-8") as f:
@@ -281,6 +308,23 @@ class EchoChamber:
         
         logger.info(f"Added pending action: {action_type} - {action_id} (proposed_by={proposed_by})")
         return action_id
+
+    def _is_proposal_expired(self, data: dict) -> bool:
+        """True if a pending proposal has passed its expiry (stale proposal 防护).
+
+        判断提案是否过期：expires_at 存在且早于当前时间 → 过期。
+        旧提案（无 expires_at 字段）按未过期处理，兼容历史数据。
+        """
+        expiry = data.get("expires_at")
+        if not expiry:
+            return False
+        try:
+            expiry_dt = datetime.fromisoformat(str(expiry))
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.astimezone()
+            return datetime.now(expiry_dt.tzinfo) > expiry_dt
+        except (ValueError, TypeError):
+            return False
     
     async def get_pending_actions(self, action_type: str = "all") -> list:
         """Get pending actions."""
@@ -2433,6 +2477,7 @@ class Housekeeper:
                         domain=[domain],
                         name=f"年轮·{domain}",
                         bucket_type="ring",
+                        provenance="system_event",
                     )
                     ring_created += 1
                     logger.info(f"Ring bucket created for domain: {domain} ({cnt} memories)")
@@ -3204,10 +3249,13 @@ class Housekeeper:
         except (json.JSONDecodeError, OSError) as e:
             return False, f"读取提案失败: {e}"
 
-        if data.get("action_type") not in ("change", "organize"):
+        if data.get("action_type") not in ("change", "organize", "enrich"):
             return False, f"提案 {proposal_id} 不是修改提案（类型: {data.get('action_type')}）。"
         if data.get("status") != "pending":
             return False, f"提案 {proposal_id} 状态为 {data.get('status')}，无法执行。"
+        # --- Stale proposal 防护：过期提案禁止执行 ---
+        if self.echo_chamber._is_proposal_expired(data):
+            return False, f"提案 {proposal_id} 已过期（超过 {PROPOSAL_TTL_DAYS} 天未审批），禁止执行。请重新生成提案。"
 
         action_data = data.get("data", {}) or {}
 
@@ -3262,6 +3310,54 @@ class Housekeeper:
             logger.error(f"execute_change_proposal failed: {e}")
             return False, f"执行失败: {e}"
 
+    async def propose_metadata_enrichment(self, limit: int = 20) -> dict:
+        """
+        Generate enrichment proposals for legacy memories (旧记忆 metadata 补全提案).
+
+        扫描 memory_class 缺失的旧记忆，基于现有 type 推断建议的 memory_class，
+        生成 enrich 提案供审批。不直接修改任何记忆（只生成提案）。
+        返回 {"enrichment_proposals_created": N, "scanned": M}。
+        """
+        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        candidates = []
+        for b in all_buckets:
+            meta = b["metadata"]
+            if not meta.get("memory_class"):
+                candidates.append(b)
+
+        # 优先处理最旧的记忆（created 升序）
+        candidates.sort(key=lambda b: b["metadata"].get("created", ""))
+        candidates = candidates[:limit]
+
+        proposals_created = 0
+        for b in candidates:
+            meta = b["metadata"]
+            suggested_class = _infer_memory_class(meta.get("type", ""))
+            if not suggested_class:
+                continue
+            await self.echo_chamber.add_pending_action(
+                "enrich",
+                {
+                    "bucket_id": b["id"],
+                    "updates": {"memory_class": suggested_class},
+                    "reason": (
+                        f"旧记忆 metadata 补全：type={meta.get('type', '')} "
+                        f"→ memory_class={suggested_class}"
+                    ),
+                },
+                proposed_by="ai_manage",
+            )
+            proposals_created += 1
+
+        logger.info(
+            f"Metadata enrichment proposals created: {proposals_created}/{len(candidates)} "
+            f"(scanned {len(candidates)} legacy memories)"
+        )
+        return {
+            "enrichment_proposals_created": proposals_created,
+            "scanned": len(candidates),
+        }
+
     async def review_digest(self) -> dict:
         """Get digest for main AI review."""
         return await self.echo_chamber.get_review_summary()
@@ -3284,15 +3380,23 @@ class Housekeeper:
         if data.get("status") != "pending":
             return False
 
+        # --- Stale proposal 防护：过期提案禁止批准执行 ---
+        if self.echo_chamber._is_proposal_expired(data):
+            logger.warning(
+                f"approve_action rejected stale proposal {action_id} "
+                f"(超过 {PROPOSAL_TTL_DAYS} 天未审批)"
+            )
+            return False
+
         action_type = data.get("action_type", "")
         action_data = data.get("data", {}) or {}
 
         # Execute the action based on its type — only mark approved if execution succeeded
         try:
-            if action_type in ("change", "organize"):
+            if action_type in ("change", "organize", "enrich"):
                 # --- Delegate to execute_change_proposal (P0-2 / 修正 6) ---
-                # --- 委托给 execute_change_proposal 执行修改/整理提案 ---
-                # change/organize 提案由 execute_change_proposal 统一执行（含幂等保护），
+                # --- 委托给 execute_change_proposal 执行修改/整理/补全提案 ---
+                # change/organize/enrich 提案由 execute_change_proposal 统一执行（含幂等保护），
                 # approve_action 只负责审批记录（approved_by/approved_at）。
                 success, message = await self.execute_change_proposal(action_id)
                 if not success:
@@ -3453,6 +3557,7 @@ class Housekeeper:
                             domain=["身份"],
                             name=person_name,
                             bucket_type="permanent",
+                            provenance="system_event",
                         )
                         logger.info(f"Executed identity_proposal (fallback): created identity for {person_name}")
 

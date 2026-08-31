@@ -5,6 +5,43 @@
 
 ---
 
+## 2026-08-31 结构调整 v2 安全加固：provenance 默认安全化 / breath 角色显式化 / mutation 审计 + stale proposal 防护 / 旧记忆补全提案
+
+### 目标
+在不新增记忆业务功能的前提下，完成 4 项安全加固：来源默认安全化、上下文角色显式化、全 mutation surface 审计 + 过期提案防护、旧记忆 metadata 补全提案。全部为加法式兼容改造。
+
+### 更改内容
+1. **provenance 默认安全化**
+   - 文件：`bucket_manager.py`（`create` 默认 `provenance="user_explicit"` → `"legacy"`，未显式指定来源一律标记 legacy）、`import_memory.py`（导入显式 `provenance="imported"`）、`housekeeper.py`（ring/identity 自动创建显式 `provenance="system_event"`）。
+   - 效果：底层 API 默认安全（legacy），只有显式确认来源（如 hold 用户主动写入传 user_explicit）才标记具体来源。
+   - 测试：`tests/test_provenance.py` 更新（默认 legacy、显式 user_explicit、枚举值保存）。
+2. **breath 上下文角色显式化**
+   - 文件：`server.py`。新增 `_memory_role()` 辅助函数（优先级：当前有效指令 > 当前状态 > 类型角色 > 背景）；breath 查询管线每条记忆加 `[角色:xxx]` 前缀（含已消化/总结/语义关联/随机浮现/保底路径）；`_breath_lightweight` 每条结果新增 `role` 字段。
+   - 效果：主模型能明确区分每条记忆的角色（指令/当前状态/边界/身份/行为模式/永久原则/背景等）。
+   - 测试：`tests/test_breath_role.py`（6 个用例）。
+3. **全 mutation surface 审计 + stale proposal 防护**
+   - 审计结论：housekeeper 的删除/修改路径均经过 proposal（execute_change_proposal/approve_action）；主 AI 直接操作（trace/manage_record/update_bucket 等）保留权限；系统自动维护（decay_engine 衰减状态、tag_normalizer 标签归一化、run_daily_job 沉底）为记忆生命周期管理，不涉及用户长期记忆删除。
+   - 防护：`housekeeper.py` 新增 `PROPOSAL_TTL_DAYS=7`；`add_pending_action` 生成提案带 `expires_at`；`execute_change_proposal` / `approve_action` 检查过期提案并拒绝执行（旧提案无 expires_at 按未过期兼容）。
+   - 测试：`tests/test_stale_proposal.py`（5 个用例）。
+4. **旧记忆 metadata enrichment proposal**
+   - 文件：`housekeeper.py`（新增 `_infer_memory_class()` 映射层与 `propose_metadata_enrichment()`，扫描 memory_class 缺失的旧记忆生成 enrich 提案，不直接修改）、`server.py`（新增 `propose_metadata_enrichment` MCP 工具）、`bucket_manager.py`（`update` 白名单补充 provenance/scene/world_id/memory_class/instruction 等新字段，使 enrich 提案可落地）。
+   - 效果：旧记忆补全走提案-审批闭环，禁止直接修改。
+   - 测试：`tests/test_enrichment.py`（4 个用例）。
+
+### 迁移方案
+- 无数据库结构变化（记忆为 Markdown + frontmatter，无 SQL 表变更）。
+- 旧提案（无 expires_at 字段）按未过期处理，兼容历史数据。
+- 现有记忆数据库未删除、未重写。
+
+### 验证
+- 完整测试套件 232 passed（原 216 + 新增 16 个用例）。
+- `python -m py_compile` 全部通过。
+
+### 待后续
+- 无。
+
+---
+
 ## 2026-08-31 结构调整 v2 修正：来源兼容 / 指令有效期 / 状态过期 / 世界隔离 / 记忆类别 / 审批者记录
 
 ### 目标

@@ -899,7 +899,7 @@ class BucketManager:
         status_key: str = None,
         is_private: bool = False,
         privacy_password: str = None,
-        provenance: str = "user_explicit",
+        provenance: str = "legacy",
         scene: list[str] = None,
         world_id: str = "main",
         memory_class: str = None,
@@ -1014,7 +1014,8 @@ class BucketManager:
             "privacy_password": privacy_password or "",
             # --- Provenance: user_explicit / ai_inferred / ai_observed / system_event / imported / legacy ---
             # --- 来源：用户明确说 / AI 推测 / AI 观察 / 系统事件 / 导入 / 无法确认 ---
-            # 非法来源值回退 legacy（来源不明，绝不默认 user_explicit）
+            # 默认安全化：未显式指定来源时一律标记 legacy（来源不明），
+            # 只有调用方明确确认来源（如 hold 用户主动写入传 user_explicit）才标记具体来源。
             "provenance": provenance if provenance in PROVENANCE_VOCABULARY else "legacy",
             # --- Scene: chat / intimate / home / roleplay / rp ---
             # --- 适用场景：正常聊天 / 亲密互动 / Home / RP ---
@@ -1282,7 +1283,11 @@ class BucketManager:
             if "model_valence" in kwargs:
                 post["model_valence"] = max(0.0, min(1.0, safe_float(kwargs["model_valence"], 0.5)))
             
-            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags", "type", "people"):
+            for key in ("exp_type", "source", "apply_count", "last_applied", "title", "one_line_summary", "source_bucket_ids", "hit_count", "last_hit", "dehydrated_summary", "previous_event_id", "next_event_id", "superseded_by", "superseded_at", "status", "resolved_reason", "faded", "cold_memory", "efficacy_score", "efficacy_reports", "primary_tags", "sub_tags", "type", "people",
+                        # --- 结构调整 v2 新增字段（修正 1/2/3/4/5）---
+                        "provenance", "scene", "world_id", "memory_class",
+                        "instruction", "active", "valid_from", "expires_at", "trigger_condition",
+                        "is_current", "observed_at", "state_expires_at"):
                 if key in kwargs:
                     post[key] = kwargs[key]
 

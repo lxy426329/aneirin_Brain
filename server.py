@@ -237,6 +237,40 @@ def _bucket_matches_world(bucket: dict, world_filter: list | None) -> bool:
     return world in world_filter
 
 
+# --- Memory role labels for breath context (上下文角色显式化) ---
+# 每条记忆在 breath 输出中显式标注其在当前上下文中的角色，
+# 让主模型明确区分：当前有效指令 / 当前状态 / 边界 / 身份 / 背景等。
+_MEMORY_ROLE_MAP = {
+    "boundary": "边界",
+    "identity": "身份",
+    "pattern": "行为模式",
+    "feel": "感受",
+    "permanent": "永久原则",
+    "milestone": "里程碑",
+    "voice": "说话习惯",
+    "ring": "年轮经验",
+    "experience": "经验",
+}
+
+
+def _memory_role(metadata: dict) -> str:
+    """Infer the role of a memory in the current context.
+
+    推断记忆在当前上下文中的角色，用于 breath 输出显式标注。
+    优先级：当前有效指令 > 当前状态 > 类型角色 > 背景。
+    """
+    if not metadata:
+        return "背景"
+    # 当前有效指令（instruction=True 且 active=True 且未过期）优先
+    if metadata.get("instruction") and metadata.get("active"):
+        return "指令"
+    # 当前状态（is_current=True 且未过期）
+    if metadata.get("is_current"):
+        return "当前状态"
+    btype = metadata.get("type", "")
+    return _MEMORY_ROLE_MAP.get(btype, "背景")
+
+
 def _load_password_hash() -> str | None:
     try:
         auth_file = _get_auth_file()
@@ -1970,6 +2004,7 @@ async def _breath_lightweight(
         results.append({
             "bucket_id": b["id"],
             "name": meta.get("name", b["id"]),
+            "role": _memory_role(meta),
             "summary": summary[:200],
             "valence": safe_float(meta.get("valence"), 0.5),
             "arousal": safe_float(meta.get("arousal"), 0.3),
@@ -2516,9 +2551,10 @@ async def breath(
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             
             decay_stage = bucket["metadata"].get("decay_stage", 1)
+            role = _memory_role(bucket["metadata"])
             
             if decay_stage == 3:
-                summary = f"[已消化] [bucket_id:{bucket['id']}] {bucket['metadata'].get('name', '')} - 知识已内化"
+                summary = f"[角色:{role}] [已消化] [bucket_id:{bucket['id']}] {bucket['metadata'].get('name', '')} - 知识已内化"
                 summary_tokens = count_tokens_approx(summary)
                 if token_used + summary_tokens > max_tokens:
                     summarized_buckets.append(bucket)
@@ -2540,16 +2576,16 @@ async def breath(
                     summary = dehydrated_summary
                 else:
                     summary = strip_wikilinks(bucket["content"])[:100]
-                summary = f"[总结] [bucket_id:{bucket['id']}] {summary}"
+                summary = f"[角色:{role}] [总结] [bucket_id:{bucket['id']}] {summary}"
                 
                 if event_context and is_high_relevance:
                     summary = f"{event_context}\n{summary}"
             else:
                 content = strip_wikilinks(bucket["content"])
                 if bucket.get("vector_match"):
-                    summary = f"[语义关联] [bucket_id:{bucket['id']}] {content[:200]}"
+                    summary = f"[角色:{role}] [语义关联] [bucket_id:{bucket['id']}] {content[:200]}"
                 else:
-                    summary = f"[bucket_id:{bucket['id']}] {content[:200]}"
+                    summary = f"[角色:{role}] [bucket_id:{bucket['id']}] {content[:200]}"
                 
                 if event_context:
                     if is_high_relevance:
@@ -2603,7 +2639,7 @@ async def breath(
                         summary = dehydrated_summary
                     else:
                         summary = strip_wikilinks(b["content"])[:100]
-                    drift_results.append(f"[surface_type: random]\n{summary}")
+                    drift_results.append(f"[角色:{_memory_role(b['metadata'])}] [surface_type: random]\n{summary}")
                 results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
         except Exception as e:
             logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
@@ -2660,7 +2696,7 @@ async def breath(
                         summary = dehydrated_summary
                     else:
                         summary = strip_wikilinks(b["content"])[:100]
-                    fallback_results.append(f"[fallback: random recent] [bucket_id:{b['id']}] {summary}")
+                    fallback_results.append(f"[角色:{_memory_role(b['metadata'])}] [fallback: random recent] [bucket_id:{b['id']}] {summary}")
                 
                 # Check token budget before appending
                 # 在添加前检查 token 预算
@@ -3706,6 +3742,30 @@ async def propose_organize(days: int = 30, importance_drop: int = 2) -> str:
     except Exception as e:
         logger.error(f"propose_organize failed: {e}")
         return f"生成整理提案失败: {e}"
+
+
+# =============================================================
+# Tool 4e: propose_metadata_enrichment — 旧记忆 metadata 补全提案
+# 扫描 memory_class 缺失的旧记忆，生成补全提案（不直接修改）。
+# =============================================================
+@mcp.tool()
+async def propose_metadata_enrichment(limit: int = 20) -> str:
+    """为旧记忆生成 metadata 补全提案（不直接修改）。扫描 memory_class 缺失的旧记忆，基于现有 type 推断建议值，生成 enrich 提案，确认后由 apply_change 执行。limit=最多扫描条数。"""
+
+    try:
+        await housekeeper.ensure_started()
+        result = await housekeeper.propose_metadata_enrichment(limit=max(1, min(100, limit)))
+        created = result["enrichment_proposals_created"]
+        scanned = result["scanned"]
+        if created == 0:
+            return f"扫描 {scanned} 条旧记忆，无可推断的 memory_class 补全提案（旧记忆已较完整）。"
+        return (
+            f"已生成 {created} 条 metadata 补全提案（扫描 {scanned} 条旧记忆）。"
+            f"请调用 review_pending_actions 查看，approve_action 确认执行。"
+        )
+    except Exception as e:
+        logger.error(f"propose_metadata_enrichment failed: {e}")
+        return f"生成 metadata 补全提案失败: {e}"
 
 
 # =============================================================

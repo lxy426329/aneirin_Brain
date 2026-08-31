@@ -47,6 +47,7 @@ class ImportEngine:
                         importance=5,
                         domain=["imported"],
                         name=f"Imported: {filename[:30]}",
+                        provenance="imported",
                     )
                 except Exception as e:
                     logger.warning(f"Failed to create bucket for line {i}: {e}")
