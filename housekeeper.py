@@ -388,12 +388,13 @@ class Housekeeper:
     Uses AI (via dehydrator) to generate high-quality summaries.
     """
     
-    def __init__(self, config: dict, bucket_mgr, dehydrator=None, identity_mgr=None, embedding_engine=None):
+    def __init__(self, config: dict, bucket_mgr, dehydrator=None, identity_mgr=None, embedding_engine=None, thread_mgr=None):
         self.config = config or {}
         self.bucket_mgr = bucket_mgr
         self.dehydrator = dehydrator
         self.identity_mgr = identity_mgr
         self.embedding_engine = embedding_engine
+        self.thread_mgr = thread_mgr  # Memory thread manager / 记忆楼层管理器（reply 删除/修改经提案审批）
         
         data_dir = config.get("buckets_dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"))
         self.event_chains_dir = os.path.join(data_dir, "event_chains")
@@ -3277,6 +3278,26 @@ class Housekeeper:
                         logger.warning(f"execute_change_proposal organize failed for {bid}: {e}")
                 await self.echo_chamber.update_action_status(proposal_id, "executed")
                 return True, f"已执行整理提案 {proposal_id}: {executed}/{len(candidates)} 条已降权"
+
+            # --- Reply mutation (memory thread) / 楼层修改（记忆楼层）---
+            # 楼层的删除/修改同样必须经过提案审批，禁止绕过 proposal。
+            reply_id = action_data.get("reply_id", "")
+            if reply_id:
+                if self.thread_mgr is None:
+                    return False, "楼层管理器未初始化，无法执行楼层提案。"
+                if action_data.get("delete_reply"):
+                    success = await self.thread_mgr.delete_reply(reply_id)
+                    if not success:
+                        return False, f"执行失败: 未找到楼层 {reply_id}"
+                else:
+                    reply_updates = action_data.get("reply_updates", {}) or {}
+                    if not reply_updates:
+                        return False, "提案没有需要执行的楼层修改。"
+                    success = await self.thread_mgr.update_reply(reply_id, **reply_updates)
+                    if not success:
+                        return False, f"执行失败: 未找到楼层 {reply_id}"
+                await self.echo_chamber.update_action_status(proposal_id, "executed")
+                return True, f"已执行楼层提案 {proposal_id}: {reply_id}"
 
             # --- Change proposal: single bucket update/delete / 修改提案：单桶更新/删除 ---
             bucket_id = action_data.get("bucket_id", "")

@@ -67,6 +67,7 @@ from pattern_manager import PatternManager
 from tag_normalizer import TagNormalizer
 from cycle_tracker import CycleTracker
 from journal_manager import JournalManager
+from thread_manager import ThreadManager
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, detect_vulnerable_state, safe_json_loads, safe_int, safe_float
 from mcp_tools import register_tools as _register_mcp_tools
 
@@ -125,7 +126,8 @@ dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 cycle_tracker = CycleTracker(config["buckets_dir"])  # Cycle tracker / 例假周期追踪器（decay 相位调节依赖）
 decay_engine = DecayEngine(config, bucket_mgr, cycle_tracker=cycle_tracker)  # Decay engine / 衰减引擎
 identity_mgr = IdentityManager(config)               # Identity manager / 身份管理器
-housekeeper = Housekeeper(config, bucket_mgr, dehydrator, identity_mgr=identity_mgr, embedding_engine=embedding_engine)         # Housekeeper / 记忆管家
+thread_mgr = ThreadManager(config, bucket_mgr)       # Thread manager / 记忆楼层管理器（reply 只追加，不覆盖主记忆）
+housekeeper = Housekeeper(config, bucket_mgr, dehydrator, identity_mgr=identity_mgr, embedding_engine=embedding_engine, thread_mgr=thread_mgr)         # Housekeeper / 记忆管家
 emotion_mgr = EmotionManager(config)                 # Emotion manager / 情绪管理器
 pattern_mgr = PatternManager(config)                 # Pattern manager / 模式管理器
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
@@ -269,6 +271,50 @@ def _memory_role(metadata: dict) -> str:
         return "当前状态"
     btype = metadata.get("type", "")
     return _MEMORY_ROLE_MAP.get(btype, "背景")
+
+
+async def _thread_summary(thread_mgr, bucket_id: str, max_len: int = 120) -> str:
+    """Return a compact thread summary for breath context (楼层精简摘要).
+
+    普通 breath / recall 不返回整栋楼（避免 context 膨胀），只附带：
+    - 最新 relevant reply；
+    - 当前有效 correction（未被 supersede 的 correction）；
+    - 最近一次 reflection（如果相关）。
+    完整楼层仅在 AI/用户主动请求时通过 get_memory_thread 展开。
+    """
+    if thread_mgr is None:
+        return ""
+    try:
+        replies = await thread_mgr.list_replies(bucket_id)
+    except Exception as e:
+        logger.warning(f"Thread summary failed for {bucket_id}: {e}")
+        return ""
+    if not replies:
+        return ""
+
+    parts = []
+    # 最新 reply
+    latest = replies[-1]
+    parts.append(f"最新({latest.get('reply_type', '')}):{latest.get('content', '')[:max_len]}")
+    # 当前有效 correction（未被 supersede 的 correction 保留为有效纠正）
+    superseded_ids = {
+        r.get("supersedes_reply_id")
+        for r in replies
+        if r.get("supersedes_reply_id")
+    }
+    active_corrections = [
+        r for r in replies
+        if r.get("reply_type") == "correction" and r.get("reply_id") not in superseded_ids
+    ]
+    if active_corrections:
+        c = active_corrections[-1]
+        parts.append(f"纠正:{c.get('content', '')[:max_len]}")
+    # 最近 reflection
+    reflections = [r for r in replies if r.get("reply_type") == "reflection"]
+    if reflections:
+        r = reflections[-1]
+        parts.append(f"反思:{r.get('content', '')[:max_len]}")
+    return " | ".join(parts)
 
 
 def _load_password_hash() -> str | None:
@@ -2001,11 +2047,19 @@ async def _breath_lightweight(
         tags = meta.get("tags", [])
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
+        # --- Memory thread: attach latest reply summary (楼层精简摘要) ---
+        # 普通 breath 不返回整栋楼，只附带最新 reply / 有效 correction / 最近 reflection
+        latest_reply = ""
+        try:
+            latest_reply = await _thread_summary(thread_mgr, b["id"], max_len=80)
+        except Exception:
+            latest_reply = ""
         results.append({
             "bucket_id": b["id"],
             "name": meta.get("name", b["id"]),
             "role": _memory_role(meta),
             "summary": summary[:200],
+            "latest_reply": latest_reply,
             "valence": safe_float(meta.get("valence"), 0.5),
             "arousal": safe_float(meta.get("arousal"), 0.3),
             "tags": tags[:10],
@@ -2598,6 +2652,12 @@ async def breath(
             # 为年轮经验添加冷却标记
             if in_cooldown:
                 summary += " [冷却中]"
+
+            # --- Memory thread: attach compact reply summary (楼层精简摘要) ---
+            # 普通 breath 不返回整栋楼，只附带最新 reply / 有效 correction / 最近 reflection
+            thread_note = await _thread_summary(thread_mgr, bucket["id"])
+            if thread_note:
+                summary += f"\n[楼层] {thread_note}"
 
             summary_tokens = count_tokens_approx(summary)
             if token_used + summary_tokens > max_tokens:
@@ -3766,6 +3826,90 @@ async def propose_metadata_enrichment(limit: int = 20) -> str:
     except Exception as e:
         logger.error(f"propose_metadata_enrichment failed: {e}")
         return f"生成 metadata 补全提案失败: {e}"
+
+
+# =============================================================
+# Tool 4f: add_memory_reply — 追加记忆楼层（reply）
+# 对同一条记忆追加新的理解/补充/纠正/感受，不覆盖主记忆。
+# =============================================================
+@mcp.tool()
+async def add_memory_reply(
+    parent_memory_id: str,
+    content: str,
+    reply_type: str = "reflection",
+    author: str = "main_ai",
+    provenance: str = "ai_inferred",
+    world_id: str = "",
+    scene: str = "",
+    supersedes_reply_id: str = "",
+    source_context: str = "",
+) -> str:
+    """向一条记忆追加楼层（reply），不修改主记忆。reply_type可选: reflection(后来的看法)/correction(纠正)/supplement(补充)/disagreement(不同意过去解释)/feeling(新感受)。author可选: main_ai/user/system。provenance可选: user_explicit/ai_inferred/ai_observed/system_event/imported/legacy。world_id/scene默认继承主记忆，可显式覆盖。supersedes_reply_id=被取代的旧楼层ID(旧楼层保留)。source_context=来源上下文。"""
+
+    if not parent_memory_id or not parent_memory_id.strip():
+        return "请提供有效的 parent_memory_id。"
+    if not content or not content.strip():
+        return "楼层内容不能为空。"
+
+    # --- 校验主记忆存在 ---
+    parent = await bucket_mgr.get(parent_memory_id.strip())
+    if not parent:
+        return f"未找到主记忆: {parent_memory_id}"
+
+    # --- 解析 scene（逗号分隔）---
+    scene_list = None
+    if scene and scene.strip():
+        scene_list = [s.strip() for s in scene.split(",") if s.strip()]
+
+    try:
+        reply_id = await thread_mgr.add_reply(
+            parent_memory_id=parent_memory_id.strip(),
+            content=content.strip(),
+            reply_type=reply_type,
+            author=author,
+            provenance=provenance,
+            world_id=world_id.strip() or None,
+            scene=scene_list,
+            supersedes_reply_id=supersedes_reply_id.strip() or None,
+            source_context=source_context.strip() or None,
+        )
+        return f"已追加楼层 {reply_id} → 记忆 {parent_memory_id}（{reply_type}，作者 {author}）。主记忆未修改。"
+    except Exception as e:
+        logger.error(f"add_memory_reply failed: {e}")
+        return f"追加楼层失败: {e}"
+
+
+# =============================================================
+# Tool 4g: get_memory_thread — 查看记忆完整楼层历史
+# 仅在主动请求时展开全部楼层（普通 breath 不返回整栋楼）。
+# =============================================================
+@mcp.tool()
+async def get_memory_thread(parent_memory_id: str) -> str:
+    """查看一条记忆的完整楼层历史（主记忆 + 全部 reply，按时间排序）。仅在需要追溯观点变化时调用。"""
+
+    if not parent_memory_id or not parent_memory_id.strip():
+        return "请提供有效的 parent_memory_id。"
+
+    parent = await bucket_mgr.get(parent_memory_id.strip())
+    if not parent:
+        return f"未找到主记忆: {parent_memory_id}"
+
+    replies = await thread_mgr.list_replies(parent_memory_id.strip())
+    if not replies:
+        return f"记忆 {parent_memory_id} 暂无楼层。"
+
+    lines = [f"=== 记忆楼层 / Memory Thread: {parent_memory_id} ==="]
+    lines.append(f"主记忆: {parent['metadata'].get('name', '')} | {parent['metadata'].get('type', '')}")
+    lines.append(f"  {parent['content'][:200]}")
+    lines.append("")
+    for i, r in enumerate(replies, start=1):
+        lines.append(
+            f"#{i} {r.get('created_at', '')[:16]} · {r.get('author', '')} · {r.get('reply_type', '')}"
+            f"{' · 取代 ' + r['supersedes_reply_id'] if r.get('supersedes_reply_id') else ''}"
+        )
+        lines.append(f"  {r.get('content', '')}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 # =============================================================

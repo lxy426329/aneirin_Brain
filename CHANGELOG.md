@@ -5,6 +5,45 @@
 
 ---
 
+## 2026-08-31 记忆楼层 / Memory Thread：主记忆稳定 + 理解变化以楼层追加
+
+### 目标
+一条长期记忆的"事实主体"保持稳定，AI 后来产生的新理解、补充、纠正、情绪或观点以"楼层（reply）"形式追加在原记忆下面，默认只追加、不覆盖旧楼层。它不是 event chain（事件因果链），而是对"同一条记忆"的纵向理解历史。全部为加法式兼容改造，不迁移/重写现有 memory。
+
+### 更改内容
+1. **独立楼层存储**
+   - 文件：`thread_manager.py`（新建）。`ThreadManager` 将 reply 存于 `threads/` 目录（与 `buckets/` 同级，同 `journals/` 模式），每条 reply 独立 JSON 文件，不塞进原 memory 正文。
+   - reply 字段：`reply_id / parent_memory_id / author / created_at / content / provenance / world_id / scene`，可选 `reply_type / source_context / supersedes_reply_id`。
+   - 词表：`reply_type` ∈ reflection / correction / supplement / disagreement / feeling；`author` ∈ main_ai / user / system；`provenance` ∈ user_explicit / ai_inferred / ai_observed / system_event / imported / legacy。非法值回退安全默认。
+   - 方法：`add_reply / list_replies / get_thread / delete_reply / update_reply`（后者仅由 proposal 审批后调用，不可改 reply_id / parent_memory_id / created_at）。
+2. **world / scene 隔离继承**
+   - reply 默认继承 parent memory 的 `world_id` 和 `scene`，允许显式覆盖；检索 reply 时遵守现有 world + scene 隔离规则，禁止利用 thread 形成跨 world / scene 的隐式泄漏。
+3. **provenance 兼容**
+   - 用户明确补充：author=user, provenance=user_explicit；AI 对话观察：author=main_ai, provenance=ai_observed；AI 新理解：author=main_ai, provenance=ai_inferred；历史导入：provenance=imported / legacy。不因作者是 AI 就写成 user_explicit。
+4. **breath 检索精简楼层摘要**
+   - 文件：`server.py`。新增 `_thread_summary()`：普通 breath 只附带最新 reply / 当前有效 correction（未被 supersedes 的）/ 最近一次 reflection，不返回整栋楼；`_breath_lightweight` 每条结果新增 `latest_reply` 字段。
+   - 完整楼层仅在显式 `get_memory_thread(parent_memory_id)` 时展开（返回 main_memory + 按 created_at 排序的 replies）。
+5. **MCP 工具**
+   - `add_memory_reply(parent_memory_id, content, reply_type, author, provenance, world_id, scene, supersedes_reply_id, source_context)`。
+   - `get_memory_thread(parent_memory_id)`。
+6. **楼层修改/删除走 proposal → approval**
+   - 文件：`housekeeper.py`。构造函数新增 `thread_mgr` 参数；`execute_change_proposal` 新增 reply 分支（`reply_id` + `delete_reply` / `reply_updates`），楼层删除/修改必须经提案审批，禁止绕过。
+7. **与 memory_class / event chain / annual_ring 的关系**
+   - reply 不替代 memory_class；主 memory 仍可为 event / experience / person / boundary / plan / principle。thread 是纵向历史层，不破坏现有 event chain、annual_ring、world/scene、provenance 与 housekeeper approval 逻辑。
+
+### 迁移方案
+- 无数据库结构变化（reply 为独立 JSON 文件，加法式新增 `threads/` 目录）。
+- 现有记忆数据库未删除、未重写；旧记忆无楼层时 breath 行为与之前完全一致。
+
+### 验证
+- 完整测试套件 243 passed（原 232 + 新增 11 个用例）。
+- 新增 `tests/test_memory_thread.py` 覆盖：reply 不修改 parent、按时间排序、correction 保留旧 reply、supersedes 不删除历史、world 隔离、scene 隔离、provenance 保存、breath 不返回全部楼层、get_memory_thread 完整历史、reply 删除/修改必须经 proposal。
+
+### 待后续
+- Render UI 单条 memory 页面【楼层 / Thread】展示（backend + MCP 工具已完整预留，UI 改动成本较高时暂缓）。
+
+---
+
 ## 2026-08-31 结构调整 v2 安全加固：provenance 默认安全化 / breath 角色显式化 / mutation 审计 + stale proposal 防护 / 旧记忆补全提案
 
 ### 目标
