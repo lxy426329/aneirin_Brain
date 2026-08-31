@@ -5,6 +5,45 @@
 
 ---
 
+## 2026-08-31 结构调整 v2 修正：来源兼容 / 指令有效期 / 状态过期 / 世界隔离 / 记忆类别 / 审批者记录
+
+### 目标
+在结构调整 v2 基础上落实 6 项修正，全部为加法式兼容改造：不破坏现有 type 体系、不重写数据库、旧记忆读取时自动补默认字段。
+
+### 更改内容
+1. **修正 1：provenance 兼容策略**
+   - 文件：`bucket_manager.py`。`PROVENANCE_VOCABULARY` 扩展为 `user_explicit / ai_inferred / ai_observed / system_event / imported / legacy`；`create` 默认 `provenance="user_explicit"`（新写入且能明确确认来源）；非法来源值回退 `legacy`；`_normalize_bucket_metadata` 对旧记忆（无 provenance 字段）补默认 `legacy`，绝不默认 `user_explicit`。
+   - 测试：`tests/test_provenance.py` 更新（默认 user_explicit、非法回退 legacy、旧记忆 legacy、枚举值保存）。
+2. **修正 2：instruction 有效期与触发条件**
+   - 文件：`bucket_manager.py`。`create` 新增 `instruction / valid_from / expires_at / trigger_condition / active` 字段；新增 `_is_instruction_active()`（instruction=True 且 active=True 且未过期才有效）；`server.py` 查询管线与向量补充检索过滤未激活/已过期的指令类记忆，不作为行动依据。
+   - 测试：`tests/test_instruction_validity.py`（5 个用例）。
+3. **修正 3：state / is_current 过期机制**
+   - 文件：`bucket_manager.py`。`create` 新增 `is_current / observed_at` 字段；`is_current=True` 自动补 `observed_at` 与 `state_expires_at`（默认 TTL 7 天，`DEFAULT_STATE_TTL_DAYS`）；`_normalize_bucket_metadata` 对已过期状态自动降级 `is_current=False`（不删除原记录）；禁止永久保存 `is_current=True` 而无时间约束。
+   - 测试：`tests/test_state_expiry.py`（4 个用例）。
+4. **修正 4：world_id + scene 双维度场景隔离**
+   - 文件：`bucket_manager.py`（`create` 新增 `world_id`，默认 `main`）、`server.py`（`_parse_world_filter` / `_bucket_matches_world` 辅助函数；breath 主函数、`_breath_lightweight`、查询管线、向量补充检索、MCP schema、`/api/breath` 均支持 world 过滤）。RP 记忆必须独立 `world_id`（如 `rp_xxx`），禁止污染 main；旧记忆默认 `main + chat`。
+   - 测试：`tests/test_scene.py` 更新（world_id 默认、显式 world_id、world 过滤、breath world 隔离）。
+5. **修正 5：memory_class 字段（加法式，不破坏 type）**
+   - 文件：`bucket_manager.py`。新增 `MEMORY_CLASS_VOCABULARY`（event/experience/person/boundary/plan/principle）与 `memory_class` 字段；现有 `type` 字段继续保留用于兼容旧逻辑；旧记忆无 `memory_class` 时保持 `None`，由映射层按需推断。
+   - 测试：`tests/test_memory_class.py`（5 个用例）。
+6. **修正 6：审批者记录 + 禁止绕过 proposal**
+   - 文件：`housekeeper.py`（`add_pending_action` 记录 `proposed_by`；`approve_action` 新增 `approved_by` 参数并持久化 `approved_by/approved_at`；`approve_action` 增加 `change/organize` 类型委托给 `execute_change_proposal`）、`server.py`（`approve_action` MCP 工具新增 `approved_by` 参数；`review_pending_actions` 静默通道记录 `approved_by="main_ai"`；`/api/echo-chamber/approve` 支持 `approved_by`；`manage_record` 的 bucket/memory 删除路径改为生成 proposal，禁止直接删除）。
+   - 测试：`tests/test_approval_flow.py`（5 个用例）、`tests/test_manage_record_delete.py`（2 个用例）。
+
+### 迁移方案
+- 无数据库结构变化（记忆为 Markdown + frontmatter，无 SQL 表变更）。
+- 旧记忆无需迁移：读取时 `_normalize_bucket_metadata` 自动补 `provenance="legacy"`、`scene=["chat"]`、`world_id="main"`、`memory_class=None`、`instruction=False`、`is_current=False`。
+- 现有记忆数据库未删除、未重写。
+
+### 验证
+- 完整测试套件 216 passed（原 190 + 新增 26 个用例）。
+- `python -m py_compile` 全部通过。
+
+### 待后续
+- 无。
+
+---
+
 ## 2026-08-30 结构调整 v2：时区修复 / 提案-审批闭环 / 背景隔离 / 来源与场景字段
 
 ### 目标

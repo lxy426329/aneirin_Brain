@@ -179,7 +179,8 @@ SALIENCE_AROUSAL_THRESHOLD = 0.7
 
 # --- Scene vocabulary (P2) ---
 # --- 场景词表：记忆按适用场景区分，breath 可按场景过滤召回 ---
-SCENE_VOCABULARY = ("chat", "rp", "intimate", "home")
+# rp 与 roleplay 均合法（兼容旧数据）；世界隔离由 world_id 维度负责。
+SCENE_VOCABULARY = ("chat", "intimate", "home", "roleplay", "rp")
 
 
 def _parse_scene_filter(scene: str) -> list | None:
@@ -192,6 +193,18 @@ def _parse_scene_filter(scene: str) -> list | None:
     scenes = [s.strip().lower() for s in scene.split(",") if s.strip()]
     scenes = [s for s in scenes if s in SCENE_VOCABULARY]
     return scenes or None
+
+
+def _parse_world_filter(world_id: str) -> list | None:
+    """Parse comma-separated world_id string into a list.
+
+    解析逗号分隔的世界 ID 列表；空输入返回 None（不过滤）。
+    world_id 为自由字符串（main / rp_xxx 等），不做词表校验。
+    """
+    if not world_id or not world_id.strip():
+        return None
+    worlds = [w.strip() for w in world_id.split(",") if w.strip()]
+    return worlds or None
 
 
 def _bucket_matches_scene(bucket: dict, scene_filter: list | None) -> bool:
@@ -209,6 +222,19 @@ def _bucket_matches_scene(bucket: dict, scene_filter: list | None) -> bool:
     if isinstance(scenes, str):
         scenes = [s.strip() for s in scenes.split(",") if s.strip()]
     return any(s in scene_filter for s in scenes)
+
+
+def _bucket_matches_world(bucket: dict, world_filter: list | None) -> bool:
+    """True if bucket's world_id overlaps world_filter (or no filter).
+
+    判断桶的世界是否与过滤条件匹配；无过滤条件时全部通过。
+    旧记忆无 world_id 字段时按默认 "main" 处理（与 bucket_manager 归一化一致）。
+    """
+    if not world_filter:
+        return True
+    meta = bucket.get("metadata", {})
+    world = meta.get("world_id") or "main"
+    return world in world_filter
 
 
 def _load_password_hash() -> str | None:
@@ -827,8 +853,17 @@ async def _merge_or_create(
     status_key: str = None,
     primary_tags: list = None,
     sub_tags: list = None,
-    provenance: str = "user",
+    provenance: str = "user_explicit",
     scene: list[str] = None,
+    world_id: str = "main",
+    memory_class: str = None,
+    instruction: bool = False,
+    valid_from: str = None,
+    expires_at: str = None,
+    trigger_condition: str = None,
+    active: bool = False,
+    is_current: bool = False,
+    observed_at: str = None,
 ) -> tuple[str, str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -917,6 +952,15 @@ async def _merge_or_create(
         "status_key": status_key,
         "provenance": provenance,
         "scene": scene,
+        "world_id": world_id,
+        "memory_class": memory_class,
+        "instruction": instruction,
+        "valid_from": valid_from,
+        "expires_at": expires_at,
+        "trigger_condition": trigger_condition,
+        "active": active,
+        "is_current": is_current,
+        "observed_at": observed_at,
     }
 
     if emotions:
@@ -1151,6 +1195,7 @@ async def _breath_surfacing(
     mask_tasks: bool = False,
     inject_candlestick_flavor: bool = False,
     scene_filter: list | None = None,
+    world_filter: list | None = None,
 ) -> str:
     """Surfacing mode — passive identity injection (pinned only).
 
@@ -1185,6 +1230,11 @@ async def _breath_surfacing(
     # --- 场景过滤：仅浮现与当前场景匹配的记忆 ---
     if scene_filter:
         all_buckets = [b for b in all_buckets if _bucket_matches_scene(b, scene_filter)]
+
+    # --- World filter (修正 4): only surface memories from matching worlds ---
+    # --- 世界过滤：仅浮现与当前世界匹配的记忆（RP 世界隔离）---
+    if world_filter:
+        all_buckets = [b for b in all_buckets if _bucket_matches_world(b, world_filter)]
 
     parts = []
 
@@ -1816,6 +1866,7 @@ async def _breath_lightweight(
     arousal: float = -1,
     task_mask: bool = False,
     scene_filter: list | None = None,
+    world_filter: list | None = None,
 ) -> dict:
     """轻量检索模式，供 MCP breath(lightweight=True) 与 HTTP /api/breath 共用。
     返回稳定 JSON 结构，节省 token：每条仅 summary + 关键元数据，不返回大段正文。
@@ -1845,6 +1896,8 @@ async def _breath_lightweight(
                 matches = [b for b in matches if b["metadata"].get("type") == type_filter]
             if scene_filter:
                 matches = [b for b in matches if _bucket_matches_scene(b, scene_filter)]
+            if world_filter:
+                matches = [b for b in matches if _bucket_matches_world(b, world_filter)]
             buckets = matches
         except Exception as e:
             logger.warning(f"Lightweight search failed: {e}")
@@ -1860,6 +1913,8 @@ async def _breath_lightweight(
                 all_buckets = [b for b in all_buckets if b["metadata"].get("type") == type_filter]
             if scene_filter:
                 all_buckets = [b for b in all_buckets if _bucket_matches_scene(b, scene_filter)]
+            if world_filter:
+                all_buckets = [b for b in all_buckets if _bucket_matches_world(b, world_filter)]
             seven_days_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).isoformat()
             recent = [
                 b for b in all_buckets
@@ -2011,14 +2066,19 @@ async def breath(
     min_score: float = 0.0,
     recent_days: int = 0,
     scene: str = "",
+    world_id: str = "",
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认2000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。scene逗号分隔场景过滤(chat/rp/intimate/home), 仅召回匹配场景的记忆, 空=不过滤。开局注入轻量化：只精准拉取与当前情境最相关的少量锚点/行为准则，不无差别注入全量内容。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认2000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。brief控制返回格式: true=简洁格式(仅元数据头+summary), false=完整格式(含core_facts/todos/keywords)。无参数浮现时brief默认true,有关键词检索时brief默认false。type参数按层过滤: identity/pattern/event/feel, 不传则全层返回。summary_report=true时对未完全展示的记忆生成快速总结报告。force_keyword=True强制使用精确关键字匹配模式。lightweight=True时启用轻量模式: 返回稳定JSON字符串,每条仅summary+bucket_id/valence/arousal/tags/时间/score,省token,不做fallback。limit控制轻量模式条数(默认5,最大20)。min_score最低相关度过滤(0~1,仅查询模式有效)。recent_days仅返回最近N天。scene逗号分隔场景过滤(chat/intimate/home/roleplay), 仅召回匹配场景的记忆, 空=不过滤。world_id逗号分隔世界过滤(main/rp_xxx), 仅召回匹配世界的记忆, 空=不过滤(RP世界隔离)。开局注入轻量化：只精准拉取与当前情境最相关的少量锚点/行为准则，不无差别注入全量内容。"""
     await decay_engine.ensure_started()
     await housekeeper.ensure_started()
 
     # --- Scene filter (P2): parse comma-separated scene list ---
     # --- 场景过滤：解析逗号分隔的场景列表，空=不过滤 ---
     scene_filter = _parse_scene_filter(scene)
+
+    # --- World filter (修正 4): parse comma-separated world list ---
+    # --- 世界过滤：解析逗号分隔的世界列表，空=不过滤 ---
+    world_filter = _parse_world_filter(world_id)
 
     # --- Lightweight time / life-rhythm context tag / 轻量时空与生活节奏感知 ---
     # 供主 AI 调整接话节奏；极其轻量，单行 [Context] 标记
@@ -2071,6 +2131,7 @@ async def breath(
                 valence=valence,
                 arousal=arousal,
                 scene_filter=scene_filter,
+                world_filter=world_filter,
             ),
             ensure_ascii=False,
         )
@@ -2154,6 +2215,10 @@ async def breath(
         # --- 场景过滤 ---
         if scene_filter:
             all_buckets = [b for b in all_buckets if _bucket_matches_scene(b, scene_filter)]
+        # --- World filter (修正 4) ---
+        # --- 世界过滤 ---
+        if world_filter:
+            all_buckets = [b for b in all_buckets if _bucket_matches_world(b, world_filter)]
         filtered = [
             b for b in all_buckets
             if safe_int(b["metadata"].get("importance"), 0) >= importance_min
@@ -2194,6 +2259,7 @@ async def breath(
             max_tokens, max_results, brief, type_filter, summary_report, mask_tasks,
             inject_candlestick_flavor=inject_candlestick_flavor,
             scene_filter=scene_filter,
+            world_filter=world_filter,
         )
 
     if domain.strip().lower() == "feel":
@@ -2322,6 +2388,19 @@ async def breath(
     if scene_filter:
         matches = [b for b in matches if _bucket_matches_scene(b, scene_filter)]
 
+    # --- World filter (修正 4): only recall memories from matching worlds ---
+    # --- 世界过滤：仅召回与当前世界匹配的记忆（RP 世界隔离）---
+    if world_filter:
+        matches = [b for b in matches if _bucket_matches_world(b, world_filter)]
+
+    # --- Instruction validity (修正 2): inactive/expired instructions are background only ---
+    # --- 指令有效性：未激活/已过期的指令类记忆不作为行动依据，直接排除 ---
+    matches = [
+        b for b in matches
+        if not b["metadata"].get("instruction")
+        or bucket_mgr._is_instruction_active(b["metadata"])
+    ]
+
     matched_ids = {b["id"] for b in matches}
     # --- Build vector similarity map for threshold checking ---
     # --- 构建向量相似度映射，用于阈值检查 ---
@@ -2336,6 +2415,10 @@ async def breath(
                     if type_filter and bucket["metadata"].get("type") != type_filter:
                         continue
                     if scene_filter and not _bucket_matches_scene(bucket, scene_filter):
+                        continue
+                    if world_filter and not _bucket_matches_world(bucket, world_filter):
+                        continue
+                    if bucket["metadata"].get("instruction") and not bucket_mgr._is_instruction_active(bucket["metadata"]):
                         continue
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
@@ -2770,8 +2853,17 @@ async def _hold_impl(
     arousal: float = -1,
     event_context: str = "",
     bucket_type: str = "",
-    provenance: str = "user",
+    provenance: str = "user_explicit",
     scene: list[str] = None,
+    world_id: str = "main",
+    memory_class: str = None,
+    instruction: bool = False,
+    valid_from: str = None,
+    expires_at: str = None,
+    trigger_condition: str = None,
+    active: bool = False,
+    is_current: bool = False,
+    observed_at: str = None,
 ) -> dict:
     """核心记忆写入逻辑，供 MCP hold() 与 HTTP /api/hold 共用。
     自动打标 + 查重合并 + 异步 summary/embedding，与原有 hold() 行为完全一致。
@@ -2844,6 +2936,7 @@ async def _hold_impl(
             # --- Feel 记忆为模型自身视角（AI 推测），非用户明确表述 ---
             provenance="ai_inferred",
             scene=scene,
+            world_id=world_id,
         )
         # --- Feel 记忆主标签固定为"情绪"，副标签来自分析 ---
         feel_sub = []
@@ -2929,6 +3022,15 @@ async def _hold_impl(
             valence=explicit_v,
             arousal=explicit_a,
             scene=scene,
+            world_id=world_id,
+            memory_class=memory_class,
+            instruction=instruction,
+            valid_from=valid_from,
+            expires_at=expires_at,
+            trigger_condition=trigger_condition,
+            active=active,
+            is_current=is_current,
+            observed_at=observed_at,
         )
         # --- 主/副标签：主标签封闭词表，副标签短词 ---
         primary_tags, sub_tags = _split_primary_sub_tags(analysis, extra_tags)
@@ -3054,6 +3156,15 @@ async def _hold_impl(
             valence=explicit_v,
             arousal=explicit_a,
             scene=scene,
+            world_id=world_id,
+            memory_class=memory_class,
+            instruction=instruction,
+            valid_from=valid_from,
+            expires_at=expires_at,
+            trigger_condition=trigger_condition,
+            active=active,
+            is_current=is_current,
+            observed_at=observed_at,
         )
         try:
             await bucket_mgr.update(bucket_id, primary_tags=primary_tags, sub_tags=sub_tags)
@@ -3099,6 +3210,15 @@ async def _hold_impl(
         sub_tags=sub_tags,
         provenance=provenance,
         scene=scene,
+        world_id=world_id,
+        memory_class=memory_class,
+        instruction=instruction,
+        valid_from=valid_from,
+        expires_at=expires_at,
+        trigger_condition=trigger_condition,
+        active=active,
+        is_current=is_current,
+        observed_at=observed_at,
     )
 
     if source:
@@ -3154,10 +3274,19 @@ async def hold(
     voice: bool = False,
     boundary: bool = False,
     ephemeral: bool = False,
-    provenance: str = "user",
+    provenance: str = "user_explicit",
     scene: str = "",
+    world_id: str = "main",
+    memory_class: str = "",
+    instruction: bool = False,
+    valid_from: str = "",
+    expires_at: str = "",
+    trigger_condition: str = "",
+    active: bool = False,
+    is_current: bool = False,
+    observed_at: str = "",
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。milestone=True存入milestone层(高情绪浓度重要时刻/纪念日,永不衰减)。voice=True存入voice层(说话习惯/称呼/相处方式,按需检索,永不衰减)。boundary=True存入boundary层(双方确立的认知共识/逻辑底线/原则,永不衰减;检测到消极言论或认知偏差时高优先级激活)。ephemeral=True存入ephemeral短期绝密暂存区(半衰期24小时:纯发泄吐槽,未被再次引用时在nightly dream()中自然蒸发)。provenance=来源(user=用户明确说/ai_inferred=AI推测/ai_observed=AI观察,默认user)。scene=适用场景(逗号分隔:chat/rp/intimate/home,默认chat)。"""
+    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。protected=True创建受保护桶(不参与合并/衰减)。feel=True存储你的第一人称感受(不参与普通浮现)。task_flag=True标记为任务类记忆(当用户生病/疲惫/情绪化时自动屏蔽,防止催任务)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。source=来源标记(如 yeeban/yeeban_status)。title=自定义记忆名称。valence=显式效价(0~1,提供时优先于自动打标)。arousal=显式唤醒度(0~1,提供时优先于自动打标)。event_context=事件背景(时间/地点/状态/当时发生的事件)。milestone=True存入milestone层(高情绪浓度重要时刻/纪念日,永不衰减)。voice=True存入voice层(说话习惯/称呼/相处方式,按需检索,永不衰减)。boundary=True存入boundary层(双方确立的认知共识/逻辑底线/原则,永不衰减;检测到消极言论或认知偏差时高优先级激活)。ephemeral=True存入ephemeral短期绝密暂存区(半衰期24小时:纯发泄吐槽,未被再次引用时在nightly dream()中自然蒸发)。provenance=来源(user_explicit=用户明确说/ai_inferred=AI推测/ai_observed=AI观察/system_event=系统事件/imported=导入/legacy=无法确认,默认user_explicit)。scene=适用场景(逗号分隔:chat/intimate/home/roleplay,默认chat)。world_id=世界ID(main=主世界/rp_xxx=独立RP世界,默认main;RP记忆必须用独立world_id,禁止污染main)。memory_class=记忆类别(event/experience/person/boundary/plan/principle,可选)。instruction=True标记为指令类记忆(历史要求默认仅背景,需active+未过期才可作为行动依据)。valid_from=指令生效时间(ISO)。expires_at=指令过期时间(ISO)。trigger_condition=触发条件描述。active=指令当前是否激活。is_current=True标记为当前状态(必须带observed_at与有效期,过期自动降级为历史背景)。observed_at=状态观察时间(ISO)。"""
     bucket_type = "milestone" if milestone else ("voice" if voice else ("boundary" if boundary else ("ephemeral" if ephemeral else "")))
     scene_list = [s.strip() for s in scene.split(",") if s.strip()] if scene else None
     result = await _hold_impl(
@@ -3166,6 +3295,10 @@ async def hold(
         source_bucket=source_bucket, source=source, title=title,
         valence=valence, arousal=arousal, event_context=event_context,
         bucket_type=bucket_type, provenance=provenance, scene=scene_list,
+        world_id=world_id, memory_class=memory_class or None,
+        instruction=instruction, valid_from=valid_from or None,
+        expires_at=expires_at or None, trigger_condition=trigger_condition or None,
+        active=active, is_current=is_current, observed_at=observed_at or None,
     )
     return result["message"]
 
@@ -5244,14 +5377,14 @@ async def review_digest() -> str:
 
 
 @mcp.tool()
-async def approve_action(action_id: str) -> str:
-    """批准回音壁中的待办提案。action_id=提案ID。"""
+async def approve_action(action_id: str, approved_by: str = "user") -> str:
+    """批准回音壁中的待办提案。action_id=提案ID；approved_by=审批者身份（user/main_ai，默认 user）。"""
     await housekeeper.ensure_started()
     
     try:
-        success = await housekeeper.approve_action(action_id)
+        success = await housekeeper.approve_action(action_id, approved_by=approved_by)
         if success:
-            return f"✅ 已批准提案: {action_id}"
+            return f"✅ 已批准提案: {action_id}（审批者: {approved_by}）"
         else:
             return f"❌ 未找到提案: {action_id}"
     except Exception as e:
@@ -5307,7 +5440,7 @@ async def review_pending_actions(json_verdicts: str) -> str:
             continue
         try:
             if decision == "approve":
-                ok = await housekeeper.approve_action(action_id)
+                ok = await housekeeper.approve_action(action_id, approved_by="main_ai")
             else:
                 ok = await housekeeper.reject_action(action_id)
             results.append({
@@ -5613,7 +5746,7 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
     record_id: 记录ID(仅get/update/delete/apply需要)
     create参数: name/description/relationships(identity), content/detail/text/title/exp_type(experience), name/description/triggers(pattern), content/bucket_id/title(candlestick), content/detail/text/title(annual_ring)
     update参数: content/tags/importance
-    delete参数: record_id；record_type=bucket/memory 时 record_id 即 bucket_id，主 AI 可直接删除任意记忆桶"""
+    delete参数: record_id；record_type=bucket/memory 时 record_id 即 bucket_id，删除需先生成提案并经审批（禁止绕过 proposal 直接删除长期记忆）"""
     try:
         if action not in ["create", "update", "get", "list", "delete", "apply"]:
             return f"未知操作: {action}"
@@ -5794,16 +5927,20 @@ async def manage_record(action: str, record_type: str = "", record_id: str = "",
                 success = await bucket_mgr.delete(record_id)
                 return f"已删除 → {record_id}" if success else "删除失败"
             if record_type in ["bucket", "memory"]:
-                # --- Main AI absolute control: delete ANY memory bucket directly ---
-                # --- 主 AI 绝对控制权：直接删除任意记忆桶（移入回收站 .trash/）---
-                # record_id 即 bucket_id；可直接使用任意桶 ID，无需经过管家审批
-                success = await bucket_mgr.delete(record_id)
-                if success:
-                    # --- Sync in-memory index with disk after deletion ---
-                    # --- 删除后同步内存索引，避免检索残留 ---
-                    bucket_mgr.invalidate_index()
-                    return f"记忆桶已删除 → {record_id}"
-                return f"删除失败: 未找到记忆桶 {record_id}"
+                # --- 修正6：禁止绕过 proposal 直接删除长期记忆 ---
+                # 删除任意记忆桶必须先生成提案，经审批后由 execute_change_proposal 执行
+                await housekeeper.ensure_started()
+                proposal_id = await housekeeper.echo_chamber.add_pending_action(
+                    "change",
+                    {
+                        "bucket_id": record_id,
+                        "delete": True,
+                        "reason": "ai_manage 请求删除记忆桶",
+                    },
+                    proposed_by="ai_manage",
+                )
+                return (f"已生成删除提案 {proposal_id}（记忆桶 {record_id}）。"
+                        f"请调用 approve_action 批准后才会真正删除。")
             return f"不支持删除 {record_type} 类型"
         
         elif action == "apply":
@@ -6325,7 +6462,7 @@ async def ai_manage(request: str) -> str:
                 "type": "function",
                 "function": {
                     "name": "breath",
-                    "description": "检索/浮现记忆。不传query=自动浮现权重最高的未解决记忆;传query=按关键词+情感坐标检索记忆。支持按domain/importance/type筛选。scene参数可按场景过滤(chat/rp/intimate/home,逗号分隔)。",
+                    "description": "检索/浮现记忆。不传query=自动浮现权重最高的未解决记忆;传query=按关键词+情感坐标检索记忆。支持按domain/importance/type筛选。scene参数可按场景过滤(chat/intimate/home/roleplay,逗号分隔)。world_id参数可按世界过滤(main/rp_xxx,逗号分隔)。",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -6334,7 +6471,8 @@ async def ai_manage(request: str) -> str:
                             "type": {"type": "string", "description": "按类型筛选: identity/pattern/event/feel"},
                             "max_results": {"type": "integer", "description": "返回数量上限(默认10,最大50)"},
                             "importance_min": {"type": "integer", "description": "最低重要度(1-5)"},
-                            "scene": {"type": "string", "description": "按场景过滤: chat/rp/intimate/home,逗号分隔,空=不过滤"},
+                            "scene": {"type": "string", "description": "按场景过滤: chat/intimate/home/roleplay,逗号分隔,空=不过滤"},
+                            "world_id": {"type": "string", "description": "按世界过滤: main/rp_xxx,逗号分隔,空=不过滤(RP世界隔离)"},
                         },
                         "required": []
                     }
@@ -7288,8 +7426,17 @@ async def api_hold(request):
             valence=valence,
             arousal=arousal,
             bucket_type=str(body.get("bucket_type", "")).strip().lower(),
-            provenance=str(body.get("provenance", "user")).strip().lower(),
+            provenance=str(body.get("provenance", "user_explicit")).strip().lower(),
             scene=scene_list,
+            world_id=str(body.get("world_id", "main")).strip() or "main",
+            memory_class=str(body.get("memory_class", "")).strip().lower() or None,
+            instruction=_to_bool(body.get("instruction")),
+            valid_from=str(body.get("valid_from", "")).strip() or None,
+            expires_at=str(body.get("expires_at", "")).strip() or None,
+            trigger_condition=str(body.get("trigger_condition", "")).strip() or None,
+            active=_to_bool(body.get("active")),
+            is_current=_to_bool(body.get("is_current")),
+            observed_at=str(body.get("observed_at", "")).strip() or None,
         )
     except Exception as e:
         logger.error(f"/api/hold failed: {e}")
@@ -7315,7 +7462,7 @@ async def api_breath(request):
     Same logic as MCP breath(lightweight=True).
     轻量检索接口，返回稳定 JSON，与 MCP breath(lightweight=True) 完全一致。
 
-    GET  /api/breath?query=...&limit=5&min_score=0&recent_days=0&type=&domain=&valence=&arousal=&scene=
+    GET  /api/breath?query=...&limit=5&min_score=0&recent_days=0&type=&domain=&valence=&arousal=&scene=&world_id=
     POST /api/breath  (JSON body with same fields)
     """
     from starlette.responses import JSONResponse
@@ -7357,6 +7504,7 @@ async def api_breath(request):
         arousal = -1
 
     scene_filter = _parse_scene_filter(str(params.get("scene", "")).strip())
+    world_filter = _parse_world_filter(str(params.get("world_id", "")).strip())
 
     try:
         result = await _breath_lightweight(
@@ -7369,6 +7517,7 @@ async def api_breath(request):
             valence=valence,
             arousal=arousal,
             scene_filter=scene_filter,
+            world_filter=world_filter,
         )
     except Exception as e:
         logger.error(f"/api/breath failed: {e}")
@@ -10092,10 +10241,11 @@ async def api_echo_chamber_approve(request):
     try:
         body = await request.json()
         action_id = body.get("action_id", "")
+        approved_by = str(body.get("approved_by", "user")).strip() or "user"
         if not action_id:
             return JSONResponse({"error": "action_id required"}, status_code=400)
         
-        success = await housekeeper.approve_action(action_id)
+        success = await housekeeper.approve_action(action_id, approved_by=approved_by)
         if success:
             return JSONResponse({"ok": True, "message": "已批准并执行"})
         else:

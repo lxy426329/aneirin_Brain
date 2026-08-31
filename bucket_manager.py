@@ -68,9 +68,35 @@ TYPE_ALIASES = {
     "principle": "permanent",  # 永久原则
 }
 
-# 场景词表：正常聊天 / RP / 亲密互动 / Home
+# 场景词表：正常聊天 / 亲密互动 / Home / RP（roleplay）
 # 需求 4：记忆区分适用场景。非法场景值在写入时被过滤，空结果回退 ["chat"]。
-SCENE_VOCABULARY = ("chat", "rp", "intimate", "home")
+# rp 与 roleplay 均合法（兼容旧数据），world_id 维度负责世界隔离。
+SCENE_VOCABULARY = ("chat", "intimate", "home", "roleplay", "rp")
+
+# 来源词表（修正 1）：只有能明确确认来源的新写入才标记 user_explicit；
+# 无法确认来源的旧记忆统一标记 legacy。
+PROVENANCE_VOCABULARY = (
+    "user_explicit",  # 用户明确说过的内容
+    "ai_inferred",    # AI 推测出的内容
+    "ai_observed",    # AI 观察到的内容
+    "system_event",   # 系统事件
+    "imported",       # 导入的记忆
+    "legacy",         # 无法确认来源的旧记忆
+)
+
+# 记忆类别词表（修正 5）：新增 memory_class 维度，不破坏现有 type 体系。
+MEMORY_CLASS_VOCABULARY = (
+    "event",       # 事件
+    "experience",  # 经验
+    "person",      # 人物
+    "boundary",    # 边界
+    "plan",        # 计划
+    "principle",   # 永久原则
+)
+
+# 当前状态默认 TTL（修正 3）：is_current=True 但未显式设置 expires_at 时，
+# 自动补默认有效期，禁止永久保存 is_current=True 而无时间约束。
+DEFAULT_STATE_TTL_DAYS = 7
 
 try:
     from hybrid_search import HybridSearchEngine
@@ -873,8 +899,17 @@ class BucketManager:
         status_key: str = None,
         is_private: bool = False,
         privacy_password: str = None,
-        provenance: str = "user",
+        provenance: str = "user_explicit",
         scene: list[str] = None,
+        world_id: str = "main",
+        memory_class: str = None,
+        instruction: bool = False,
+        valid_from: str = None,
+        expires_at: str = None,
+        trigger_condition: str = None,
+        active: bool = False,
+        is_current: bool = False,
+        observed_at: str = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -977,16 +1012,38 @@ class BucketManager:
             "status_key": status_key,
             "is_private": bool(is_private),
             "privacy_password": privacy_password or "",
-            # --- Provenance: user / ai_inferred / ai_observed ---
-            # --- 来源：用户明确说 / AI 推测 / AI 观察 ---
-            "provenance": provenance if provenance in ("user", "ai_inferred", "ai_observed") else "user",
-            # --- Scene: chat / rp / intimate / home ---
-            # --- 适用场景：正常聊天 / RP / 亲密互动 / Home ---
+            # --- Provenance: user_explicit / ai_inferred / ai_observed / system_event / imported / legacy ---
+            # --- 来源：用户明确说 / AI 推测 / AI 观察 / 系统事件 / 导入 / 无法确认 ---
+            # 非法来源值回退 legacy（来源不明，绝不默认 user_explicit）
+            "provenance": provenance if provenance in PROVENANCE_VOCABULARY else "legacy",
+            # --- Scene: chat / intimate / home / roleplay / rp ---
+            # --- 适用场景：正常聊天 / 亲密互动 / Home / RP ---
             # 非法场景值过滤，空结果回退默认 ["chat"]
             "scene": [
                 s for s in (scene or ["chat"])
                 if isinstance(s, str) and s.strip().lower() in SCENE_VOCABULARY
             ] or ["chat"],
+            # --- World: main / rp_xxx 等（修正 4）---
+            # --- 世界隔离：RP 必须独立 world_id，禁止污染 main ---
+            "world_id": (world_id or "main").strip() or "main",
+            # --- Memory class（修正 5）：新增维度，不破坏现有 type ---
+            # --- 记忆类别：event/experience/person/boundary/plan/principle ---
+            "memory_class": (
+                memory_class if memory_class in MEMORY_CLASS_VOCABULARY
+                else (bucket_type if bucket_type in MEMORY_CLASS_VOCABULARY else None)
+            ),
+            # --- Instruction validity（修正 2）：历史要求默认仅背景 ---
+            # --- 指令有效性：只有 active 且未过期才可作为行动依据 ---
+            "instruction": bool(instruction),
+            "valid_from": valid_from or None,
+            "expires_at": expires_at or None,
+            "trigger_condition": trigger_condition or None,
+            "active": bool(active),
+            # --- Current-state expiry（修正 3）：当前状态必须有过期机制 ---
+            # --- 当前状态：记录 observed_at，必须带 expires_at/TTL ---
+            "is_current": bool(is_current),
+            "observed_at": observed_at or (now_iso() if is_current else None),
+            "state_expires_at": expires_at or None,
         }
         if pinned:
             metadata["pinned"] = True
@@ -3224,14 +3281,97 @@ class BucketManager:
             metadata["type"] = "event"
 
         # --- Provenance default (legacy buckets) / 来源默认值（旧记忆兼容） ---
+        # 修正 1：无法确认来源的旧记忆统一标记 legacy，绝不默认 user_explicit。
         if "provenance" not in metadata:
-            metadata["provenance"] = "user"
+            metadata["provenance"] = "legacy"
+        elif metadata["provenance"] not in PROVENANCE_VOCABULARY:
+            metadata["provenance"] = "legacy"
 
         # --- Scene default (legacy buckets) / 场景默认值（旧记忆兼容） ---
         if "scene" not in metadata:
             metadata["scene"] = ["chat"]
 
+        # --- World default (legacy buckets) / 世界默认值（旧记忆兼容） ---
+        # 修正 4：旧记忆默认 main 世界，不默认全场景可见。
+        if "world_id" not in metadata or not metadata["world_id"]:
+            metadata["world_id"] = "main"
+
+        # --- Memory class default (legacy buckets) / 记忆类别（旧记忆不强行推断） ---
+        # 修正 5：旧记忆无 memory_class 时保持 None，由映射层按需推断。
+        if "memory_class" not in metadata:
+            metadata["memory_class"] = None
+
+        # --- Instruction validity defaults / 指令有效性默认值（修正 2） ---
+        # 历史 instruction 默认仅背景：active 默认 False，无有效期约束。
+        if "instruction" not in metadata:
+            metadata["instruction"] = False
+        if "active" not in metadata:
+            metadata["active"] = False
+        if "valid_from" not in metadata:
+            metadata["valid_from"] = None
+        if "expires_at" not in metadata:
+            metadata["expires_at"] = None
+        if "trigger_condition" not in metadata:
+            metadata["trigger_condition"] = None
+
+        # --- Current-state expiry enforcement / 当前状态过期机制（修正 3） ---
+        # is_current=True 必须带 observed_at 与 state_expires_at；
+        # 未显式设置有效期时自动补默认 TTL，禁止永久保存 is_current=True。
+        if "is_current" not in metadata:
+            metadata["is_current"] = False
+        if metadata.get("is_current"):
+            if "observed_at" not in metadata or not metadata.get("observed_at"):
+                metadata["observed_at"] = now_iso()
+            if "state_expires_at" not in metadata or not metadata.get("state_expires_at"):
+                metadata["state_expires_at"] = (
+                    datetime.now(timezone.utc)
+                    + timedelta(days=DEFAULT_STATE_TTL_DAYS)
+                ).isoformat()
+            # 已过期的当前状态自动降级为历史背景（不删除原记录）
+            if self._is_current_state_expired(metadata):
+                metadata["is_current"] = False
+        else:
+            if "observed_at" not in metadata:
+                metadata["observed_at"] = None
+            if "state_expires_at" not in metadata:
+                metadata["state_expires_at"] = None
+
         return metadata
+
+    def _is_current_state_expired(self, metadata: dict) -> bool:
+        """True if a current-state bucket has passed its expiry.
+
+        判断当前状态是否已过期：state_expires_at 存在且早于当前时间。
+        """
+        expiry = metadata.get("state_expires_at")
+        if not expiry:
+            return False
+        try:
+            expiry_dt = datetime.fromisoformat(str(expiry))
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.astimezone()
+            return datetime.now(expiry_dt.tzinfo) > expiry_dt
+        except (ValueError, TypeError):
+            return False
+
+    def _is_instruction_active(self, metadata: dict) -> bool:
+        """True if an instruction bucket is currently effective.
+
+        判断指令是否当前有效：instruction=True 且 active=True 且未过期
+        （expires_at 为空或未来）。触发条件为字符串描述，由调用方判断。
+        """
+        if not metadata.get("instruction") or not metadata.get("active"):
+            return False
+        expiry = metadata.get("expires_at")
+        if not expiry:
+            return True
+        try:
+            expiry_dt = datetime.fromisoformat(str(expiry))
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.astimezone()
+            return datetime.now(expiry_dt.tzinfo) <= expiry_dt
+        except (ValueError, TypeError):
+            return True
 
     def _valence_arousal_to_emotions(self, valence: float, arousal: float) -> list[dict]:
         """

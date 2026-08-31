@@ -257,10 +257,11 @@ class EchoChamber:
         
         return True
     
-    async def add_pending_action(self, action_type: str, data: dict) -> str:
+    async def add_pending_action(self, action_type: str, data: dict, proposed_by: str = "ai_manage") -> str:
         """
         Add a pending action to echo chamber.
         action_type: cleanup/merge/chain_update/change/organize
+        proposed_by: 提案来源（ai_manage / main_ai / user），默认 ai_manage。
         返回 action_id，供调用方引用提案。
         """
         action_id = str(uuid.uuid4())[:8]
@@ -270,6 +271,7 @@ class EchoChamber:
             "action_id": action_id,
             "action_type": action_type,
             "status": "pending",
+            "proposed_by": proposed_by,
             "data": data,
             "created": datetime.now(timezone.utc).isoformat(),
         }
@@ -277,7 +279,7 @@ class EchoChamber:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(action, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Added pending action: {action_type} - {action_id}")
+        logger.info(f"Added pending action: {action_type} - {action_id} (proposed_by={proposed_by})")
         return action_id
     
     async def get_pending_actions(self, action_type: str = "all") -> list:
@@ -298,8 +300,12 @@ class EchoChamber:
         actions.sort(key=lambda a: a.get("created", ""), reverse=True)
         return actions
     
-    async def update_action_status(self, action_id: str, status: str):
-        """Update action status (approve/reject/executed)."""
+    async def update_action_status(self, action_id: str, status: str, approved_by: str = "user"):
+        """Update action status (approve/reject/executed).
+
+        更新提案状态。approved_by 记录审批者（user / main_ai），
+        为未来两级权限审批留接口（修正 6）。
+        """
         file_path = os.path.join(self.pending_actions_dir, f"{action_id}.json")
         if not os.path.exists(file_path):
             return False
@@ -308,11 +314,14 @@ class EchoChamber:
             data = json.load(f)
         
         data["status"] = status
+        if status in ("approved", "rejected", "executed"):
+            data["approved_by"] = approved_by
+            data["approved_at"] = datetime.now(timezone.utc).isoformat()
         
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Updated action {action_id} → {status}")
+        logger.info(f"Updated action {action_id} → {status} (approved_by={approved_by})")
         return True
     
     async def get_review_summary(self) -> dict:
@@ -3257,9 +3266,10 @@ class Housekeeper:
         """Get digest for main AI review."""
         return await self.echo_chamber.get_review_summary()
     
-    async def approve_action(self, action_id: str) -> bool:
+    async def approve_action(self, action_id: str, approved_by: str = "user") -> bool:
         """Approve a pending action and execute it.
-        批准回音壁提案并自动执行落地（清理/冲突/合并/身份）。"""
+        批准回音壁提案并自动执行落地（清理/冲突/合并/身份）。
+        approved_by 记录审批者（user / main_ai），为两级权限审批留接口（修正 6）。"""
         file_path = os.path.join(self.echo_chamber.pending_actions_dir, f"{action_id}.json")
         if not os.path.exists(file_path):
             return False
@@ -3279,7 +3289,16 @@ class Housekeeper:
 
         # Execute the action based on its type — only mark approved if execution succeeded
         try:
-            if action_type == "cleanup":
+            if action_type in ("change", "organize"):
+                # --- Delegate to execute_change_proposal (P0-2 / 修正 6) ---
+                # --- 委托给 execute_change_proposal 执行修改/整理提案 ---
+                # change/organize 提案由 execute_change_proposal 统一执行（含幂等保护），
+                # approve_action 只负责审批记录（approved_by/approved_at）。
+                success, message = await self.execute_change_proposal(action_id)
+                if not success:
+                    raise RuntimeError(message)
+
+            elif action_type == "cleanup":
                 bucket_id = action_data.get("bucket_id", "")
                 if bucket_id:
                     ok = await self.bucket_mgr.delete(bucket_id)
@@ -3502,6 +3521,8 @@ class Housekeeper:
             return False
 
         data["status"] = "approved"
+        data["approved_by"] = approved_by
+        data["approved_at"] = datetime.now(timezone.utc).isoformat()
         data["executed_at"] = datetime.now(timezone.utc).isoformat()
 
         try:
